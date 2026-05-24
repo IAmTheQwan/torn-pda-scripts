@@ -6,8 +6,8 @@
 // @author       TheQwan
 // @match        https://www.torn.com/amarket.php*
 // @match        https://www.torn.com/page.php*
-// @updateURL    https://raw.githubusercontent.com/YOUR-GITHUB-NAME/torn-caf-scripts/main/theqwan-caf-base.user.js
-// @downloadURL  https://raw.githubusercontent.com/YOUR-GITHUB-NAME/torn-caf-scripts/main/theqwan-caf-base.user.js
+// @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-caf-scripts/main/theqwan-caf-base.user.js
+// @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-caf-scripts/main/theqwan-caf-base.user.js
 // ==/UserScript==
 
 (function () {
