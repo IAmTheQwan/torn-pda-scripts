@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base
 // @namespace    theqwan.torn.auction-filter.caf3
-// @version      3.5.2
+// @version      3.5.3
 // @description  Auction House Advanced Filter-Hstory-Watch Systenm
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
@@ -31,7 +31,7 @@
 
   const WATCHLIST_KEY = "joshAuctionWatchList";
 const WATCHLIST_COLLAPSED_KEY = "joshAuctionWatchCollapsed";
-const WATCH_REFRESH_MS = 7000;
+const WATCH_REFRESH_MS = 15000;
 
   const PAGE_SIZE = 10;
 
@@ -271,17 +271,24 @@ async function refreshWatchListPages() {
   for (const start of starts) {
     try {
       const data = await fetchAuctionPage(start);
-      if (!data?.success || !Array.isArray(data.list)) continue;
+
+      if (!data?.success || !Array.isArray(data.list)) {
+        continue;
+      }
 
       const freshItems = data.list;
       const list = loadWatchList();
 
       list.forEach(w => {
         const fresh = freshItems.find(f => watchId(f) === w.id);
-        if (fresh) w.item = fresh;
+
+        if (fresh) {
+          w.item = fresh;
+        }
       });
 
       saveWatchList(list);
+
     } catch {}
   }
 
@@ -389,6 +396,7 @@ function updateWatchListOnly() {
   const body = document.getElementById("caf-watch-body");
 
   let closest = null;
+
   list.forEach(w => {
     const end = Number(w.item?.__endsAtMs || 0);
     if (end && (!closest || end < closest)) closest = end;
@@ -405,13 +413,12 @@ function updateWatchListOnly() {
     `;
   }
 
-  if (body) {
-    body.innerHTML = list.length
-      ? list.map(w => renderWatchItem(w.item)).join("")
-      : `<div style="padding:10px;color:#aaa;">No watched items.</div>`;
+  if (!body) return;
 
-    bindWatchListButtons();
-  }
+  body.querySelectorAll(".caf-countdown").forEach(el => {
+    const endMs = Number(el.getAttribute("data-ends-at") || 0);
+    if (endMs) el.textContent = formatCountdown(endMs);
+  });
 }
 
 function bindWatchListButtons() {
@@ -1395,8 +1402,8 @@ renderWatchList();
     setTimeout(applyOriginalPageFilter, 3000);
   }, 1500);
 
-  setInterval(() => {
-refreshWatchListPages();
+setInterval(async () => {
+  await refreshWatchListPages();
 }, WATCH_REFRESH_MS);
 
 
