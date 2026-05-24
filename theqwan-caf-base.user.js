@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base
 // @namespace    theqwan.torn.auction-filter.caf3
-// @version      3.5.4
+// @version      3.5.5
 // @description  Auction House Advanced Filter-Hstory-Watch Systenm
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
@@ -256,8 +256,9 @@ function toggleWatch(item) {
     });
   }
 
-  saveWatchList(list);
-  renderWatchList();
+saveWatchList(list);
+renderWatchList();
+renderPage(currentPage || 1);
 }
 
 function watchedPageStarts() {
@@ -372,18 +373,22 @@ function renderWatchItem(item) {
           </span>
         </div>
 
-        <div style="display:flex;gap:6px;margin-top:6px;">
-          <button class="caf-watch-open"
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">
+          <button class="caf-open"
             data-start="${item.__auctionStart || 0}"
-            style="width:50%;padding:6px;">
-            Open
+            data-name="${escapeAttr(name.toLowerCase())}"
+            data-dmg="${dmg.toFixed(2)}"
+            data-acc="${acc.toFixed(2)}"
+            data-bid="${bid}"
+            style="width:100%;padding:6px;">
+            Open Original Page
           </button>
 
-          <button class="caf-unwatch"
-            data-watch-id="${watchId(item)}"
-            style="width:50%;padding:6px;background:#3a1d1d;color:#ff9b9b;">
-            Remove
-          </button>
+        <button class="caf-unwatch"
+          data-watch-id="${watchId(item)}"
+          style="width:100%;padding:6px;background:#3a1d1d;color:#ff9b9b;">
+          Remove
+        </button>
         </div>
       </div>
     </div>
@@ -425,7 +430,7 @@ function bindWatchListButtons() {
   const body = document.getElementById("caf-watch-body");
   if (!body) return;
 
-  body.querySelectorAll(".caf-watch-open").forEach(btn => {
+  body.querySelectorAll(".caf-open").forEach(btn => {
     btn.onclick = e => {
       e.preventDefault();
       e.stopPropagation();
