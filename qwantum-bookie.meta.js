@@ -5,6 +5,6 @@
 // @author       Josh
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
-// @updateURL    https://raw.githubusercontent.com/YOUR-GITHUB-USER/YOUR-REPO/Bookie/qwantum-bookie.meta.js
-// @downloadURL  https://raw.githubusercontent.com/YOUR-GITHUB-USER/YOUR-REPO/Bookie/qwantum-bookie.user.js
+// @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/Bookie/qwantum-bookie.meta.js
+// @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/Bookie/qwantum-bookie.user.js.
 // ==/UserScript==
