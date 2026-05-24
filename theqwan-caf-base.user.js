@@ -2,7 +2,7 @@
 // @name         TheQwan CAF Base
 // @namespace    theqwan.torn.auction-filter.caf3
 // @version      3.5.1
-// @description  Condensed Auction Filter with quality fetch, color filter, and slider-based quality/bonus ranges
+// @description  Auction House Advanced Filter-Hstory-Watch Systenm
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
 // @match        https://www.torn.com/page.php*
