@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base
 // @namespace    theqwan.torn.auction-filter.caf3
-// @version      3.5.3
+// @version      3.5.4
 // @description  Auction House Advanced Filter-Hstory-Watch Systenm
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
@@ -373,7 +373,7 @@ function renderWatchItem(item) {
         </div>
 
         <div style="display:flex;gap:6px;margin-top:6px;">
-          <button class="caf-open"
+          <button class="caf-watch-open"
             data-start="${item.__auctionStart || 0}"
             style="width:50%;padding:6px;">
             Open
@@ -425,7 +425,7 @@ function bindWatchListButtons() {
   const body = document.getElementById("caf-watch-body");
   if (!body) return;
 
-  body.querySelectorAll(".caf-open").forEach(btn => {
+  body.querySelectorAll(".caf-watch-open").forEach(btn => {
     btn.onclick = e => {
       e.preventDefault();
       e.stopPropagation();
