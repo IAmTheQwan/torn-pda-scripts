@@ -8,8 +8,8 @@
 // @match        https://www.torn.com/page.php*
 // @grant        GM_xmlhttpRequest
 // @connect      btrmmuuoofbonmuwrkzg.supabase.co
-// @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-caf-scripts/main/theqwan-caf-helper.meta.js
-// @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-caf-scripts/main/theqwan-caf-helper.user.js
+// @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/main/theqwan-caf-helper.meta.js
+// @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/main/theqwan-caf-helper.user.js
 // ==/UserScript==
 
 (function () {
