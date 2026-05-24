@@ -278,7 +278,6 @@ for (const start of starts) {
 try {
 const data = await fetchAuctionPage(start);
 
-```
   if (!data?.success || !Array.isArray(data.list)) continue;
 
   const freshItems = data.list;
@@ -303,7 +302,6 @@ const data = await fetchAuctionPage(start);
   saveWatchList(list);
 
 } catch {}
-```
 
 }
 
@@ -320,13 +318,12 @@ box = document.createElement("div");
 box.id = "caf-watchlist";
 box.style.marginTop = "10px";
 
-```
 const target =
   document.getElementById(RESULTS_ID) ||
   document.getElementById(PANEL_ID);
 
 target.after(box);
-```
+
 
 }
 
@@ -340,11 +337,9 @@ let closest = null;
 list.forEach(w => {
 const end = Number(w.item?.__endsAtMs || 0);
 
-```
 if (end && (!closest || end < closest)) {
   closest = end;
 }
-```
 
 });
 
@@ -355,7 +350,6 @@ Watch List ${collapsed ? "▶" : "▼"}
 | ${list.length} items
 | Closest: ${closest ? formatCountdown(closest) : "--"} </div>
 
-```
   <div id="caf-watch-body"
     style="display:${collapsed ? "none" : "block"};">
     ${
@@ -365,7 +359,6 @@ Watch List ${collapsed ? "▶" : "▼"}
     }
   </div>
 </div>
-```
 
 `;
 
@@ -373,14 +366,13 @@ document.getElementById("caf-watch-header").onclick = () => {
 const nowCollapsed =
 localStorage.getItem(WATCHLIST_COLLAPSED_KEY) !== "false";
 
-```
+
 localStorage.setItem(
   WATCHLIST_COLLAPSED_KEY,
   nowCollapsed ? "false" : "true"
 );
 
 renderWatchList();
-```
 
 };
 }
@@ -397,7 +389,7 @@ const q = itemQuality(item);
 return ` <div style="display:flex;gap:10px;padding:10px;border-top:1px solid #444;color:#fff;"> <div class="caf-img-wrap ${glow}">
 <img src="${item.image || item.itemImg || item.itemSrc || ""}"> </div>
 
-```
+
   <div style="flex:1;">
     <div style="color:#6eb6ff;font-weight:bold;">
       ${escapeHtml(name)}
@@ -443,7 +435,7 @@ return ` <div style="display:flex;gap:10px;padding:10px;border-top:1px solid #44
     </div>
   </div>
 </div>
-```
+
 
 `;
 }
@@ -1153,7 +1145,7 @@ box.querySelectorAll(".caf-unwatch").forEach(btn => {
           <div style="color:#aaa;">Color: ${glow ? glow.toUpperCase() : "None"}</div>
           <div>Bid: $${Number(bid || 0).toLocaleString()}</div>
 
-```
+
       <div style="color:#ffcf70;">
         Time left:
         <span class="caf-countdown" data-ends-at="${item.__endsAtMs || 0}">
