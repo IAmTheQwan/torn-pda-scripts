@@ -216,236 +216,231 @@ const WATCH_REFRESH_MS = 7000;
     }
   }
 
-  function loadWatchList() {
-try {
-return JSON.parse(localStorage.getItem(WATCHLIST_KEY) || "[]");
-} catch {
-return [];
-}
+function loadWatchList() {
+  try {
+    return JSON.parse(localStorage.getItem(WATCHLIST_KEY) || "[]");
+  } catch {
+    return [];
+  }
 }
 
 function saveWatchList(list) {
-localStorage.setItem(WATCHLIST_KEY, JSON.stringify(list));
+  localStorage.setItem(WATCHLIST_KEY, JSON.stringify(list));
 }
 
 function watchId(item) {
-return String(
-item.armouryID ||
-item.armoryID ||
-item.ID ||
-`${item.name}_${itemDamage(item)}_${itemAccuracy(item)}_${item.__auctionStart || 0}`
-);
+  return String(
+    item.armouryID ||
+    item.armoryID ||
+    item.ID ||
+    `${item.name}_${itemDamage(item)}_${itemAccuracy(item)}_${item.__auctionStart || 0}`
+  );
 }
 
 function isWatched(item) {
-const list = loadWatchList();
-return list.some(x => x.id === watchId(item));
+  return loadWatchList().some(x => x.id === watchId(item));
 }
 
 function toggleWatch(item) {
-const list = loadWatchList();
-const id = watchId(item);
+  const list = loadWatchList();
+  const id = watchId(item);
+  const existing = list.findIndex(x => x.id === id);
 
-const existing = list.findIndex(x => x.id === id);
+  if (existing >= 0) {
+    list.splice(existing, 1);
+  } else {
+    list.push({
+      id,
+      auctionStart: item.__auctionStart || 0,
+      item
+    });
+  }
 
-if (existing >= 0) {
-list.splice(existing, 1);
-} else {
-list.push({
-id,
-auctionStart: item.__auctionStart || 0,
-item
-});
-}
-
-saveWatchList(list);
-
-renderPage(currentPage || 1);
-renderWatchList();
+  saveWatchList(list);
+  renderWatchList();
 }
 
 function watchedPageStarts() {
-return [...new Set(
-loadWatchList().map(x => Number(x.auctionStart || 0))
-)];
+  return [...new Set(loadWatchList().map(x => Number(x.auctionStart || 0)))];
 }
 
 async function refreshWatchListPages() {
-const starts = watchedPageStarts();
-if (!starts.length) return;
+  const starts = watchedPageStarts();
+  if (!starts.length) return;
 
-for (const start of starts) {
-try {
-const data = await fetchAuctionPage(start);
+  for (const start of starts) {
+    try {
+      const data = await fetchAuctionPage(start);
+      if (!data?.success || !Array.isArray(data.list)) continue;
 
-  if (!data?.success || !Array.isArray(data.list)) continue;
+      const freshItems = data.list;
+      const list = loadWatchList();
 
-  const freshItems = data.list;
+      list.forEach(w => {
+        const fresh = freshItems.find(f => watchId(f) === w.id);
+        if (fresh) w.item = fresh;
+      });
 
-  allItems = allItems.map(existing => {
-    const fresh = freshItems.find(f =>
-      watchId(f) === watchId(existing)
-    );
+      saveWatchList(list);
+    } catch {}
+  }
 
-    return fresh || existing;
-  });
-
-  const list = loadWatchList();
-
-  list.forEach(w => {
-    const fresh = freshItems.find(f => watchId(f) === w.id);
-    if (fresh) {
-      w.item = fresh;
-    }
-  });
-
-  saveWatchList(list);
-
-} catch {}
-
-}
-
-applyGlobalFilter();
-
-const watchBox = document.getElementById("caf-watch-body");
-
-if (watchBox) {
-  watchBox.innerHTML = loadWatchList().length
-    ? loadWatchList().map(w => renderWatchItem(w.item)).join("")
-    : `<div style="padding:10px;color:#aaa;">No watched items.</div>`;
-}
+  updateWatchListOnly();
 }
 
 function renderWatchList() {
-let box = document.getElementById("caf-watchlist");
+  let box = document.getElementById("caf-watchlist");
 
-if (!box) {
-box = document.createElement("div");
-box.id = "caf-watchlist";
-box.style.marginTop = "10px";
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "caf-watchlist";
+    box.style.marginTop = "10px";
 
-const target =
-  document.getElementById(RESULTS_ID) ||
-  document.getElementById(PANEL_ID);
+    const target = document.getElementById(RESULTS_ID) || document.getElementById(PANEL_ID);
+    if (target) target.after(box);
+  }
 
-target.after(box);
+  const list = loadWatchList();
+  const collapsed = localStorage.getItem(WATCHLIST_COLLAPSED_KEY) !== "false";
 
+  let closest = null;
+  list.forEach(w => {
+    const end = Number(w.item?.__endsAtMs || 0);
+    if (end && (!closest || end < closest)) closest = end;
+  });
 
-}
+  box.innerHTML = `
+    <div style="background:#222;border:1px solid #555;border-radius:8px;overflow:hidden;">
+      <div id="caf-watch-header"
+        style="padding:8px;background:#333;color:#fff;font-weight:bold;cursor:pointer;">
+        Watch List ${collapsed ? "▶" : "▼"} | ${list.length} items | Closest:
+        <span class="caf-countdown" data-ends-at="${closest || 0}">
+          ${closest ? formatCountdown(closest) : "--"}
+        </span>
+      </div>
 
-const list = loadWatchList();
+      <div id="caf-watch-body" style="display:${collapsed ? "none" : "block"};">
+        ${
+          list.length
+            ? list.map(w => renderWatchItem(w.item)).join("")
+            : `<div style="padding:10px;color:#aaa;">No watched items.</div>`
+        }
+      </div>
+    </div>
+  `;
 
-const collapsed =
-localStorage.getItem(WATCHLIST_COLLAPSED_KEY) !== "false";
+  document.getElementById("caf-watch-header").onclick = () => {
+    localStorage.setItem(WATCHLIST_COLLAPSED_KEY, collapsed ? "false" : "true");
+    renderWatchList();
+  };
 
-let closest = null;
-
-list.forEach(w => {
-const end = Number(w.item?.__endsAtMs || 0);
-
-if (end && (!closest || end < closest)) {
-  closest = end;
-}
-
-});
-
-box.innerHTML = ` <div style="background:#222;border:1px solid #555;border-radius:8px;overflow:hidden;"> <div
-     id="caf-watch-header"
-     style="padding:8px;background:#333;color:#fff;font-weight:bold;cursor:pointer;">
-Watch List ${collapsed ? "▶" : "▼"}
-| ${list.length} items
-| Closest: ${closest ? formatCountdown(closest) : "--"} </div>
-
-  <div id="caf-watch-body"
-    style="display:${collapsed ? "none" : "block"};">
-    ${
-      list.length
-        ? list.map(w => renderWatchItem(w.item)).join("")
-        : `<div style="padding:10px;color:#aaa;">No watched items.</div>`
-    }
-  </div>
-</div>
-
-`;
-
-document.getElementById("caf-watch-header").onclick = () => {
-const nowCollapsed =
-localStorage.getItem(WATCHLIST_COLLAPSED_KEY) !== "false";
-
-
-localStorage.setItem(
-  WATCHLIST_COLLAPSED_KEY,
-  nowCollapsed ? "false" : "true"
-);
-
-renderWatchList();
-
-};
+  bindWatchListButtons();
 }
 
 function renderWatchItem(item) {
-const name = item.name || item.itemName || "Unknown";
-const dmg = itemDamage(item);
-const acc = itemAccuracy(item);
-const bid = itemBid(item);
-const bonusesText = itemBonusDetails(item).join(" / ") || "None";
-const glow = itemGlowClass(item);
-const q = itemQuality(item);
+  const name = item.name || item.itemName || "Unknown";
+  const dmg = itemDamage(item);
+  const acc = itemAccuracy(item);
+  const bid = itemBid(item);
+  const bonusesText = itemBonusDetails(item).join(" / ") || "None";
+  const glow = itemGlowClass(item);
+  const q = itemQuality(item);
 
-return ` <div style="display:flex;gap:10px;padding:10px;border-top:1px solid #444;color:#fff;"> <div class="caf-img-wrap ${glow}">
-<img src="${item.image || item.itemImg || item.itemSrc || ""}"> </div>
+  return `
+    <div style="display:flex;gap:10px;padding:10px;border-top:1px solid #444;color:#fff;">
+      <div class="caf-img-wrap ${glow}">
+        <img src="${item.image || item.itemImg || item.itemSrc || ""}">
+      </div>
 
+      <div style="flex:1;">
+        <div style="color:#6eb6ff;font-weight:bold;">${escapeHtml(name)}</div>
+        ${q ? `<div class="caf-quality">Quality: ${escapeHtml(q.value)}</div>` : ""}
+        <div style="color:#ccc;">Damage: ${dmg.toFixed(2)} | Accuracy: ${acc.toFixed(2)}</div>
+        <div style="color:#aaa;">Bonus: ${escapeHtml(bonusesText)}</div>
+        <div>Bid: $${Number(bid || 0).toLocaleString()}</div>
+        <div style="color:#ffcf70;">
+          Time left:
+          <span class="caf-countdown" data-ends-at="${item.__endsAtMs || 0}">
+            ${formatCountdown(item.__endsAtMs || Date.now())}
+          </span>
+        </div>
 
-  <div style="flex:1;">
-    <div style="color:#6eb6ff;font-weight:bold;">
-      ${escapeHtml(name)}
+        <div style="display:flex;gap:6px;margin-top:6px;">
+          <button class="caf-open"
+            data-start="${item.__auctionStart || 0}"
+            style="width:50%;padding:6px;">
+            Open
+          </button>
+
+          <button class="caf-unwatch"
+            data-watch-id="${watchId(item)}"
+            style="width:50%;padding:6px;background:#3a1d1d;color:#ff9b9b;">
+            Remove
+          </button>
+        </div>
+      </div>
     </div>
-
-    ${q ? `<div class="caf-quality">Quality: ${escapeHtml(q.value)}</div>` : ""}
-
-    <div style="color:#ccc;">
-      Damage: ${dmg.toFixed(2)} | Accuracy: ${acc.toFixed(2)}
-    </div>
-
-    <div style="color:#aaa;">
-      Bonus: ${escapeHtml(bonusesText)}
-    </div>
-
-    <div>
-      Bid: $${Number(bid || 0).toLocaleString()}
-    </div>
-
-    <div style="color:#ffcf70;">
-      Time left:
-      <span class="caf-countdown" data-ends-at="${item.__endsAtMs || 0}">
-        ${formatCountdown(item.__endsAtMs || Date.now())}
-      </span>
-    </div>
-
-    <div style="display:flex;gap:6px;margin-top:6px;">
-      <button class="caf-open"
-        data-start="${item.__auctionStart || 0}"
-        data-name="${escapeAttr(name.toLowerCase())}"
-        data-dmg="${dmg.toFixed(2)}"
-        data-acc="${acc.toFixed(2)}"
-        data-bid="${bid}"
-        style="width:50%;padding:6px;">
-        Open
-      </button>
-
-      <button class="caf-unwatch"
-        data-watch-id="${watchId(item)}"
-        style="width:50%;padding:6px;background:#3a1d1d;color:#ff9b9b;">
-        Remove
-      </button>
-    </div>
-  </div>
-</div>
-
-
-`;
+  `;
 }
 
+function updateWatchListOnly() {
+  const list = loadWatchList();
+  const header = document.getElementById("caf-watch-header");
+  const body = document.getElementById("caf-watch-body");
+
+  let closest = null;
+  list.forEach(w => {
+    const end = Number(w.item?.__endsAtMs || 0);
+    if (end && (!closest || end < closest)) closest = end;
+  });
+
+  if (header) {
+    const collapsed = localStorage.getItem(WATCHLIST_COLLAPSED_KEY) !== "false";
+
+    header.innerHTML = `
+      Watch List ${collapsed ? "▶" : "▼"} | ${list.length} items | Closest:
+      <span class="caf-countdown" data-ends-at="${closest || 0}">
+        ${closest ? formatCountdown(closest) : "--"}
+      </span>
+    `;
+  }
+
+  if (body) {
+    body.innerHTML = list.length
+      ? list.map(w => renderWatchItem(w.item)).join("")
+      : `<div style="padding:10px;color:#aaa;">No watched items.</div>`;
+
+    bindWatchListButtons();
+  }
+}
+
+function bindWatchListButtons() {
+  const body = document.getElementById("caf-watch-body");
+  if (!body) return;
+
+  body.querySelectorAll(".caf-open").forEach(btn => {
+    btn.onclick = e => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const start = btn.getAttribute("data-start") || "0";
+      window.location.href = `/amarket.php#itemtab=weapons&start=${start}`;
+      setTimeout(() => window.location.reload(), 150);
+    };
+  });
+
+  body.querySelectorAll(".caf-unwatch").forEach(btn => {
+    btn.onclick = e => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const id = btn.getAttribute("data-watch-id");
+      saveWatchList(loadWatchList().filter(x => x.id !== id));
+
+      renderWatchList();
+    };
+  });
+}
   function restoreFilters() {
     const f = loadFilters();
 
@@ -1121,7 +1116,6 @@ box.querySelectorAll(".caf-unwatch").forEach(btn => {
     saveWatchList(list);
 
 renderWatchList();
-renderPage(currentPage || 1);
     
   });
 });
