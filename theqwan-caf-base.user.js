@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base
 // @namespace    theqwan.torn.auction-filter.caf3
-// @version      3.4.7
+// @version      3.4.8
 // @description  Condensed Auction Filter with quality fetch, color filter, and slider-based quality/bonus ranges
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
@@ -28,6 +28,10 @@
   const TARGET_DMG_KEY = "joshAuctionTargetDmg";
   const TARGET_ACC_KEY = "joshAuctionTargetAcc";
   const TARGET_BID_KEY = "joshAuctionTargetBid";
+
+  const WATCHLIST_KEY = "joshAuctionWatchList";
+const WATCHLIST_COLLAPSED_KEY = "joshAuctionWatchCollapsed";
+const WATCH_REFRESH_MS = 7000;
 
   const PAGE_SIZE = 10;
 
@@ -211,6 +215,238 @@
       currentPage = 1;
     }
   }
+
+  function loadWatchList() {
+try {
+return JSON.parse(localStorage.getItem(WATCHLIST_KEY) || "[]");
+} catch {
+return [];
+}
+}
+
+function saveWatchList(list) {
+localStorage.setItem(WATCHLIST_KEY, JSON.stringify(list));
+}
+
+function watchId(item) {
+return String(
+item.armouryID ||
+item.armoryID ||
+item.ID ||
+`${item.name}_${itemDamage(item)}_${itemAccuracy(item)}_${item.__auctionStart || 0}`
+);
+}
+
+function isWatched(item) {
+const list = loadWatchList();
+return list.some(x => x.id === watchId(item));
+}
+
+function toggleWatch(item) {
+const list = loadWatchList();
+const id = watchId(item);
+
+const existing = list.findIndex(x => x.id === id);
+
+if (existing >= 0) {
+list.splice(existing, 1);
+} else {
+list.push({
+id,
+auctionStart: item.__auctionStart || 0,
+item
+});
+}
+
+saveWatchList(list);
+
+renderPage(currentPage || 1);
+renderWatchList();
+}
+
+function watchedPageStarts() {
+return [...new Set(
+loadWatchList().map(x => Number(x.auctionStart || 0))
+)];
+}
+
+async function refreshWatchListPages() {
+const starts = watchedPageStarts();
+if (!starts.length) return;
+
+for (const start of starts) {
+try {
+const data = await fetchAuctionPage(start);
+
+```
+  if (!data?.success || !Array.isArray(data.list)) continue;
+
+  const freshItems = data.list;
+
+  allItems = allItems.map(existing => {
+    const fresh = freshItems.find(f =>
+      watchId(f) === watchId(existing)
+    );
+
+    return fresh || existing;
+  });
+
+  const list = loadWatchList();
+
+  list.forEach(w => {
+    const fresh = freshItems.find(f => watchId(f) === w.id);
+    if (fresh) {
+      w.item = fresh;
+    }
+  });
+
+  saveWatchList(list);
+
+} catch {}
+```
+
+}
+
+applyGlobalFilter();
+renderPage(currentPage || 1);
+renderWatchList();
+}
+
+function renderWatchList() {
+let box = document.getElementById("caf-watchlist");
+
+if (!box) {
+box = document.createElement("div");
+box.id = "caf-watchlist";
+box.style.marginTop = "10px";
+
+```
+const target =
+  document.getElementById(RESULTS_ID) ||
+  document.getElementById(PANEL_ID);
+
+target.after(box);
+```
+
+}
+
+const list = loadWatchList();
+
+const collapsed =
+localStorage.getItem(WATCHLIST_COLLAPSED_KEY) !== "false";
+
+let closest = null;
+
+list.forEach(w => {
+const end = Number(w.item?.__endsAtMs || 0);
+
+```
+if (end && (!closest || end < closest)) {
+  closest = end;
+}
+```
+
+});
+
+box.innerHTML = ` <div style="background:#222;border:1px solid #555;border-radius:8px;overflow:hidden;"> <div
+     id="caf-watch-header"
+     style="padding:8px;background:#333;color:#fff;font-weight:bold;cursor:pointer;">
+Watch List ${collapsed ? "▶" : "▼"}
+| ${list.length} items
+| Closest: ${closest ? formatCountdown(closest) : "--"} </div>
+
+```
+  <div id="caf-watch-body"
+    style="display:${collapsed ? "none" : "block"};">
+    ${
+      list.length
+        ? list.map(w => renderWatchItem(w.item)).join("")
+        : `<div style="padding:10px;color:#aaa;">No watched items.</div>`
+    }
+  </div>
+</div>
+```
+
+`;
+
+document.getElementById("caf-watch-header").onclick = () => {
+const nowCollapsed =
+localStorage.getItem(WATCHLIST_COLLAPSED_KEY) !== "false";
+
+```
+localStorage.setItem(
+  WATCHLIST_COLLAPSED_KEY,
+  nowCollapsed ? "false" : "true"
+);
+
+renderWatchList();
+```
+
+};
+}
+
+function renderWatchItem(item) {
+const name = item.name || item.itemName || "Unknown";
+const dmg = itemDamage(item);
+const acc = itemAccuracy(item);
+const bid = itemBid(item);
+const bonusesText = itemBonusDetails(item).join(" / ") || "None";
+const glow = itemGlowClass(item);
+const q = itemQuality(item);
+
+return ` <div style="display:flex;gap:10px;padding:10px;border-top:1px solid #444;color:#fff;"> <div class="caf-img-wrap ${glow}">
+<img src="${item.image || item.itemImg || item.itemSrc || ""}"> </div>
+
+```
+  <div style="flex:1;">
+    <div style="color:#6eb6ff;font-weight:bold;">
+      ${escapeHtml(name)}
+    </div>
+
+    ${q ? `<div class="caf-quality">Quality: ${escapeHtml(q.value)}</div>` : ""}
+
+    <div style="color:#ccc;">
+      Damage: ${dmg.toFixed(2)} | Accuracy: ${acc.toFixed(2)}
+    </div>
+
+    <div style="color:#aaa;">
+      Bonus: ${escapeHtml(bonusesText)}
+    </div>
+
+    <div>
+      Bid: $${Number(bid || 0).toLocaleString()}
+    </div>
+
+    <div style="color:#ffcf70;">
+      Time left:
+      <span class="caf-countdown" data-ends-at="${item.__endsAtMs || 0}">
+        ${formatCountdown(item.__endsAtMs || Date.now())}
+      </span>
+    </div>
+
+    <div style="display:flex;gap:6px;margin-top:6px;">
+      <button class="caf-open"
+        data-start="${item.__auctionStart || 0}"
+        data-name="${escapeAttr(name.toLowerCase())}"
+        data-dmg="${dmg.toFixed(2)}"
+        data-acc="${acc.toFixed(2)}"
+        data-bid="${bid}"
+        style="width:50%;padding:6px;">
+        Open
+      </button>
+
+      <button class="caf-unwatch"
+        data-watch-id="${watchId(item)}"
+        style="width:50%;padding:6px;background:#3a1d1d;color:#ff9b9b;">
+        Remove
+      </button>
+    </div>
+  </div>
+</div>
+```
+
+`;
+}
 
   function restoreFilters() {
     const f = loadFilters();
@@ -837,10 +1073,36 @@
       saveState();
     };
 
-    box.querySelectorAll(".caf-open").forEach(btn => {
+    box.querySelectorAll(".caf-watch").forEach(btn => {
       btn.addEventListener("click", function (e) {
         e.preventDefault();
         e.stopPropagation();
+
+        const id = this.getAttribute("data-watch-id");
+
+        const item = filteredItems.find(x => watchId(x) === id);
+
+        if (item) {
+          toggleWatch(item);
+        }
+      });
+    });
+
+    box.querySelectorAll(".caf-unwatch").forEach(btn => {
+      btn.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const id = this.getAttribute("data-watch-id");
+
+        const list = loadWatchList().filter(x => x.id !== id);
+
+        saveWatchList(list);
+
+        renderPage(currentPage || 1);
+        renderWatchList();
+      });
+    });
 
         saveFilters();
         saveState();
@@ -885,26 +1147,38 @@
           <div style="color:#aaa;">Color: ${glow ? glow.toUpperCase() : "None"}</div>
           <div>Bid: $${Number(bid || 0).toLocaleString()}</div>
 
-          <div style="color:#ffcf70;">
-            Time left:
-            <span class="caf-countdown" data-ends-at="${item.__endsAtMs || 0}">
-              ${formatCountdown(item.__endsAtMs || Date.now())}
-            </span>
-          </div>
-
-          <button class="caf-open"
-            data-start="${sourceStart}"
-            data-name="${escapeAttr(name.toLowerCase())}"
-            data-dmg="${dmg.toFixed(2)}"
-            data-acc="${acc.toFixed(2)}"
-            data-bid="${bid}"
-            style="margin-top:6px;padding:6px 10px;width:100%;">
-            Open Original Page
-          </button>
-        </div>
+```
+      <div style="color:#ffcf70;">
+        Time left:
+        <span class="caf-countdown" data-ends-at="${item.__endsAtMs || 0}">
+          ${formatCountdown(item.__endsAtMs || Date.now())}
+        </span>
       </div>
-    `;
-  }
+
+      <button class="caf-open"
+        data-start="${sourceStart}"
+        data-name="${escapeAttr(name.toLowerCase())}"
+        data-dmg="${dmg.toFixed(2)}"
+        data-acc="${acc.toFixed(2)}"
+        data-bid="${bid}"
+        style="margin-top:6px;padding:6px 10px;width:100%;">
+        Open Original Page
+      </button>
+
+      <button class="caf-watch"
+        data-watch-id="${watchId(item)}"
+        style="margin-top:6px;padding:6px 10px;width:100%;
+        background:${isWatched(item) ? "#1f4d2e" : "#222"};
+        color:${isWatched(item) ? "#8cffb0" : "#fff"};">
+        ${isWatched(item) ? "Watching ✓" : "Watch"}
+      </button>
+
+    </div>
+  </div>
+`;
+
+}
+
 
   function restoreRenderedResultsIfAvailable() {
     restoreState();
@@ -1115,10 +1389,16 @@
   setTimeout(() => {
     injectPanel();
     restoreRenderedResultsIfAvailable();
+    renderWatchList();
 
     setTimeout(applyOriginalPageFilter, 800);
     setTimeout(applyOriginalPageFilter, 1600);
     setTimeout(applyOriginalPageFilter, 3000);
   }, 1500);
+
+  setInterval(() => {
+refreshWatchListPages();
+}, WATCH_REFRESH_MS);
+
 
 })();
