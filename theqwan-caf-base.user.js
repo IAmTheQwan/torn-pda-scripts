@@ -1063,65 +1063,69 @@ return ` <div style="display:flex;gap:10px;padding:10px;border-top:1px solid #44
       </div>
     `;
 
-    document.getElementById("caf-prev").onclick = () => {
-      renderPage(Math.max(1, currentPage - 1));
-      saveState();
-    };
+document.getElementById("caf-prev").onclick = () => {
+  renderPage(Math.max(1, currentPage - 1));
+  saveState();
+};
 
-    document.getElementById("caf-next").onclick = () => {
-      renderPage(Math.min(totalPages, currentPage + 1));
-      saveState();
-    };
+document.getElementById("caf-next").onclick = () => {
+  renderPage(Math.min(totalPages, currentPage + 1));
+  saveState();
+};
 
-    box.querySelectorAll(".caf-watch").forEach(btn => {
-      btn.addEventListener("click", function (e) {
-        e.preventDefault();
-        e.stopPropagation();
+box.querySelectorAll(".caf-open").forEach(btn => {
+  btn.addEventListener("click", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
 
-        const id = this.getAttribute("data-watch-id");
+    saveFilters();
+    saveState();
 
-        const item = filteredItems.find(x => watchId(x) === id);
+    localStorage.setItem(AUTO_FILTER_KEY, "1");
+    localStorage.setItem(TARGET_START_KEY, this.getAttribute("data-start") || "0");
+    localStorage.setItem(TARGET_NAME_KEY, this.getAttribute("data-name") || "");
+    localStorage.setItem(TARGET_DMG_KEY, this.getAttribute("data-dmg") || "");
+    localStorage.setItem(TARGET_ACC_KEY, this.getAttribute("data-acc") || "");
+    localStorage.setItem(TARGET_BID_KEY, this.getAttribute("data-bid") || "");
 
-        if (item) {
-          toggleWatch(item);
-        }
-      });
-    });
+    const start = this.getAttribute("data-start") || "0";
+    const url = `/amarket.php#itemtab=weapons&start=${start}`;
 
-    box.querySelectorAll(".caf-unwatch").forEach(btn => {
-      btn.addEventListener("click", function (e) {
-        e.preventDefault();
-        e.stopPropagation();
+    window.location.href = url;
+    setTimeout(() => window.location.reload(), 150);
+  });
+});
 
-        const id = this.getAttribute("data-watch-id");
+box.querySelectorAll(".caf-watch").forEach(btn => {
+  btn.addEventListener("click", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
 
-        const list = loadWatchList().filter(x => x.id !== id);
+    const id = this.getAttribute("data-watch-id");
 
-        saveWatchList(list);
+    const item = filteredItems.find(x => watchId(x) === id);
 
-        renderPage(currentPage || 1);
-        renderWatchList();
-      });
-    });
+    if (item) {
+      toggleWatch(item);
+    }
+  });
+});
 
-        saveFilters();
-        saveState();
+box.querySelectorAll(".caf-unwatch").forEach(btn => {
+  btn.addEventListener("click", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
 
-        localStorage.setItem(AUTO_FILTER_KEY, "1");
-        localStorage.setItem(TARGET_START_KEY, this.getAttribute("data-start") || "0");
-        localStorage.setItem(TARGET_NAME_KEY, this.getAttribute("data-name") || "");
-        localStorage.setItem(TARGET_DMG_KEY, this.getAttribute("data-dmg") || "");
-        localStorage.setItem(TARGET_ACC_KEY, this.getAttribute("data-acc") || "");
-        localStorage.setItem(TARGET_BID_KEY, this.getAttribute("data-bid") || "");
+    const id = this.getAttribute("data-watch-id");
 
-        const start = this.getAttribute("data-start") || "0";
-        const url = `/amarket.php#itemtab=weapons&start=${start}`;
+    const list = loadWatchList().filter(x => x.id !== id);
 
-        window.location.href = url;
-        setTimeout(() => window.location.reload(), 150);
-      });
-    });
-  }
+    saveWatchList(list);
+
+    renderPage(currentPage || 1);
+    renderWatchList();
+  });
+});
 
   function renderItem(item) {
     const bonusesText = itemBonusDetails(item).join(" / ") || "None";
