@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base
 // @namespace    theqwan.torn.auction-filter.caf3
-// @version      3.5.1
+// @version      3.5.2
 // @description  Auction House Advanced Filter-Hstory-Watch Systenm
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
@@ -306,8 +306,14 @@ const data = await fetchAuctionPage(start);
 }
 
 applyGlobalFilter();
-renderPage(currentPage || 1);
-renderWatchList();
+
+const watchBox = document.getElementById("caf-watch-body");
+
+if (watchBox) {
+  watchBox.innerHTML = loadWatchList().length
+    ? loadWatchList().map(w => renderWatchItem(w.item)).join("")
+    : `<div style="padding:10px;color:#aaa;">No watched items.</div>`;
+}
 }
 
 function renderWatchList() {
@@ -1114,8 +1120,9 @@ box.querySelectorAll(".caf-unwatch").forEach(btn => {
 
     saveWatchList(list);
 
-    renderPage(currentPage || 1);
-    renderWatchList();
+renderWatchList();
+renderPage(currentPage || 1);
+    
   });
 });
 
