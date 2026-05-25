@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF History Helper
 // @namespace    theqwan.torn.auction-history.caf35
-// @version      3.5.7
+// @version      3.5.8
 // @description  Historical comp pricing helper for TheQwan CAF Base
 // @author       TheQwan
 // @match        https://www.torn.com/amarket.php*
@@ -221,12 +221,19 @@
     return saleBonusIds(a).length >= 2;
   }
 
-  function saleBonusValues(a) {
-    if (!Array.isArray(a.bonus_values)) return [];
-    return a.bonus_values
-      .map(x => Number(x.bonus_value))
-      .filter(x => !Number.isNaN(x));
-  }
+  function saleBonusValues(a, targetIds = []) {
+  if (!Array.isArray(a.bonus_values)) return [];
+
+  const targets = new Set((targetIds || []).map(Number).filter(Boolean));
+
+  return a.bonus_values
+    .filter(x => {
+      if (!targets.size) return true;
+      return targets.has(Number(x.bonus_id));
+    })
+    .map(x => Number(x.bonus_value))
+    .filter(x => !Number.isNaN(x));
+}
 
   function parseCard(card) {
     const text = card.innerText || "";
@@ -323,6 +330,10 @@
 
     body.__forceDouble = forceDouble;
     body.__forcedBonusIds = forcedIds;
+    body.__targetBonusIds =
+  s.historyBonusMode === "any"
+    ? []
+    : (forcedIds.length ? forcedIds : data.bonuses.map(b => b.id).slice(0, 2));
     body.__visibleLimit = Number(s.count || 12);
     body.__manualBonusMin = s.bonusAuto ? null : Number(s.bonusMin ?? 0);
     body.__manualBonusMax = s.bonusAuto ? null : Number(s.bonusMax ?? 150);
@@ -461,7 +472,7 @@
 
     if (body.__manualBonusMin !== null || body.__manualBonusMax !== null) {
       result = result.filter(a => {
-        const values = saleBonusValues(a);
+        const values = saleBonusValues(a, body.__targetBonusIds || []);
 
         if (!values.length) {
           return Number(body.__manualBonusMin || 0) <= 0;
