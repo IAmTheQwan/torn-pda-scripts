@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base
 // @namespace    theqwan.torn.auction-filter.caf3
-// @version      3.5.5
+// @version      3.5.6
 // @description  Auction House Advanced Filter-Hstory-Watch Systenm
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
@@ -704,38 +704,37 @@ function bindWatchListButtons() {
     });
   }
 
-  function itemBonusDetails(item) {
-    const source = `${item.bonuses || ""} ${item.item_image_icons || ""} ${item.arialabel || ""}`;
-    const details = [];
+function itemBonusDetails(item) {
+  const source = `${item.bonuses || ""} ${item.item_image_icons || ""} ${item.arialabel || ""}`;
+  const details = [];
 
-    for (const bonus of itemBonuses(item)) {
-      const escaped = bonus.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      let percent = "";
+  for (const bonus of itemBonuses(item)) {
+    const escaped = bonus.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    let percent = "";
 
-      const htmlMatch = source.match(new RegExp(`<b>\\s*${escaped}\\s*<\\/b>\\s*<br\\s*\\/?>\\s*([^<"]+)`, "i"));
-      if (htmlMatch) {
-        const pct = htmlMatch[1].match(/(\\d+(?:\\.\\d+)?)%/);
-        if (pct) percent = `${pct[1]}%`;
-      }
+    const htmlMatch = source.match(
+      new RegExp(`<b>\\s*${escaped}\\s*<\\/b>\\s*<br\\s*\\/?>\\s*([^<"]+)`, "i")
+    );
 
-      if (!percent) {
-        const ariaMatch = source.match(new RegExp(`${escaped}:\\s*([^\\.]+)`, "i"));
-        if (ariaMatch) {
-          const pct = ariaMatch[1].match(/(\\d+(?:\\.\\d+)?)%/);
-          if (pct) percent = `${pct[1]}%`;
-        }
-      }
-
-      if (!percent) {
-        const looseMatch = source.match(new RegExp(`${escaped}[\\s\\S]{0,120}?(\\d+(?:\\.\\d+)?)%`, "i"));
-        if (looseMatch) percent = `${looseMatch[1]}%`;
-      }
-
-      details.push(percent ? `${bonus} ${percent}` : bonus);
+    if (htmlMatch) {
+      const pct = htmlMatch[1].match(/(\d+(?:\.\d+)?)%/);
+      if (pct) percent = `${pct[1]}%`;
     }
 
-    return details;
+    const ariaMatch = source.match(
+      new RegExp(`${escaped}:\\s*([^\\.\\n]+)`, "i")
+    );
+
+    if (!percent && ariaMatch) {
+      const pct = ariaMatch[1].match(/(\d+(?:\.\d+)?)%/);
+      if (pct) percent = `${pct[1]}%`;
+    }
+
+    details.push(percent ? `${bonus} ${percent}` : bonus);
   }
+
+  return details.slice(0, 2);
+}
 
   function itemBonusPercents(item) {
     return itemBonusDetails(item)
