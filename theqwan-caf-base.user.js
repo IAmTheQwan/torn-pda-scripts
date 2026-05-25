@@ -46,7 +46,7 @@ const WATCH_REFRESH_MS = 15000;
     "Bloodlust", "Burn", "Comeback", "Conserve", "Crusher", "Deadeye",
     "Deadly", "Demoralize", "Disarm", "Double Tap", "Double-edged", "Empower",
     "Eviscerate", "Execute", "Expose", "Finale", "Focus", "Frenzy",
-    "Fury", "Grace", "Hazardous", "Irradiate", "Lacerate", "Motivation",
+    "Fury", "Grace", "Homerun", "Hazardous", "Irradiate", "Lacerate", "Motivation",
     "Parry", "Penetrate", "Plunder", "Poison", "Powerful", "Proficience",
     "Quicken", "Rage", "Revitalize", "Slow", "Smash", "Specialist",
     "Spray", "Stun", "Sure Shot", "Throttle", "Toxin", "Weaken",
