@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base
 // @namespace    theqwan.torn.auction-filter.caf3
-// @version      3.5.6
+// @version      3.5.7
 // @description  Auction House Advanced Filter-Hstory-Watch Systenm
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
