@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF History Helper
 // @namespace    theqwan.torn.auction-history.caf35
-// @version      3.5.6
+// @version      3.5.7
 // @description  Historical comp pricing helper for TheQwan CAF Base
 // @author       TheQwan
 // @match        https://www.torn.com/amarket.php*
@@ -34,7 +34,30 @@
     "powerful": 68, "proficience": 14, "quicken": 88, "rage": 65,
     "revitalize": 41, "slow": 44, "smash": 104, "specialist": 71,
     "spray": 35, "stun": 58, "sure shot": 78, "throttle": 48,
-    "toxin": 103, "warlord": 81, "weaken": 46, "wind-up": 76, "wither": 42
+    "toxin": 103, "warlord": 81, "weaken": 46, "wind-up": 76, "wither": 42,
+    "blindfire": 33,
+"cripple": 45,
+"cupid": 47,
+"freeze": 38,
+"home run": 83,
+"immutable": 115,
+"impassable": 26,
+"impenetrable": 17,
+"imperviable": 22,
+"impregnable": 15,
+"insurmountable": 92,
+"invulnerable": 91,
+"irrepressible": 121,
+"kinetokinesis": 112,
+"paralyze": 59,
+"puncture": 66,
+"radiation protection": 90,
+"roshambo": 43,
+"shock": 120,
+"storage": 37,
+"stricken": 20,
+"suppress": 60,
+"smurf": 73
   };
 
   const BONUS_IDS_REVERSE = {};
@@ -235,7 +258,7 @@
     const cf = cafFilters();
 
     const body = {
-      limit: Math.max(Number(s.count || 12), 75),
+      limit: 100,
       offset: 0,
       sort_by: "timestamp",
       sort_order: "desc"
@@ -373,6 +396,53 @@
       });
     });
   }
+  
+  async function apiSearchDeep(body) {
+  const visibleLimit = body.__visibleLimit || settings().count || 12;
+  const pageLimit = 100;
+  const maxScanned = 1000;
+
+  let all = [];
+  let offset = 0;
+  let total = null;
+
+  while (offset < maxScanned) {
+    const pageBody = {
+      ...body,
+      limit: pageLimit,
+      offset
+    };
+
+    const result = await apiSearch(pageBody);
+    const auctions = result.auctions || [];
+
+    all = all.concat(auctions);
+
+    const filtered = applyHistoryPostFilters(all, {
+      ...body,
+      __visibleLimit: maxScanned
+    });
+
+    if (filtered.length >= visibleLimit) {
+      return {
+        ...result,
+        auctions: filtered.slice(0, visibleLimit)
+      };
+    }
+
+    total = result.total ?? total;
+
+    if (!auctions.length) break;
+    if (total !== null && offset + pageLimit >= total) break;
+
+    offset += pageLimit;
+  }
+
+  return {
+    auctions: applyHistoryPostFilters(all, body),
+    total: total ?? all.length
+  };
+}
 
   function applyHistoryPostFilters(auctions, body) {
     let result = auctions || [];
@@ -481,8 +551,8 @@
     btn.disabled = true;
 
     try {
-      const result = await apiSearch(body);
-      const auctions = applyHistoryPostFilters(result.auctions || [], body);
+      const result = await apiSearchDeep(body);
+       const auctions = result.auctions || [];
 
       const s = settings();
       const cf = cafFilters();
