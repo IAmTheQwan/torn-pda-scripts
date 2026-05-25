@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF History Helper
 // @namespace    theqwan.torn.auction-history.caf35
-// @version      3.5.6
+// @version      3.5.7
 // @description  Historical comp pricing helper for TheQwan CAF Base
 // @author       TheQwan
 // @match        https://www.torn.com/amarket.php*
