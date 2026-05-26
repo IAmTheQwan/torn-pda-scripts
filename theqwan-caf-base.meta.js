@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base
 // @namespace    theqwan.torn.auction-filter.caf3
-// @version      3.5.7
+// @version      3.5.8
 // @description  Condensed Auction Filter with quality fetch, color filter, and slider-based quality/bonus ranges
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
