@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base
 // @namespace    theqwan.torn.auction-filter.caf3
-// @version      3.5.8
+// @version      3.5.9
 // @description  Auction House Advanced Filter-Hstory-Watch Systenm
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
@@ -691,44 +691,69 @@ function bindWatchListButtons() {
   }
 
   function itemBonuses(item) {
-    const text = `${item.bonuses || ""} ${item.item_image_icons || ""} ${item.arialabel || ""}`.toLowerCase();
+  const text = `${item.bonuses || ""} ${item.item_image_icons || ""} ${item.arialabel || ""}`.toLowerCase();
 
-    return bonuses.filter(b => {
-      if (!b) return false;
+  return bonuses.filter(b => {
+    if (!b) return false;
 
-      const key = b.toLowerCase();
+    const aliases = b === "Homerun"
+      ? ["homerun", "home run"]
+      : [b.toLowerCase()];
+
+    return aliases.some(key => {
       const classKey = key.replace(/\s+/g, "-");
 
       return text.includes(`<b>${key}</b>`)
         || text.includes(`${key}:`)
         || text.includes(`bonus-attachment-${classKey}`);
     });
-  }
-
+  });
+}
 function itemBonusDetails(item) {
   const source = `${item.bonuses || ""} ${item.item_image_icons || ""} ${item.arialabel || ""}`;
   const details = [];
 
   for (const bonus of itemBonuses(item)) {
-    const escaped = bonus.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    const bonusAliases =
+      bonus === "Homerun"
+        ? ["Homerun", "Home Run"]
+        : [bonus];
+
     let percent = "";
 
-    const htmlMatch = source.match(
-      new RegExp(`<b>\\s*${escaped}\\s*<\\/b>\\s*<br\\s*\\/?>\\s*([^<"]+)`, "i")
-    );
+    for (const alias of bonusAliases) {
 
-    if (htmlMatch) {
-      const pct = htmlMatch[1].match(/(\d+(?:\.\d+)?)%/);
-      if (pct) percent = `${pct[1]}%`;
-    }
+      const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-    const ariaMatch = source.match(
-      new RegExp(`${escaped}:\\s*([^\\.\\n]+)`, "i")
-    );
+      const htmlMatch = source.match(
+        new RegExp(
+          `<b>\\s*${escaped}\\s*<\\/b>\\s*<br\\s*\\/?>\\s*([^<"]+)`,
+          "i"
+        )
+      );
 
-    if (!percent && ariaMatch) {
-      const pct = ariaMatch[1].match(/(\d+(?:\.\d+)?)%/);
-      if (pct) percent = `${pct[1]}%`;
+      if (htmlMatch) {
+        const pct = htmlMatch[1].match(/(\d+(?:\.\d+)?)%/);
+
+        if (pct) {
+          percent = `${pct[1]}%`;
+          break;
+        }
+      }
+
+      const ariaMatch = source.match(
+        new RegExp(`${escaped}:\\s*([^\\.\\n]+)`, "i")
+      );
+
+      if (ariaMatch) {
+        const pct = ariaMatch[1].match(/(\d+(?:\.\d+)?)%/);
+
+        if (pct) {
+          percent = `${pct[1]}%`;
+          break;
+        }
+      }
     }
 
     details.push(percent ? `${bonus} ${percent}` : bonus);
