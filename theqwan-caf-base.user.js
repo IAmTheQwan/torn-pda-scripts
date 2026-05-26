@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base
 // @namespace    theqwan.torn.auction-filter.caf3
-// @version      3.5.7
+// @version      3.5.8
 // @description  Auction House Advanced Filter-Hstory-Watch Systenm
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
@@ -22,6 +22,7 @@
   const CURRENT_PAGE_KEY = "joshCondensedAuctionCurrentPage";
   const QUALITY_CACHE_KEY = "joshAuctionQualityCache";
   const FILTER_COLLAPSED_KEY = "joshCaf3AdvancedCollapsedV344";
+const RESULTS_COLLAPSED_KEY = "joshAuctionResultsCollapsed";
 
   const TARGET_START_KEY = "joshAuctionTargetStart";
   const TARGET_NAME_KEY = "joshAuctionTargetName";
@@ -1051,21 +1052,42 @@ function itemBonusDetails(item) {
     const totalPages = Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE));
     const startIndex = (page - 1) * PAGE_SIZE;
     const pageItems = filteredItems.slice(startIndex, startIndex + PAGE_SIZE);
+    const resultsCollapsed = localStorage.getItem(RESULTS_COLLAPSED_KEY) === "true";
+box.innerHTML = `
+  <div style="margin-top:10px;background:#2b2b2b;border:1px solid #555;border-radius:8px;overflow:hidden;">
 
-    box.innerHTML = `
-      <div style="margin-top:10px;background:#2b2b2b;border:1px solid #555;border-radius:8px;overflow:hidden;">
-        <div style="padding:8px;font-weight:bold;background:#333;color:#fff;">
-          ${filteredItems.length} matching item(s) — Page ${page}/${totalPages}
-        </div>
+    <div id="caf-results-header"
+      style="padding:8px;font-weight:bold;background:#333;color:#fff;cursor:pointer;">
+      Filtered Results ${resultsCollapsed ? "▶" : "▼"} |
+      ${filteredItems.length} item(s) |
+      Page ${page}/${totalPages}
+    </div>
 
-        ${pageItems.map(renderItem).join("") || `<div style="padding:10px;color:#fff;">No matching items.</div>`}
+    <div id="caf-results-body"
+      style="display:${resultsCollapsed ? "none" : "block"};">
 
-        <div style="display:flex;gap:6px;padding:8px;background:#222;">
-          <button id="caf-prev" style="width:50%;padding:8px;" ${page <= 1 ? "disabled" : ""}>Prev</button>
-          <button id="caf-next" style="width:50%;padding:8px;" ${page >= totalPages ? "disabled" : ""}>Next</button>
-        </div>
+      ${pageItems.map(renderItem).join("") || `<div style="padding:10px;color:#fff;">No matching items.</div>`}
+
+      <div style="display:flex;gap:6px;padding:8px;background:#222;">
+        <button id="caf-prev" style="width:50%;padding:8px;" ${page <= 1 ? "disabled" : ""}>Prev</button>
+
+        <button id="caf-next" style="width:50%;padding:8px;" ${page >= totalPages ? "disabled" : ""}>Next</button>
       </div>
-    `;
+
+    </div>
+  </div>
+`;
+
+document.getElementById("caf-results-header").onclick = () => {
+  const collapsed = localStorage.getItem(RESULTS_COLLAPSED_KEY) === "true";
+
+  localStorage.setItem(
+    RESULTS_COLLAPSED_KEY,
+    collapsed ? "false" : "true"
+  );
+
+  renderPage(currentPage || 1);
+};
 
 document.getElementById("caf-prev").onclick = () => {
   renderPage(Math.max(1, currentPage - 1));
