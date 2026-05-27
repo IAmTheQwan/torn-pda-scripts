@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.0.4
+// @version      4.0.5
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -38,6 +38,9 @@ const RESULTS_COLLAPSED_KEY = "joshAuctionResultsCollapsed";
 
   const GLOBAL_WATCH_BAR_ID = "theqwan-global-watch-bar";
   const GLOBAL_WATCH_COLLAPSED_KEY = "theqwanGlobalWatchCollapsed";
+
+  const TARGET_ONLY_KEY = "joshAuctionTargetOnly";
+  const TARGET_ID_KEY = "joshAuctionTargetId";
 
   const PAGE_SIZE = 10;
 
@@ -395,6 +398,8 @@ function jumpToWatchedItem(item) {
   localStorage.setItem(TARGET_DMG_KEY, dmg.toFixed(2));
   localStorage.setItem(TARGET_ACC_KEY, acc.toFixed(2));
   localStorage.setItem(TARGET_BID_KEY, String(bid));
+  localStorage.setItem(TARGET_ONLY_KEY, "1");
+  localStorage.setItem(TARGET_ID_KEY, watchId(item));
 
   window.location.href = `/amarket.php#itemtab=weapons&start=${start}`;
 }
@@ -1467,74 +1472,102 @@ renderWatchList();
   }
 
   function applyOriginalPageFilter() {
-    if (localStorage.getItem(AUTO_FILTER_KEY) !== "1") return;
+  if (localStorage.getItem(AUTO_FILTER_KEY) !== "1") return;
 
-    const targetStart = localStorage.getItem(TARGET_START_KEY) || "0";
-    const currentStart = (location.hash.match(/start=(\d+)/) || [])[1] || "0";
+  const targetStart = localStorage.getItem(TARGET_START_KEY) || "0";
+  const currentStart = (location.hash.match(/start=(\d+)/) || [])[1] || "0";
 
-    if (targetStart !== currentStart) return;
+  if (targetStart !== currentStart) return;
 
-    const f = loadFilters();
-    const cards = getOriginalCards();
+  const f = loadFilters();
+  const cards = getOriginalCards();
 
-    const targetName = localStorage.getItem(TARGET_NAME_KEY) || "";
-    const targetDmg = Number(localStorage.getItem(TARGET_DMG_KEY) || 0);
-    const targetAcc = Number(localStorage.getItem(TARGET_ACC_KEY) || 0);
-    const targetBid = Number(localStorage.getItem(TARGET_BID_KEY) || 0);
+  const targetOnly = localStorage.getItem(TARGET_ONLY_KEY) === "1";
+  const targetName = localStorage.getItem(TARGET_NAME_KEY) || "";
+  const targetDmg = Number(localStorage.getItem(TARGET_DMG_KEY) || 0);
+  const targetAcc = Number(localStorage.getItem(TARGET_ACC_KEY) || 0);
+  const targetBid = Number(localStorage.getItem(TARGET_BID_KEY) || 0);
 
-    let shown = 0;
-    let highlighted = false;
+  let shown = 0;
+  let highlighted = false;
 
-    for (const card of cards) {
-      const d = originalCardData(card);
+  for (const card of cards) {
+    const d = originalCardData(card);
 
-      const ok =
-        (!f.name || d.label.includes(String(f.name).toLowerCase())) &&
-        (!f.minDmg || d.damage >= Number(f.minDmg)) &&
-        (!f.minAcc || d.accuracy >= Number(f.minAcc)) &&
-        (!f.maxBid || d.bid <= Number(f.maxBid)) &&
-        (!f.bonus1 || d.bonuses.includes(f.bonus1)) &&
-        (!f.bonus2 || d.bonuses.includes(f.bonus2)) &&
-        (!f.onlyDouble || d.bonuses.length >= 2) &&
-        originalMatchesColor(d, f.color) &&
-        originalMatchesBonusRange(d, f.bonusMin, f.bonusMax);
+    const normalFilterOk =
+      (!f.name || d.label.includes(String(f.name).toLowerCase())) &&
+      (!f.minDmg || d.damage >= Number(f.minDmg)) &&
+      (!f.minAcc || d.accuracy >= Number(f.minAcc)) &&
+      (!f.maxBid || d.bid <= Number(f.maxBid)) &&
+      (!f.bonus1 || d.bonuses.includes(f.bonus1)) &&
+      (!f.bonus2 || d.bonuses.includes(f.bonus2)) &&
+      (!f.onlyDouble || d.bonuses.length >= 2) &&
+      originalMatchesColor(d, f.color) &&
+      originalMatchesBonusRange(d, f.bonusMin, f.bonusMax);
 
-      card.style.display = ok ? "" : "none";
-      if (ok) shown++;
+    const isTarget =
+      targetName &&
+      d.label.includes(targetName) &&
+      Math.abs(d.damage - targetDmg) < 0.03 &&
+      Math.abs(d.accuracy - targetAcc) < 0.03 &&
+      (!targetBid || d.bid === targetBid);
 
-      const isTarget =
-        targetName &&
-        d.label.includes(targetName) &&
-        Math.abs(d.damage - targetDmg) < 0.03 &&
-        Math.abs(d.accuracy - targetAcc) < 0.03 &&
-        (!targetBid || d.bid === targetBid);
+    const ok = targetOnly ? isTarget : normalFilterOk;
 
-      if (isTarget) {
-        card.style.display = "";
-        card.style.outline = "4px solid #00ff6a";
-        card.style.boxShadow = "0 0 18px #00ff6a";
-        highlighted = true;
+    card.style.display = ok ? "" : "none";
+    if (ok) shown++;
 
-        setTimeout(() => {
-          card.scrollIntoView({ behavior: "smooth", block: "center" });
-        }, 400);
-      }
+    if (isTarget) {
+      card.style.display = "";
+      card.style.outline = "4px solid #00ff6a";
+      card.style.boxShadow = "0 0 18px #00ff6a";
+      highlighted = true;
+
+      setTimeout(() => {
+        card.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 400);
     }
+  }
 
-    let note = document.getElementById("josh-original-page-filter-note");
+  let note = document.getElementById("josh-original-page-filter-note");
 
-    if (!note) {
-      note = document.createElement("div");
-      note.id = "josh-original-page-filter-note";
-      note.style.cssText = "margin:8px 0;padding:8px;background:#222;color:#fff;border:1px solid #555;border-radius:6px;font-size:12px;";
-      const target = document.querySelector("#auction-house-tabs") || document.body;
-      target.parentElement.insertBefore(note, target);
-    }
+  if (!note) {
+    note = document.createElement("div");
+    note.id = "josh-original-page-filter-note";
+    note.style.cssText = "margin:8px 0;padding:8px;background:#222;color:#fff;border:1px solid #555;border-radius:6px;font-size:12px;";
+    const target = document.querySelector("#auction-house-tabs") || document.body;
+    target.parentElement.insertBefore(note, target);
+  }
 
-    note.textContent = highlighted
+  note.textContent = targetOnly
+    ? highlighted
+      ? `Target item isolated and highlighted.`
+      : `Target item filter active, but target was not found on this page.`
+    : highlighted
       ? `Original page filtered and target highlighted: showing ${shown} of ${cards.length}`
       : `Original page filtered: showing ${shown} of ${cards.length}`;
-  }
+}
+
+  function startTargetSearchLoop() {
+
+  let tries = 0;
+
+  const timer = setInterval(() => {
+
+    tries++;
+
+    applyOriginalPageFilter();
+
+    const found = [...getOriginalCards()].some(card => {
+      return card.style.outline.includes("00ff6a");
+    });
+
+    if (found || tries >= 25) {
+      clearInterval(timer);
+    }
+
+  }, 700);
+}
 
   function clearAll() {
     localStorage.removeItem(STORAGE_KEY);
@@ -1609,9 +1642,7 @@ setTimeout(() => {
   renderWatchList();
   renderGlobalWatchBar();
 
-  setTimeout(applyOriginalPageFilter, 800);
-  setTimeout(applyOriginalPageFilter, 1600);
-  setTimeout(applyOriginalPageFilter, 3000);
+  startTargetSearchLoop();
 }, 1500);
 
 setInterval(async () => {
