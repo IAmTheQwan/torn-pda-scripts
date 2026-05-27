@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.1.0.2
+// @version      4.1.0.3
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -779,7 +779,7 @@ body.querySelectorAll(".caf-open").forEach(btn => {
         historyBox.style.display === "none" ? "block" : "none";
     }
 
-    await cafHistoryRun(watched.item);
+    await cafHistoryRun(watched.item, body);
   };
 });
 
@@ -2368,15 +2368,26 @@ if (row?.item) {
   renderGlobalWatchBar();
 }
 
-async function cafHistoryRun(item) {
+async function cafHistoryRun(item, scope = document) {
   const id = watchId(item);
-  const btn = document.querySelector(`.caf-history[data-watch-id="${CSS.escape(id)}"]`);
-  const box = document.querySelector(`.caf-history-box[data-watch-id="${CSS.escape(id)}"]`);
 
-  if (!btn || !box) return;
+  const btn =
+    scope.querySelector(`.caf-history[data-watch-id="${CSS.escape(id)}"]`) ||
+    scope.querySelector(`.caf-watch-history[data-watch-id="${CSS.escape(id)}"]`) ||
+    document.querySelector(`.caf-history[data-watch-id="${CSS.escape(id)}"]`) ||
+    document.querySelector(`.caf-watch-history[data-watch-id="${CSS.escape(id)}"]`);
 
-  btn.textContent = "Checking...";
-  btn.disabled = true;
+  const box =
+    scope.querySelector(`.caf-history-box[data-watch-id="${CSS.escape(id)}"]`) ||
+    document.querySelector(`.caf-history-box[data-watch-id="${CSS.escape(id)}"]`);
+
+  if (!box) return;
+
+  if (btn) {
+    btn.textContent = "Checking...";
+    btn.disabled = true;
+  }
+
   box.innerHTML = `<span class="caf35-muted">Checking history...</span>`;
 
   try {
@@ -2387,8 +2398,10 @@ async function cafHistoryRun(item) {
     box.innerHTML = `<span class="caf35-high">History error: ${escapeHtml(e.message)}</span>`;
   }
 
-  btn.textContent = "History";
-  btn.disabled = false;
+  if (btn) {
+    btn.textContent = "History";
+    btn.disabled = false;
+  }
 }
 
   function clearAll() {
