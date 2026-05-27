@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.0.6
+// @version      4.0.7
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -34,7 +34,7 @@ const RESULTS_COLLAPSED_KEY = "joshAuctionResultsCollapsed";
 
   const WATCHLIST_KEY = "joshAuctionWatchList";
   const WATCHLIST_COLLAPSED_KEY = "joshAuctionWatchCollapsed";
-  const WATCH_REFRESH_MS = 15000;
+  const WATCH_REFRESH_MS = 5000;
 
   const GLOBAL_WATCH_BAR_ID = "theqwan-global-watch-bar";
   const GLOBAL_WATCH_COLLAPSED_KEY = "theqwanGlobalWatchCollapsed";
@@ -276,6 +276,9 @@ function watchedPageStarts() {
 }
 
 function renderGlobalWatchBar() {
+
+  markExpiredWatchedItems();
+  
   let bar = document.getElementById(GLOBAL_WATCH_BAR_ID);
 
   if (!bar) {
@@ -302,10 +305,11 @@ function renderGlobalWatchBar() {
   const collapsed = localStorage.getItem(GLOBAL_WATCH_COLLAPSED_KEY) === "true";
 
   const closest = list
-    .map(w => w.item)
-    .filter(Boolean)
-    .sort((a, b) => Number(a.__endsAtMs || 0) - Number(b.__endsAtMs || 0))[0];
-
+  .map(w => w.item)
+  .filter(Boolean)
+  .filter(item => !isSoldItem(item))
+  .sort((a, b) => Number(a.__endsAtMs || 0) - Number(b.__endsAtMs || 0))[0];
+  
   bar.innerHTML = `
     <div id="theqwan-global-watch-header"
       style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 7px;background:#252525;cursor:pointer;">
@@ -377,9 +381,17 @@ function renderGlobalWatchIcon(item) {
         <img src="${item.image || item.itemImg || item.itemSrc || ""}" style="width:28px;height:20px;">
       </div>
         <div style="font-size:8px;color:#ffcf70;text-align:center;margin-top:1px;">
-          <span class="caf-countdown" data-ends-at="${item.__endsAtMs || 0}">
-            ${formatCountdown(item.__endsAtMs || Date.now())}
-          </span>
+        ${
+          isSoldItem(item)
+            ? `<span style="color:#ff6b6b;font-weight:bold;">
+                SOLD $${Number(item.__soldPrice || itemBid(item) || 0).toLocaleString()}
+              </span>`
+            : `
+              <span class="caf-countdown" data-ends-at="${item.__endsAtMs || 0}">
+                ${formatCountdown(item.__endsAtMs || Date.now())}
+              </span>
+            `
+        }
         </div>
     </button>
   `;
@@ -401,9 +413,9 @@ function jumpToWatchedItem(item) {
   localStorage.setItem(TARGET_ONLY_KEY, "1");
   localStorage.setItem(TARGET_ID_KEY, watchId(item));
 
-  const url = `https://www.torn.com/amarket.php#itemtab=weapons&start=${start}`;
+  localStorage.setItem("joshAuctionPendingJump", "1");
 
-  window.location.assign(url);
+  window.location.href = "https://www.torn.com/amarket.php";
 }
 
 function dealOutline(deal) {
@@ -1569,6 +1581,60 @@ renderWatchList();
     }
 
   }, 700);
+}
+
+  function completePendingAuctionJump() {
+  if (localStorage.getItem("joshAuctionPendingJump") !== "1") return;
+  if (!location.pathname.includes("amarket.php")) return;
+
+  const start = localStorage.getItem(TARGET_START_KEY) || "0";
+
+  localStorage.removeItem("joshAuctionPendingJump");
+
+setTimeout(() => {
+
+  const targetUrl =
+    `https://www.torn.com/amarket.php#/p=shop&type=weapon&start=${start}`;
+
+  window.location.href = targetUrl;
+
+  setTimeout(() => {
+    startTargetSearchLoop();
+  }, 1800);
+
+}, 800);
+}
+
+  function isSoldItem(item) {
+  return !!item.__sold || (
+    Number(item.__endsAtMs || 0) > 0 &&
+    Number(item.__endsAtMs || 0) <= Date.now()
+  );
+}
+
+function markExpiredWatchedItems() {
+  const list = loadWatchList();
+  let changed = false;
+
+  list.forEach(w => {
+    const item = w.item;
+    if (!item || item.__sold) return;
+
+    const end = Number(item.__endsAtMs || 0);
+
+    if (end && end <= Date.now()) {
+      item.__sold = true;
+      item.__soldPrice = itemBid(item);
+      item.__soldAt = Date.now();
+      changed = true;
+    }
+  });
+
+  if (changed) {
+    saveWatchList(list);
+  }
+
+  return changed;
 }
 
   function clearAll() {
