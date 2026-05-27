@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.0.7
+// @version      4.0.7.1
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -1522,9 +1522,8 @@ renderWatchList();
     const isTarget =
       targetName &&
       d.label.includes(targetName) &&
-      Math.abs(d.damage - targetDmg) < 0.03 &&
-      Math.abs(d.accuracy - targetAcc) < 0.03 &&
-      (!targetBid || d.bid === targetBid);
+      Math.abs(d.damage - targetDmg) < 0.10 &&
+      Math.abs(d.accuracy - targetAcc) < 0.10;
 
     const ok = targetOnly ? isTarget : normalFilterOk;
 
