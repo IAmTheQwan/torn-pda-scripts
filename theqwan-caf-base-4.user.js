@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.0.7.8
+// @version      4.0.8
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -321,7 +321,7 @@ function renderGlobalWatchBar() {
         <span style="flex:1;text-align:center;color:#ffcf70;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
           ${
             closest
-              ? `${escapeHtml(closest.name || closest.itemName || "Item")} | Bid $${Number(itemBid(closest) || 0).toLocaleString()} | <span class="caf-countdown" data-ends-at="${closest.__endsAtMs || 0}">${formatCountdown(closest.__endsAtMs || Date.now())}</span>`
+              ? `${escapeHtml(closest.name || closest.itemName || "Item")} | Bid $${Number(itemBid(closest) || 0).toLocaleString()} | <span class="caf-countdown" data-ends-at="${closest.__endsAtMs || 0}">${formatCountdownShort(closest.__endsAtMs || Date.now())}</span>`
               : "No watched items"
           }
         </span>
@@ -392,7 +392,7 @@ function renderGlobalWatchIcon(item) {
               </span>`
             : `
               <span class="caf-countdown" data-ends-at="${item.__endsAtMs || 0}">
-                ${formatCountdown(item.__endsAtMs || Date.now())}
+                ${formatCountdownShort(item.__endsAtMs || Date.now())}
               </span>
             `
         }
@@ -1327,12 +1327,46 @@ function itemBonusDetails(item) {
     return parts.join(" ");
   }
 
-  setInterval(() => {
-    document.querySelectorAll(".caf-countdown").forEach(el => {
+  function formatCountdownShort(endMs) {
+  let diff = Math.max(0, Math.floor((endMs - Date.now()) / 1000));
+
+  const d = Math.floor(diff / 86400);
+  diff %= 86400;
+
+  const h = Math.floor(diff / 3600);
+  diff %= 3600;
+
+  const m = Math.floor(diff / 60);
+  const s = diff % 60;
+
+  if (d) return `${d}d ${h}h`;
+  if (h) return `${h}h ${m}m`;
+  return `${m}m ${s}s`;
+}
+
+setInterval(() => {
+
+  // floating global watch bar
+  document.querySelectorAll("#theqwan-global-watch-bar .caf-countdown")
+    .forEach(el => {
       const endMs = Number(el.getAttribute("data-ends-at") || 0);
-      if (endMs) el.textContent = formatCountdown(endMs);
+
+      if (endMs) {
+        el.textContent = formatCountdownShort(endMs);
+      }
     });
-  }, 1000);
+
+  // everything else
+  document.querySelectorAll(":not(#theqwan-global-watch-bar) .caf-countdown")
+    .forEach(el => {
+      const endMs = Number(el.getAttribute("data-ends-at") || 0);
+
+      if (endMs) {
+        el.textContent = formatCountdown(endMs);
+      }
+    });
+
+}, 1000);
 
   function applyGlobalFilter() {
     const f = getFilters();
