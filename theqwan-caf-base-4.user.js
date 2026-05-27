@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.0.8.6
+// @version      4.0.8.7
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -667,6 +667,7 @@ function renderWatchItem(item) {
 
       <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">
           <button class="caf-open"
+            data-watch-id="${watchId(item)}"
             data-start="${item.__auctionStart || 0}"
             data-name="${escapeAttr(name.toLowerCase())}"
             data-dmg="${dmg.toFixed(2)}"
@@ -722,16 +723,20 @@ function bindWatchListButtons() {
   const body = document.getElementById("caf-watch-body");
   if (!body) return;
 
-  body.querySelectorAll(".caf-open").forEach(btn => {
-    btn.onclick = e => {
-      e.preventDefault();
-      e.stopPropagation();
+body.querySelectorAll(".caf-open").forEach(btn => {
+  btn.onclick = async e => {
+    e.preventDefault();
+    e.stopPropagation();
 
-      const start = btn.getAttribute("data-start") || "0";
-      window.location.href = `/amarket.php#itemtab=weapons&start=${start}`;
-      setTimeout(() => window.location.reload(), 150);
-    };
-  });
+    const id = btn.getAttribute("data-watch-id");
+
+    const watched = loadWatchList().find(x => x.id === id);
+
+    if (!watched?.item) return;
+
+    await jumpToWatchedItem(watched.item);
+  };
+});
 
   body.querySelectorAll(".caf-unwatch").forEach(btn => {
     btn.onclick = e => {
@@ -1440,25 +1445,26 @@ document.getElementById("caf-next").onclick = () => {
 };
 
 box.querySelectorAll(".caf-open").forEach(btn => {
-  btn.addEventListener("click", function (e) {
+  btn.addEventListener("click", async function (e) {
     e.preventDefault();
     e.stopPropagation();
 
     saveFilters();
     saveState();
 
-    localStorage.setItem(AUTO_FILTER_KEY, "1");
-    localStorage.setItem(TARGET_START_KEY, this.getAttribute("data-start") || "0");
-    localStorage.setItem(TARGET_NAME_KEY, this.getAttribute("data-name") || "");
-    localStorage.setItem(TARGET_DMG_KEY, this.getAttribute("data-dmg") || "");
-    localStorage.setItem(TARGET_ACC_KEY, this.getAttribute("data-acc") || "");
-    localStorage.setItem(TARGET_BID_KEY, this.getAttribute("data-bid") || "");
+    const id = this.getAttribute("data-watch-id");
 
-    const start = this.getAttribute("data-start") || "0";
-    const url = `/amarket.php#itemtab=weapons&start=${start}`;
+    const item =
+      filteredItems.find(x => watchId(x) === id) ||
+      filteredItems.find(x =>
+        String(itemDamage(x).toFixed(2)) === this.getAttribute("data-dmg") &&
+        String(itemAccuracy(x).toFixed(2)) === this.getAttribute("data-acc") &&
+        String(itemBid(x)) === this.getAttribute("data-bid")
+      );
 
-    window.location.href = url;
-    setTimeout(() => window.location.reload(), 150);
+    if (!item) return;
+
+    await jumpToWatchedItem(item);
   });
 });
 
@@ -1528,6 +1534,7 @@ renderWatchList();
       </div>
 
       <button class="caf-open"
+        data-watch-id="${watchId(item)}"
         data-start="${sourceStart}"
         data-name="${escapeAttr(name.toLowerCase())}"
         data-dmg="${dmg.toFixed(2)}"
