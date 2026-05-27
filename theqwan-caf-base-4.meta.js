@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.0.7
+// @version      4.0.7.1
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
