@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.0.8.2
+// @version      4.0.8.3
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwanTT [3485263]
 // @match        https://www.torn.com/*
@@ -420,6 +420,7 @@ async function jumpToWatchedItem(item) {
     saveWatchList(list);
   }
 
+  localStorage.removeItem("joshAuctionTargetScrolled");
   localStorage.setItem(AUTO_FILTER_KEY, "1");
   localStorage.setItem(TARGET_START_KEY, String(start));
   localStorage.setItem(TARGET_NAME_KEY, name.toLowerCase());
@@ -1691,9 +1692,13 @@ const isTarget = idMatch || statMatch;
       card.style.boxShadow = "0 0 18px #00ff6a";
       highlighted = true;
 
-      setTimeout(() => {
-        card.scrollIntoView({ behavior: "smooth", block: "center" });
-      }, 400);
+      if (localStorage.getItem("joshAuctionTargetScrolled") !== "1") {
+        localStorage.setItem("joshAuctionTargetScrolled", "1");
+      
+        setTimeout(() => {
+          card.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 400);
+      }
     }
   }
 
