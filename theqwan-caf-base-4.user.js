@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.0.7.1
+// @version      4.0.7.2
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -1442,24 +1442,32 @@ renderWatchList();
     return [...new Set(wrappers)];
   }
 
-  function originalCardData(card) {
-    const ariaEl = card.matches("[aria-label]")
-      ? card
-      : card.querySelector("[aria-label*='Damage:']");
+function originalCardData(card) {
+  const ariaEl = card.matches("[aria-label]")
+    ? card
+    : card.querySelector("[aria-label*='Damage:']");
 
-    const rawLabel = ariaEl?.getAttribute("aria-label") || card.innerText || "";
-    const label = rawLabel.toLowerCase();
+  const rawLabel = ariaEl?.getAttribute("aria-label") || card.innerText || "";
+  const label = rawLabel.toLowerCase();
+  const html = card.outerHTML || "";
 
-    return {
-      label,
-      damage: Number((rawLabel.match(/Damage:\s*([\d.]+)/i) || [])[1] || 0),
-      accuracy: Number((rawLabel.match(/Accuracy:\s*([\d.]+)/i) || [])[1] || 0),
-      bid: itemBid({ topbid: rawLabel }),
-      bonuses: bonuses.filter(b => b && label.includes(`${b.toLowerCase()}:`)),
-      bonusPercents: [...rawLabel.matchAll(/(\d+(?:\.\d+)?)%/g)].map(x => Number(x[1])),
-      color: originalCardGlow(card)
-    };
-  }
+  const idMatch =
+    html.match(/armou?r?yID["'=:\s]+(\d+)/i) ||
+    html.match(/data-(?:armou?r?y|item|auction)-id=["']?(\d+)/i) ||
+    html.match(/ID["'=:\s]+(\d+)/i);
+
+  return {
+    label,
+    html,
+    possibleId: idMatch ? String(idMatch[1]) : "",
+    damage: Number((rawLabel.match(/Damage:\s*([\d.]+)/i) || [])[1] || 0),
+    accuracy: Number((rawLabel.match(/Accuracy:\s*([\d.]+)/i) || [])[1] || 0),
+    bid: itemBid({ topbid: rawLabel }),
+    bonuses: bonuses.filter(b => b && label.includes(`${b.toLowerCase()}:`)),
+    bonusPercents: [...rawLabel.matchAll(/(\d+(?:\.\d+)?)%/g)].map(x => Number(x[1])),
+    color: originalCardGlow(card)
+  };
+}
 
   function originalCardGlow(card) {
     const html = card.outerHTML.toLowerCase();
@@ -1501,6 +1509,7 @@ renderWatchList();
   const targetDmg = Number(localStorage.getItem(TARGET_DMG_KEY) || 0);
   const targetAcc = Number(localStorage.getItem(TARGET_ACC_KEY) || 0);
   const targetBid = Number(localStorage.getItem(TARGET_BID_KEY) || 0);
+  const targetId = localStorage.getItem(TARGET_ID_KEY) || "";
 
   let shown = 0;
   let highlighted = false;
@@ -1519,11 +1528,20 @@ renderWatchList();
       originalMatchesColor(d, f.color) &&
       originalMatchesBonusRange(d, f.bonusMin, f.bonusMax);
 
-    const isTarget =
-      targetName &&
-      d.label.includes(targetName) &&
-      Math.abs(d.damage - targetDmg) < 0.10 &&
-      Math.abs(d.accuracy - targetAcc) < 0.10;
+    const idMatch =
+  targetId &&
+  (
+    d.possibleId === targetId ||
+    d.html.includes(targetId)
+  );
+
+const statMatch =
+  targetName &&
+  d.label.includes(targetName) &&
+  Math.abs(d.damage - targetDmg) < 0.15 &&
+  Math.abs(d.accuracy - targetAcc) < 0.15;
+
+const isTarget = idMatch || statMatch;
 
     const ok = targetOnly ? isTarget : normalFilterOk;
 
@@ -1703,11 +1721,15 @@ function markExpiredWatchedItems() {
 
 renderGlobalWatchBar();
 
+renderGlobalWatchBar();
+completePendingAuctionJump();
+
 setTimeout(() => {
   injectPanel();
   restoreRenderedResultsIfAvailable();
   renderWatchList();
   renderGlobalWatchBar();
+  completePendingAuctionJump();
 
   startTargetSearchLoop();
 }, 1500);
