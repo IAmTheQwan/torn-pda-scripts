@@ -3,7 +3,7 @@
 // @namespace    theqwan.torn.auction-filter.caf4
 // @version      4.0.8.3
 // @description  Global CAF watch banner with auction filter/history/watch system
-// @author       TheQwanTT [3485263]
+// @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
 // @match        https://www.torn.com/amarket.php*
 // @match        https://www.torn.com/page.php*
