@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.1.0.4
+// @version      4.1.0.6
 // @description  Global CAF watch banner with auction filter/history/watch system
-// @author       TheQwantt [3485263]
+// @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
 // @match        https://www.torn.com/amarket.php*
 // @match        https://www.torn.com/page.php*
@@ -2171,7 +2171,7 @@ function cafHistoryApiSearch(body) {
         "Authorization": "Bearer " + CAF_HISTORY_SUPABASE_ANON_KEY
       },
       data: JSON.stringify(cafHistoryCleanBody(body)),
-      timeout: 15000,
+      timeout: 30000,
       onload: res => {
         try {
           const data = JSON.parse(res.responseText);
@@ -2180,8 +2180,13 @@ function cafHistoryApiSearch(body) {
             cafHistorySetCache(key, data);
             resolve(data);
           } else {
-            reject(new Error(data.error || "API error"));
-          }
+  const message =
+    typeof data === "string"
+      ? data
+      : data?.error || data?.message || "API error";
+
+  reject(new Error(message));
+}
         } catch {
           reject(new Error("Parse error"));
         }
@@ -2284,9 +2289,9 @@ function cafHistoryDealLabel(state) {
   return ["caf35-muted", "?"];
 }
 
-function cafHistoryRenderResult(item, auctions) {
+function cafHistoryRenderResult(item, auctions, targetBox = null) {
   const id = watchId(item);
-  const box = document.querySelector(`.caf-history-box[data-watch-id="${CSS.escape(id)}"]`);
+  const box = targetBox || document.querySelector(`.caf-history-box[data-watch-id="${CSS.escape(id)}"]`);
   if (!box) return;
 
   const prices = auctions.map(a => Number(a.price || 0)).filter(Boolean);
@@ -2393,7 +2398,7 @@ async function cafHistoryRun(item, scope = document) {
   try {
     const body = cafHistoryBuildBody(item);
     const result = await cafHistoryApiSearchDeep(body);
-    cafHistoryRenderResult(item, result.auctions || []);
+    cafHistoryRenderResult(item, result.auctions || [], box);
   } catch (e) {
     box.innerHTML = `<span class="caf35-high">History error: ${escapeHtml(e.message)}</span>`;
   }
