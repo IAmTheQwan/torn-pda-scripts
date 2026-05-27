@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.1.0.0
+// @version      4.1.0.1
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -1502,63 +1502,71 @@ renderWatchList();
 
   }
 
-  function renderItem(item) {
-    const bonusesText = itemBonusDetails(item).join(" / ") || "None";
-    const name = item.name || item.itemName || "Unknown";
-    const sourceStart = item.__auctionStart || 0;
-    const dmg = itemDamage(item);
-    const acc = itemAccuracy(item);
-    const bid = itemBid(item);
-    const glow = itemGlowClass(item);
-    const q = itemQuality(item);
+function renderItem(item) {
+  const bonusesText = itemBonusDetails(item).join(" / ") || "None";
+  const name = item.name || item.itemName || "Unknown";
+  const sourceStart = item.__auctionStart || 0;
+  const dmg = itemDamage(item);
+  const acc = itemAccuracy(item);
+  const bid = itemBid(item);
+  const glow = itemGlowClass(item);
+  const q = itemQuality(item);
+  const id = watchId(item);
 
-    return `
-      <div style="display:flex;gap:10px;padding:10px;border-top:1px solid #444;color:#fff;">
-        <div class="caf-img-wrap ${glow}">
-          <img src="${item.image || item.itemImg || item.itemSrc || ""}">
-        </div>
-
-        <div style="flex:1;">
-          <div style="color:#6eb6ff;font-weight:bold;font-size:15px;">${escapeHtml(name)}</div>
-          ${q ? `<div class="caf-quality">Quality: ${escapeHtml(q.value)} ${escapeHtml(q.color || "")}</div>` : ""}
-          <div style="color:#ccc;">Damage: ${dmg.toFixed(2)} | Accuracy: ${acc.toFixed(2)}</div>
-          <div style="color:#aaa;">Bonus: ${escapeHtml(bonusesText)}</div>
-          <div style="color:#aaa;">Color: ${glow ? glow.toUpperCase() : "None"}</div>
-          <div>Bid: $${Number(bid || 0).toLocaleString()}</div>
-
-
-      <div style="color:#ffcf70;">
-        Time left:
-        <span class="caf-countdown" data-ends-at="${item.__endsAtMs || 0}">
-          ${formatCountdown(item.__endsAtMs || Date.now())}
-        </span>
+  return `
+    <div style="display:flex;gap:10px;padding:10px;border-top:1px solid #444;color:#fff;">
+      <div class="caf-img-wrap ${glow}">
+        <img src="${item.image || item.itemImg || item.itemSrc || ""}">
       </div>
 
-      <button class="caf-open"
-        data-watch-id="${watchId(item)}"
-        data-start="${sourceStart}"
-        data-name="${escapeAttr(name.toLowerCase())}"
-        data-dmg="${dmg.toFixed(2)}"
-        data-acc="${acc.toFixed(2)}"
-        data-bid="${bid}"
-        style="margin-top:6px;padding:6px 10px;width:100%;">
-        Open Original Page
-      </button>
+      <div style="flex:1;">
+        <div style="color:#6eb6ff;font-weight:bold;font-size:15px;">${escapeHtml(name)}</div>
+        ${q ? `<div class="caf-quality">Quality: ${escapeHtml(q.value)} ${escapeHtml(q.color || "")}</div>` : ""}
+        <div style="color:#ccc;">Damage: ${dmg.toFixed(2)} | Accuracy: ${acc.toFixed(2)}</div>
+        <div style="color:#aaa;">Bonus: ${escapeHtml(bonusesText)}</div>
+        <div style="color:#aaa;">Color: ${glow ? glow.toUpperCase() : "None"}</div>
+        <div>Bid: $${Number(bid || 0).toLocaleString()}</div>
 
-      <button class="caf-watch"
-        data-watch-id="${watchId(item)}"
-        style="margin-top:6px;padding:6px 10px;width:100%;
-        background:${isWatched(item) ? "#1f4d2e" : "#222"};
-        color:${isWatched(item) ? "#8cffb0" : "#fff"};">
-        ${isWatched(item) ? "Watching ✓" : "Watch"}
-      </button>
+        <div style="color:#ffcf70;">
+          Time left:
+          <span class="caf-countdown" data-ends-at="${item.__endsAtMs || 0}">
+            ${formatCountdown(item.__endsAtMs || Date.now())}
+          </span>
+        </div>
 
+        <button class="caf-open"
+          data-watch-id="${id}"
+          data-start="${sourceStart}"
+          data-name="${escapeAttr(name.toLowerCase())}"
+          data-dmg="${dmg.toFixed(2)}"
+          data-acc="${acc.toFixed(2)}"
+          data-bid="${bid}"
+          style="margin-top:6px;padding:6px 10px;width:100%;">
+          Open Original Page
+        </button>
+
+        <button class="caf-history"
+          data-watch-id="${id}"
+          style="margin-top:6px;padding:6px 10px;width:100%;background:#202020;color:#8ecbff;border:1px solid #444;border-radius:4px;">
+          History
+        </button>
+
+        <div class="caf-history-box caf35-line"
+          data-watch-id="${id}"
+          style="display:none;margin-top:6px;font-size:12px;background:#181818;border:1px solid #444;border-radius:5px;padding:6px;color:#ddd;">
+        </div>
+
+        <button class="caf-watch"
+          data-watch-id="${id}"
+          style="margin-top:6px;padding:6px 10px;width:100%;
+          background:${isWatched(item) ? "#1f4d2e" : "#222"};
+          color:${isWatched(item) ? "#8cffb0" : "#fff"};">
+          ${isWatched(item) ? "Watching ✓" : "Watch"}
+        </button>
+      </div>
     </div>
-  </div>
-`;
-
+  `;
 }
-
 
   function restoreRenderedResultsIfAvailable() {
     restoreState();
