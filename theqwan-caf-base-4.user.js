@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.0.2
+// @version      4.0.4
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -303,21 +303,17 @@ function renderGlobalWatchBar() {
     .filter(Boolean)
     .sort((a, b) => Number(a.__endsAtMs || 0) - Number(b.__endsAtMs || 0))[0];
 
-const closestName = closest
-  ? String(closest.name || closest.itemName || "Item")
-  : "";
-
-const closestText = closest
-  ? `${closestName} | $${Number(itemBid(closest) || 0).toLocaleString()} | ${formatCountdown(closest.__endsAtMs || Date.now())}`
-  : "No watched items";
-
   bar.innerHTML = `
     <div id="theqwan-global-watch-header"
       style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 7px;background:#252525;cursor:pointer;">
       <b>${collapsed ? "CAF ▶" : "CAF Watch ▼"}</b>
-      <span style="flex:1;text-align:center;color:#ffcf70;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-        ${escapeHtml(closestText)}
-      </span>
+        <span style="flex:1;text-align:center;color:#ffcf70;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+          ${
+            closest
+              ? `${escapeHtml(closest.name || closest.itemName || "Item")} | Bid $${Number(itemBid(closest) || 0).toLocaleString()} | <span class="caf-countdown" data-ends-at="${closest.__endsAtMs || 0}">${formatCountdown(closest.__endsAtMs || Date.now())}</span>`
+              : "No watched items"
+          }
+        </span>
       <button id="theqwan-global-watch-go"
         style="padding:3px 8px;border:1px solid #555;border-radius:5px;background:#111;color:#8ecbff;">
         Go
@@ -377,9 +373,11 @@ function renderGlobalWatchIcon(item) {
         style="width:32px;min-width:32px;height:26px;border-width:2px;outline:${dealOutline(deal)};">
         <img src="${item.image || item.itemImg || item.itemSrc || ""}" style="width:28px;height:20px;">
       </div>
-      <div style="font-size:8px;color:#ffcf70;text-align:center;margin-top:1px;">
-        ${formatCountdown(item.__endsAtMs || Date.now())}
-      </div>
+        <div style="font-size:8px;color:#ffcf70;text-align:center;margin-top:1px;">
+          <span class="caf-countdown" data-ends-at="${item.__endsAtMs || 0}">
+            ${formatCountdown(item.__endsAtMs || Date.now())}
+          </span>
+        </div>
     </button>
   `;
 }
@@ -399,7 +397,6 @@ function jumpToWatchedItem(item) {
   localStorage.setItem(TARGET_BID_KEY, String(bid));
 
   window.location.href = `/amarket.php#itemtab=weapons&start=${start}`;
-  setTimeout(() => window.location.reload(), 150);
 }
 
 function dealOutline(deal) {
@@ -1618,7 +1615,6 @@ setTimeout(() => {
 }, 1500);
 
 setInterval(async () => {
-  renderGlobalWatchBar();
   await refreshWatchListPages();
 }, WATCH_REFRESH_MS);
 
