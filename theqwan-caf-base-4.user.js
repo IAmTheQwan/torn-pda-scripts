@@ -397,12 +397,24 @@ function renderGlobalWatchIcon(item) {
   `;
 }
 
-function jumpToWatchedItem(item) {
-  const name = item.name || item.itemName || "Unknown";
-  const dmg = itemDamage(item);
-  const acc = itemAccuracy(item);
-  const bid = itemBid(item);
-  const start = item.__auctionStart || 0;
+async function jumpToWatchedItem(item) {
+  const freshItem = await findCurrentAuctionStartForWatchedItem(item);
+
+  const name = freshItem.name || freshItem.itemName || "Unknown";
+  const dmg = itemDamage(freshItem);
+  const acc = itemAccuracy(freshItem);
+  const bid = itemBid(freshItem);
+  const start = freshItem.__auctionStart || 0;
+
+  const list = loadWatchList();
+  const id = watchId(item);
+  const row = list.find(w => w.id === id);
+
+  if (row) {
+    row.auctionStart = start;
+    row.item = freshItem;
+    saveWatchList(list);
+  }
 
   localStorage.setItem(AUTO_FILTER_KEY, "1");
   localStorage.setItem(TARGET_START_KEY, String(start));
@@ -411,8 +423,7 @@ function jumpToWatchedItem(item) {
   localStorage.setItem(TARGET_ACC_KEY, acc.toFixed(2));
   localStorage.setItem(TARGET_BID_KEY, String(bid));
   localStorage.setItem(TARGET_ONLY_KEY, "1");
-  localStorage.setItem(TARGET_ID_KEY, watchId(item));
-
+  localStorage.setItem(TARGET_ID_KEY, watchId(freshItem));
   localStorage.setItem("joshAuctionPendingJump", "1");
 
   window.location.href = `https://www.torn.com/amarket.php#itemtab=weapons&start=${start}`;
@@ -441,36 +452,60 @@ function dealOutline(deal) {
   return "bad";
 }
 
-async function refreshWatchListPages() {
-  const starts = watchedPageStarts();
-  if (!starts.length) return;
+async function findCurrentAuctionStartForWatchedItem(item) {
 
-  for (const start of starts) {
+  const targetName = (item.name || item.itemName || "").toLowerCase();
+  const targetDmg = itemDamage(item);
+  const targetAcc = itemAccuracy(item);
+
+  const savedStart = Number(item.__auctionStart || 0);
+
+  const candidates = [
+    savedStart,
+    savedStart - 10,
+    savedStart - 20,
+    savedStart + 10,
+    savedStart + 20,
+    savedStart - 30,
+    savedStart + 30,
+    savedStart - 40,
+    savedStart + 40
+  ]
+    .filter(x => x >= 0)
+    .filter((x, i, arr) => arr.indexOf(x) === i);
+
+  for (const start of candidates) {
+
     try {
+
       const data = await fetchAuctionPage(start);
 
       if (!data?.success || !Array.isArray(data.list)) {
         continue;
       }
 
-      const freshItems = data.list;
-      const list = loadWatchList();
+      const found = data.list.find(x => {
 
-      list.forEach(w => {
-        const fresh = freshItems.find(f => watchId(f) === w.id);
+        const name = (x.name || x.itemName || "").toLowerCase();
 
-        if (fresh) {
-          w.item = fresh;
-        }
+        return (
+          name === targetName &&
+          Math.abs(itemDamage(x) - targetDmg) < 0.15 &&
+          Math.abs(itemAccuracy(x) - targetAcc) < 0.15
+        );
+
       });
 
-      saveWatchList(list);
+      if (found) {
+        found.__auctionStart = start;
+        return found;
+      }
 
     } catch {}
+
   }
 
-  updateWatchListOnly();
-  renderGlobalWatchBar();
+  return item;
 }
 
 function renderWatchList() {
