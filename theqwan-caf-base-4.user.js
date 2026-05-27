@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.0.7.2
+// @version      4.0.7.3
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -1601,6 +1601,7 @@ const isTarget = idMatch || statMatch;
 }
 
   function completePendingAuctionJump() {
+
   if (localStorage.getItem("joshAuctionPendingJump") !== "1") return;
   if (!location.pathname.includes("amarket.php")) return;
 
@@ -1608,18 +1609,20 @@ const isTarget = idMatch || statMatch;
 
   localStorage.removeItem("joshAuctionPendingJump");
 
-setTimeout(() => {
-
-  const targetUrl =
-    `https://www.torn.com/amarket.php#/p=shop&type=weapon&start=${start}`;
-
-  window.location.href = targetUrl;
-
   setTimeout(() => {
-    startTargetSearchLoop();
-  }, 1800);
 
-}, 800);
+    const targetUrl =
+      `https://www.torn.com/amarket.php#/p=shop&type=weapon&sort=default&start=${start}`;
+
+    if (window.location.href !== targetUrl) {
+      window.location.replace(targetUrl);
+    }
+
+    setTimeout(() => {
+      startTargetSearchLoop();
+    }, 2500);
+
+  }, 1000);
 }
 
   function isSoldItem(item) {
