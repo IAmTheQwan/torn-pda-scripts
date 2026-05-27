@@ -1469,6 +1469,30 @@ box.querySelectorAll(".caf-open").forEach(btn => {
   });
 });
 
+    box.querySelectorAll(".caf-history").forEach(btn => {
+  btn.addEventListener("click", async function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const id = this.getAttribute("data-watch-id");
+
+    const item = filteredItems.find(x => watchId(x) === id);
+
+    if (!item) return;
+
+    const historyBox = document.querySelector(
+      `.caf-history-box[data-watch-id="${CSS.escape(id)}"]`
+    );
+
+    if (historyBox) {
+      historyBox.style.display =
+        historyBox.style.display === "none" ? "block" : "none";
+    }
+
+    await cafHistoryRun(item);
+  });
+});
+
 box.querySelectorAll(".caf-watch").forEach(btn => {
   btn.addEventListener("click", function (e) {
     e.preventDefault();
