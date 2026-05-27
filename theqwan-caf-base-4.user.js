@@ -51,6 +51,8 @@ const RESULTS_COLLAPSED_KEY = "joshAuctionResultsCollapsed";
   let loading = false;
   let qualityLoading = false;
 
+  //fdsdfsdfs
+
   const bonuses = [
     "", "Achilles", "Assassinate", "Backstab", "Berserk", "Bleed", "Blindside",
     "Bloodlust", "Burn", "Comeback", "Conserve", "Crusher", "Deadeye",
