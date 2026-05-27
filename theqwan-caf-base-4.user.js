@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.0.8.7
+// @version      4.1.0.0
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
 // @match        https://www.torn.com/amarket.php*
 // @match        https://www.torn.com/page.php*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      btrmmuuoofbonmuwrkzg.supabase.co
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/main/theqwan-caf-base-4.meta.js
 // @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/main/theqwan-caf-base-4.user.js
 // ==/UserScript==
@@ -1840,6 +1841,466 @@ function markExpiredWatchedItems() {
   }
 
   return changed;
+}
+
+  /* =========================
+   CAF 4 HISTORY / COMPS
+========================= */
+
+const CAF_HISTORY_SUPABASE_URL = "https://btrmmuuoofbonmuwrkzg.supabase.co";
+const CAF_HISTORY_SUPABASE_ANON_KEY = "PASTE_YOUR_ANON_KEY_HERE";
+
+const CAF_HISTORY_SETTINGS_KEY = "caf4HistorySettings";
+const CAF_HISTORY_CACHE_KEY = "caf4HistoryCache";
+
+const CAF_HISTORY_BONUS_IDS = {
+  "achilles": 50, "assassinate": 72, "backstab": 52, "berserk": 54,
+  "bleed": 57, "blindside": 51, "bloodlust": 85, "comeback": 67,
+  "conserve": 55, "crusher": 49, "deadeye": 63, "deadly": 62,
+  "demoralize": 36, "disarm": 86, "double tap": 105, "double-edged": 74,
+  "empower": 87, "eviscerate": 56, "execute": 75, "expose": 1,
+  "finale": 82, "focus": 79, "frenzy": 80, "fury": 64,
+  "grace": 53, "hazardous": 34, "irradiate": 102, "lacerate": 89,
+  "motivation": 61, "parry": 84, "penetrate": 101, "plunder": 21,
+  "powerful": 68, "proficience": 14, "quicken": 88, "rage": 65,
+  "revitalize": 41, "slow": 44, "smash": 104, "specialist": 71,
+  "spray": 35, "stun": 58, "sure shot": 78, "throttle": 48,
+  "toxin": 103, "warlord": 81, "weaken": 46, "wind-up": 76, "wither": 42,
+  "home run": 83, "homerun": 83
+};
+
+const CAF_HISTORY_BONUS_NAMES = {};
+Object.entries(CAF_HISTORY_BONUS_IDS).forEach(([name, id]) => {
+  if (!CAF_HISTORY_BONUS_NAMES[id]) {
+    CAF_HISTORY_BONUS_NAMES[id] = name.replace(/\b\w/g, c => c.toUpperCase());
+  }
+});
+
+function cafHistoryDefaultSettings() {
+  return {
+    count: 12,
+    qualityMin: 0,
+    qualityMax: 200,
+    bonusMin: 0,
+    bonusMax: 150,
+    bonusMode: "item",
+    doubleOnly: false
+  };
+}
+
+function cafHistorySettings() {
+  try {
+    return {
+      ...cafHistoryDefaultSettings(),
+      ...JSON.parse(localStorage.getItem(CAF_HISTORY_SETTINGS_KEY) || "{}")
+    };
+  } catch {
+    return cafHistoryDefaultSettings();
+  }
+}
+
+function cafHistorySaveSettings(s) {
+  localStorage.setItem(CAF_HISTORY_SETTINGS_KEY, JSON.stringify(s));
+}
+
+function cafHistoryMoney(n) {
+  n = Number(n || 0);
+  if (n >= 1e9) return "$" + (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return "$" + (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return "$" + (n / 1e3).toFixed(0) + "K";
+  return "$" + n.toLocaleString();
+}
+
+function cafHistoryMedian(values) {
+  const a = values.slice().sort((x, y) => x - y);
+  if (!a.length) return 0;
+  const mid = Math.floor(a.length / 2);
+  return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+}
+
+function cafHistoryDaysAgo(ts) {
+  if (!ts) return "?d";
+  const d = Math.floor((Date.now() - Number(ts) * 1000) / 86400000);
+  if (d <= 0) return "today";
+  return `${d}d`;
+}
+
+function cafHistorySaleBonusIds(a) {
+  const ids = new Set();
+
+  if (Array.isArray(a.bonus_ids)) {
+    a.bonus_ids.forEach(id => ids.add(Number(id)));
+  }
+
+  if (Array.isArray(a.bonus_values)) {
+    a.bonus_values.forEach(x => ids.add(Number(x.bonus_id)));
+  }
+
+  return [...ids].filter(Boolean);
+}
+
+function cafHistorySaleIsDouble(a) {
+  return cafHistorySaleBonusIds(a).length >= 2;
+}
+
+function cafHistorySaleHasBonus(a, bonusId) {
+  return cafHistorySaleBonusIds(a).includes(Number(bonusId));
+}
+
+function cafHistorySaleBonusValues(a, targetIds = []) {
+  if (!Array.isArray(a.bonus_values)) return [];
+
+  const targets = new Set((targetIds || []).map(Number).filter(Boolean));
+
+  return a.bonus_values
+    .filter(x => !targets.size || targets.has(Number(x.bonus_id)))
+    .map(x => Number(x.bonus_value))
+    .filter(x => !Number.isNaN(x));
+}
+
+function cafHistorySaleBonuses(a) {
+  if (Array.isArray(a.bonus_values) && a.bonus_values.length) {
+    return a.bonus_values.map(x => {
+      const name = CAF_HISTORY_BONUS_NAMES[x.bonus_id] || `Bonus ${x.bonus_id}`;
+      const value = x.bonus_value ?? "?";
+      return `${name} ${value}%`;
+    }).join(" / ");
+  }
+
+  if (Array.isArray(a.bonus_ids) && a.bonus_ids.length) {
+    return a.bonus_ids
+      .map(id => CAF_HISTORY_BONUS_NAMES[id] || `Bonus ${id}`)
+      .join(" / ");
+  }
+
+  return "No bonus";
+}
+
+function cafHistoryItemData(item) {
+  const bonusDetails = itemBonusDetails(item);
+
+  const parsedBonuses = bonusDetails.map(x => {
+    const m = String(x).match(/^(.+?)\s+([\d.]+)%$/);
+    const rawName = m ? m[1].trim() : String(x).trim();
+    const key = rawName.toLowerCase() === "homerun" ? "home run" : rawName.toLowerCase();
+
+    return {
+      name: rawName,
+      id: CAF_HISTORY_BONUS_IDS[key],
+      value: m ? Number(m[2]) : null
+    };
+  }).filter(x => x.id);
+
+  return {
+    name: item.name || item.itemName || "",
+    dmg: itemDamage(item),
+    acc: itemAccuracy(item),
+    bid: itemBid(item),
+    quality: itemQualityNumber(item) || 0,
+    bonuses: parsedBonuses
+  };
+}
+
+function cafHistoryBuildBody(item) {
+  const s = cafHistorySettings();
+  const data = cafHistoryItemData(item);
+
+  const body = {
+    limit: 100,
+    offset: 0,
+    sort_by: "timestamp",
+    sort_order: "desc",
+    item_name: data.name,
+    quality_min: Number(s.qualityMin ?? 0),
+    quality_max: Number(s.qualityMax ?? 200),
+    __visibleLimit: Number(s.count || 12),
+    __forceDouble: !!s.doubleOnly,
+    __manualBonusMin: Number(s.bonusMin ?? 0),
+    __manualBonusMax: Number(s.bonusMax ?? 150),
+    __targetBonusIds: []
+  };
+
+  if (s.bonusMode === "item") {
+    data.bonuses.slice(0, 2).forEach((b, i) => {
+      body[`bonus${i + 1}_id`] = b.id;
+      body.__targetBonusIds.push(b.id);
+    });
+  } else if (s.bonusMode === "caf") {
+    const f = loadFilters();
+    const wanted = [f.bonus1, f.bonus2]
+      .filter(Boolean)
+      .map(x => CAF_HISTORY_BONUS_IDS[String(x).toLowerCase() === "homerun" ? "home run" : String(x).toLowerCase()])
+      .filter(Boolean);
+
+    wanted.slice(0, 2).forEach((id, i) => {
+      body[`bonus${i + 1}_id`] = id;
+      body.__targetBonusIds.push(id);
+    });
+
+    if (f.onlyDouble) body.__forceDouble = true;
+  }
+
+  return body;
+}
+
+function cafHistoryCleanBody(body) {
+  const clean = { ...body };
+  Object.keys(clean).forEach(k => {
+    if (k.startsWith("__")) delete clean[k];
+  });
+  return clean;
+}
+
+function cafHistoryCacheKey(body) {
+  return JSON.stringify(cafHistoryCleanBody(body));
+}
+
+function cafHistoryGetCache(key) {
+  try {
+    const all = JSON.parse(localStorage.getItem(CAF_HISTORY_CACHE_KEY) || "{}");
+    const hit = all[key];
+
+    if (hit && Date.now() - hit.ts < 5 * 60 * 1000) {
+      return hit.data;
+    }
+  } catch {}
+
+  return null;
+}
+
+function cafHistorySetCache(key, data) {
+  try {
+    const all = JSON.parse(localStorage.getItem(CAF_HISTORY_CACHE_KEY) || "{}");
+    all[key] = { ts: Date.now(), data };
+    localStorage.setItem(CAF_HISTORY_CACHE_KEY, JSON.stringify(all));
+  } catch {}
+}
+
+function cafHistoryApiSearch(body) {
+  return new Promise((resolve, reject) => {
+    const key = cafHistoryCacheKey(body);
+    const cached = cafHistoryGetCache(key);
+
+    if (cached) {
+      resolve(cached);
+      return;
+    }
+
+    GM_xmlhttpRequest({
+      method: "POST",
+      url: `${CAF_HISTORY_SUPABASE_URL}/functions/v1/search-auctions`,
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": CAF_HISTORY_SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + CAF_HISTORY_SUPABASE_ANON_KEY
+      },
+      data: JSON.stringify(cafHistoryCleanBody(body)),
+      timeout: 15000,
+      onload: res => {
+        try {
+          const data = JSON.parse(res.responseText);
+
+          if (res.status >= 200 && res.status < 300) {
+            cafHistorySetCache(key, data);
+            resolve(data);
+          } else {
+            reject(new Error(data.error || "API error"));
+          }
+        } catch {
+          reject(new Error("Parse error"));
+        }
+      },
+      onerror: () => reject(new Error("Network error")),
+      ontimeout: () => reject(new Error("Timeout"))
+    });
+  });
+}
+
+function cafHistoryPostFilter(auctions, body) {
+  let result = auctions || [];
+
+  const targetIds = body.__targetBonusIds || [];
+
+  if (targetIds.length) {
+    result = result.filter(a => targetIds.every(id => cafHistorySaleHasBonus(a, id)));
+  }
+
+  if (body.__forceDouble) {
+    result = result.filter(cafHistorySaleIsDouble);
+  }
+
+  result = result.filter(a => {
+    const values = cafHistorySaleBonusValues(a, targetIds);
+
+    if (!values.length) {
+      return Number(body.__manualBonusMin || 0) <= 0;
+    }
+
+    return values.some(v =>
+      v >= Number(body.__manualBonusMin || 0) &&
+      v <= Number(body.__manualBonusMax || 150)
+    );
+  });
+
+  return result.slice(0, body.__visibleLimit || 12);
+}
+
+async function cafHistoryApiSearchDeep(body) {
+  const visibleLimit = body.__visibleLimit || 12;
+  const pageLimit = 100;
+  const maxScanned = 1000;
+
+  let all = [];
+  let offset = 0;
+  let total = null;
+
+  while (offset < maxScanned) {
+    const pageBody = {
+      ...body,
+      limit: pageLimit,
+      offset
+    };
+
+    const result = await cafHistoryApiSearch(pageBody);
+    const auctions = result.auctions || [];
+
+    all = all.concat(auctions);
+
+    const filtered = cafHistoryPostFilter(all, {
+      ...body,
+      __visibleLimit: maxScanned
+    });
+
+    if (filtered.length >= visibleLimit) {
+      return {
+        ...result,
+        auctions: filtered.slice(0, visibleLimit)
+      };
+    }
+
+    total = result.total ?? total;
+
+    if (!auctions.length) break;
+    if (total !== null && offset + pageLimit >= total) break;
+
+    offset += pageLimit;
+  }
+
+  return {
+    auctions: cafHistoryPostFilter(all, body),
+    total: total ?? all.length
+  };
+}
+
+function cafHistoryDealState(bid, low, med, high) {
+  if (!bid || !med) return "unknown";
+  if (bid < low) return "steal";
+  if (bid < med) return "good";
+  if (bid <= high) return "fair";
+  return "bad";
+}
+
+function cafHistoryDealLabel(state) {
+  if (state === "steal") return ["caf35-steal", "STEAL"];
+  if (state === "good") return ["caf35-good", "GOOD"];
+  if (state === "fair") return ["caf35-fair", "FAIR"];
+  if (state === "bad") return ["caf35-high", "HIGH"];
+  return ["caf35-muted", "?"];
+}
+
+function cafHistoryRenderResult(item, auctions) {
+  const id = watchId(item);
+  const box = document.querySelector(`.caf-history-box[data-watch-id="${CSS.escape(id)}"]`);
+  if (!box) return;
+
+  const prices = auctions.map(a => Number(a.price || 0)).filter(Boolean);
+
+  if (!prices.length) {
+    box.innerHTML = `<span class="caf35-muted">No comparable sales found.</span>`;
+    return;
+  }
+
+  const low = Math.min(...prices);
+  const high = Math.max(...prices);
+  const med = cafHistoryMedian(prices);
+  const bid = itemBid(item);
+  const state = cafHistoryDealState(bid, low, med, high);
+  const [cls, label] = cafHistoryDealLabel(state);
+
+  item.__dealState = state;
+  item.__historyLow = low;
+  item.__historyMedian = med;
+  item.__historyHigh = high;
+
+  box.innerHTML = `
+    <div>
+      <span class="${cls}">Bid ${cafHistoryMoney(bid)} ${label}</span>
+      <span class="caf35-muted"> | </span>
+      <span style="color:#7ee787;">L ${cafHistoryMoney(low)}</span>
+      <span class="caf35-muted"> | </span>
+      <span style="color:#b98cff;">M ${cafHistoryMoney(med)}</span>
+      <span class="caf35-muted"> | </span>
+      <span style="color:#ff8b8b;">H ${cafHistoryMoney(high)}</span>
+      <span class="caf35-muted"> | ${auctions.length}x</span>
+    </div>
+
+    <button class="caf-history-toggle"
+      style="margin-top:4px;width:100%;background:#222;color:#ccc;border:1px solid #444;border-radius:4px;">
+      Previous Sales ▼
+    </button>
+
+    <div class="caf-history-sales" style="display:none;margin-top:5px;padding-top:5px;border-top:1px solid #333;">
+      ${auctions.map(a => {
+        const q = a.stat_quality ? `${Number(a.stat_quality).toFixed(1)}Q` : "?Q";
+        const b = cafHistorySaleBonuses(a);
+
+        return `
+          <div style="display:grid;grid-template-columns:70px 55px 1fr 38px;gap:5px;border-bottom:1px solid #292929;padding:3px 0;align-items:center;">
+            <span>${cafHistoryMoney(a.price)}</span>
+            <span>${q}</span>
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(b)}">${escapeHtml(b)}</span>
+            <span>${cafHistoryDaysAgo(a.timestamp)}</span>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+
+  const toggle = box.querySelector(".caf-history-toggle");
+  const sales = box.querySelector(".caf-history-sales");
+
+  if (toggle && sales) {
+    toggle.onclick = e => {
+      e.preventDefault();
+      e.stopPropagation();
+      sales.style.display = sales.style.display === "block" ? "none" : "block";
+    };
+  }
+
+  renderGlobalWatchBar();
+}
+
+async function cafHistoryRun(item) {
+  const id = watchId(item);
+  const btn = document.querySelector(`.caf-history[data-watch-id="${CSS.escape(id)}"]`);
+  const box = document.querySelector(`.caf-history-box[data-watch-id="${CSS.escape(id)}"]`);
+
+  if (!btn || !box) return;
+
+  btn.textContent = "Checking...";
+  btn.disabled = true;
+  box.innerHTML = `<span class="caf35-muted">Checking history...</span>`;
+
+  try {
+    const body = cafHistoryBuildBody(item);
+    const result = await cafHistoryApiSearchDeep(body);
+    cafHistoryRenderResult(item, result.auctions || []);
+  } catch (e) {
+    box.innerHTML = `<span class="caf35-high">History error: ${escapeHtml(e.message)}</span>`;
+  }
+
+  btn.textContent = "History";
+  btn.disabled = false;
 }
 
   function clearAll() {
