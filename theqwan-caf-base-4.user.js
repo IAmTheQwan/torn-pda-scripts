@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.0.1
-// @description  Global Auction Watch Banner + CAF filter/history/watch system
+// @version      4.0.2
+// @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
+// @match        https://www.torn.com/*
 // @match        https://www.torn.com/amarket.php*
 // @match        https://www.torn.com/page.php*
 // @grant        none
@@ -271,7 +272,7 @@ function watchedPageStarts() {
   return [...new Set(loadWatchList().map(x => Number(x.auctionStart || 0)))];
 }
 
-  function renderGlobalWatchBar() {
+function renderGlobalWatchBar() {
   let bar = document.getElementById(GLOBAL_WATCH_BAR_ID);
 
   if (!bar) {
@@ -285,10 +286,10 @@ function watchedPageStarts() {
       z-index:999999;
       background:#181818;
       border:1px solid #555;
-      border-radius:10px;
-      box-shadow:0 0 12px rgba(0,0,0,.65);
+      border-radius:9px;
+      box-shadow:0 0 10px rgba(0,0,0,.65);
       color:#fff;
-      font-size:12px;
+      font-size:10px;
       overflow:hidden;
     `;
     document.body.appendChild(bar);
@@ -297,14 +298,33 @@ function watchedPageStarts() {
   const list = loadWatchList();
   const collapsed = localStorage.getItem(GLOBAL_WATCH_COLLAPSED_KEY) === "true";
 
+  const closest = list
+    .map(w => w.item)
+    .filter(Boolean)
+    .sort((a, b) => Number(a.__endsAtMs || 0) - Number(b.__endsAtMs || 0))[0];
+
+const closestName = closest
+  ? String(closest.name || closest.itemName || "Item")
+  : "";
+
+const closestText = closest
+  ? `${closestName} | $${Number(itemBid(closest) || 0).toLocaleString()} | ${formatCountdown(closest.__endsAtMs || Date.now())}`
+  : "No watched items";
+
   bar.innerHTML = `
     <div id="theqwan-global-watch-header"
-      style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;background:#252525;cursor:pointer;">
-      <b>CAF Watch ${collapsed ? "▶" : "▼"}</b>
-      <span>${list.length} item(s)</span>
+      style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 7px;background:#252525;cursor:pointer;">
+      <b>${collapsed ? "CAF ▶" : "CAF Watch ▼"}</b>
+      <span style="flex:1;text-align:center;color:#ffcf70;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+        ${escapeHtml(closestText)}
+      </span>
+      <button id="theqwan-global-watch-go"
+        style="padding:3px 8px;border:1px solid #555;border-radius:5px;background:#111;color:#8ecbff;">
+        Go
+      </button>
     </div>
 
-    <div style="display:${collapsed ? "none" : "flex"};align-items:center;gap:7px;padding:7px;overflow-x:auto;">
+    <div style="display:${collapsed ? "none" : "flex"};align-items:center;gap:6px;padding:6px;overflow-x:auto;">
       ${
         list.length
           ? list.map(w => renderGlobalWatchIcon(w.item)).join("")
@@ -313,9 +333,18 @@ function watchedPageStarts() {
     </div>
   `;
 
-  document.getElementById("theqwan-global-watch-header").onclick = () => {
+  document.getElementById("theqwan-global-watch-header").onclick = e => {
+    if (e.target.id === "theqwan-global-watch-go") return;
     localStorage.setItem(GLOBAL_WATCH_COLLAPSED_KEY, collapsed ? "false" : "true");
     renderGlobalWatchBar();
+  };
+
+  document.getElementById("theqwan-global-watch-go").onclick = e => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (closest) jumpToWatchedItem(closest);
+    else window.location.href = "/amarket.php#itemtab=weapons";
   };
 
   bar.querySelectorAll(".theqwan-watch-jump").forEach(btn => {
@@ -323,16 +352,10 @@ function watchedPageStarts() {
       e.preventDefault();
       e.stopPropagation();
 
-      localStorage.setItem(AUTO_FILTER_KEY, "1");
-      localStorage.setItem(TARGET_START_KEY, btn.getAttribute("data-start") || "0");
-      localStorage.setItem(TARGET_NAME_KEY, btn.getAttribute("data-name") || "");
-      localStorage.setItem(TARGET_DMG_KEY, btn.getAttribute("data-dmg") || "");
-      localStorage.setItem(TARGET_ACC_KEY, btn.getAttribute("data-acc") || "");
-      localStorage.setItem(TARGET_BID_KEY, btn.getAttribute("data-bid") || "");
+      const id = btn.getAttribute("data-watch-id");
+      const watched = loadWatchList().find(w => w.id === id);
 
-      const start = btn.getAttribute("data-start") || "0";
-      window.location.href = `/amarket.php#itemtab=weapons&start=${start}`;
-      setTimeout(() => window.location.reload(), 150);
+      if (watched?.item) jumpToWatchedItem(watched.item);
     };
   });
 }
@@ -343,29 +366,63 @@ function renderGlobalWatchIcon(item) {
   const dmg = itemDamage(item);
   const acc = itemAccuracy(item);
   const bid = itemBid(item);
-
+  const deal = item.__dealState || estimateDealState(item);
+  
   return `
     <button class="theqwan-watch-jump"
       title="${escapeAttr(name)}"
-      data-start="${item.__auctionStart || 0}"
-      data-name="${escapeAttr(name.toLowerCase())}"
-      data-dmg="${dmg.toFixed(2)}"
-      data-acc="${acc.toFixed(2)}"
-      data-bid="${bid}"
+      data-watch-id="${watchId(item)}"
       style="border:none;background:transparent;padding:0;">
-      <div class="caf-img-wrap ${glow}" style="width:54px;min-width:54px;height:42px;border-width:2px;">
-        <img src="${item.image || item.itemImg || item.itemSrc || ""}" style="width:48px;height:34px;">
+      <div class="caf-img-wrap ${glow}"
+        style="width:32px;min-width:32px;height:26px;border-width:2px;outline:${dealOutline(deal)};">
+        <img src="${item.image || item.itemImg || item.itemSrc || ""}" style="width:28px;height:20px;">
       </div>
-      <div style="
-  font-size:9px;
-  color:#ffcf70;
-  margin-top:2px;
-  text-align:center;
-">
-  ${formatCountdown(item.__endsAtMs || Date.now())}
-</div>
+      <div style="font-size:8px;color:#ffcf70;text-align:center;margin-top:1px;">
+        ${formatCountdown(item.__endsAtMs || Date.now())}
+      </div>
     </button>
   `;
+}
+
+function jumpToWatchedItem(item) {
+  const name = item.name || item.itemName || "Unknown";
+  const dmg = itemDamage(item);
+  const acc = itemAccuracy(item);
+  const bid = itemBid(item);
+  const start = item.__auctionStart || 0;
+
+  localStorage.setItem(AUTO_FILTER_KEY, "1");
+  localStorage.setItem(TARGET_START_KEY, String(start));
+  localStorage.setItem(TARGET_NAME_KEY, name.toLowerCase());
+  localStorage.setItem(TARGET_DMG_KEY, dmg.toFixed(2));
+  localStorage.setItem(TARGET_ACC_KEY, acc.toFixed(2));
+  localStorage.setItem(TARGET_BID_KEY, String(bid));
+
+  window.location.href = `/amarket.php#itemtab=weapons&start=${start}`;
+  setTimeout(() => window.location.reload(), 150);
+}
+
+function dealOutline(deal) {
+  if (deal === "steal") return "2px solid #00ff7f";
+  if (deal === "good") return "2px solid #30d158";
+  if (deal === "fair") return "2px solid #ffd166";
+  if (deal === "bad") return "2px solid #ff5c5c";
+  return "none";
+}
+  
+  function estimateDealState(item) {
+  const bid = itemBid(item);
+  const f = loadFilters();
+
+  if (!bid || !f.maxBid) return "unknown";
+
+  const max = Number(f.maxBid);
+
+  if (bid <= max * 0.60) return "steal";
+  if (bid <= max * 0.85) return "good";
+  if (bid <= max) return "fair";
+
+  return "bad";
 }
 
 async function refreshWatchListPages() {
@@ -1547,6 +1604,8 @@ renderWatchList();
     return escapeHtml(value).replace(/`/g, "&#096;");
   }
 
+renderGlobalWatchBar();
+
 setTimeout(() => {
   injectPanel();
   restoreRenderedResultsIfAvailable();
@@ -1559,6 +1618,7 @@ setTimeout(() => {
 }, 1500);
 
 setInterval(async () => {
+  renderGlobalWatchBar();
   await refreshWatchListPages();
 }, WATCH_REFRESH_MS);
 
