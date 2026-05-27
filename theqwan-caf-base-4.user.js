@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.0.8.5
+// @version      4.0.8.6
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -1631,7 +1631,7 @@ function originalCardData(card) {
     return d.bonusPercents.some(v => v >= Number(min || 0) && v <= Number(max || 150));
   }
 
-  function applyOriginalPageFilter() {
+function applyOriginalPageFilter() {
   if (localStorage.getItem(AUTO_FILTER_KEY) !== "1") return;
 
   const targetStart = localStorage.getItem(TARGET_START_KEY) || "0";
@@ -1646,7 +1646,6 @@ function originalCardData(card) {
   const targetName = localStorage.getItem(TARGET_NAME_KEY) || "";
   const targetDmg = Number(localStorage.getItem(TARGET_DMG_KEY) || 0);
   const targetAcc = Number(localStorage.getItem(TARGET_ACC_KEY) || 0);
-  const targetBid = Number(localStorage.getItem(TARGET_BID_KEY) || 0);
   const targetId = localStorage.getItem(TARGET_ID_KEY) || "";
 
   let shown = 0;
@@ -1667,38 +1666,45 @@ function originalCardData(card) {
       originalMatchesBonusRange(d, f.bonusMin, f.bonusMax);
 
     const idMatch =
-  targetId &&
-  (
-    d.possibleId === targetId ||
-    d.html.includes(targetId)
-  );
+      targetId &&
+      (
+        d.possibleId === targetId ||
+        d.html.includes(targetId)
+      );
 
-const statMatch =
-  targetName &&
-  d.label.includes(targetName) &&
-  Math.abs(d.damage - targetDmg) < 0.15 &&
-  Math.abs(d.accuracy - targetAcc) < 0.15;
+    const statMatch =
+      targetName &&
+      d.label.includes(targetName) &&
+      Math.abs(d.damage - targetDmg) < 0.15 &&
+      Math.abs(d.accuracy - targetAcc) < 0.15;
 
-const isTarget = idMatch || statMatch;
-
+    const isTarget = idMatch || statMatch;
     const ok = targetOnly ? isTarget : normalFilterOk;
 
     card.style.display = ok ? "" : "none";
+
     if (ok) shown++;
 
     if (isTarget) {
       card.style.display = "";
       card.style.outline = "4px solid #00ff6a";
       card.style.boxShadow = "0 0 18px #00ff6a";
+
       highlighted = true;
 
       if (localStorage.getItem("joshAuctionTargetScrolled") !== "1") {
         setTimeout(() => {
           if (!document.body.contains(card)) return;
-      
-          card.scrollIntoView({ behavior: "smooth", block: "center" });
-          localStorage.setItem("joshAuctionTargetScrolled", "1");
-        }, 500);
+
+          requestAnimationFrame(() => {
+            card.scrollIntoView({
+              behavior: "smooth",
+              block: "center"
+            });
+
+            localStorage.setItem("joshAuctionTargetScrolled", "1");
+          });
+        }, 1200);
       }
     }
   }
@@ -1709,14 +1715,20 @@ const isTarget = idMatch || statMatch;
     note = document.createElement("div");
     note.id = "josh-original-page-filter-note";
     note.style.cssText = "margin:8px 0;padding:8px;background:#222;color:#fff;border:1px solid #555;border-radius:6px;font-size:12px;";
+
     const target = document.querySelector("#auction-house-tabs") || document.body;
-    target.parentElement.insertBefore(note, target);
+
+    if (target?.parentElement) {
+      target.parentElement.insertBefore(note, target);
+    } else {
+      document.body.prepend(note);
+    }
   }
 
   note.textContent = targetOnly
     ? highlighted
-      ? `Target item isolated and highlighted.`
-      : `Target item filter active, but target was not found on this page.`
+      ? "Target item isolated and highlighted."
+      : "Target item filter active, but target was not found on this page."
     : highlighted
       ? `Original page filtered and target highlighted: showing ${shown} of ${cards.length}`
       : `Original page filtered: showing ${shown} of ${cards.length}`;
