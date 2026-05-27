@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.0.7.6
+// @version      4.0.7.7
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -275,6 +275,10 @@ function watchedPageStarts() {
   return [...new Set(loadWatchList().map(x => Number(x.auctionStart || 0)))];
 }
 
+  function isSoldItem(item) {
+  return !!item?.__sold;
+}
+  
 function renderGlobalWatchBar() {
 
   markExpiredWatchedItems();
@@ -426,7 +430,13 @@ async function jumpToWatchedItem(item) {
   localStorage.setItem(TARGET_ID_KEY, watchId(freshItem));
   localStorage.setItem("joshAuctionPendingJump", "1");
 
-  window.location.href = `https://www.torn.com/amarket.php#itemtab=weapons&start=${start}`;
+  const targetUrl = `https://www.torn.com/amarket.php#itemtab=weapons&start=${start}`;
+
+window.location.href = targetUrl;
+
+setTimeout(() => {
+  window.location.reload();
+}, 250);
 }
 
 function dealOutline(deal) {
@@ -507,6 +517,75 @@ async function findCurrentAuctionStartForWatchedItem(item) {
 
   return item;
 }
+
+  async function refreshWatchListPages() {
+
+  const list = loadWatchList();
+
+  if (!list.length) return;
+
+  let changed = false;
+
+  for (const row of list) {
+
+    if (!row.item) continue;
+
+    // skip sold items
+    if (row.item.__sold) continue;
+
+    try {
+
+      const refreshed = await findCurrentAuctionStartForWatchedItem(row.item);
+
+      if (!refreshed) continue;
+
+      const oldStart = Number(row.item.__auctionStart || 0);
+      const newStart = Number(refreshed.__auctionStart || 0);
+
+      const refreshedEnd = Number(refreshed.__endsAtMs || 0);
+      const existingEnd = Number(row.item.__endsAtMs || 0);
+      
+      if (!refreshedEnd && existingEnd) {
+        refreshed.__endsAtMs = existingEnd;
+      }
+      else if (refreshedEnd && existingEnd) {
+      
+        // preserve the EARLIEST known ending
+        refreshed.__endsAtMs = Math.min(refreshedEnd, existingEnd);
+      }
+
+      // preserve sold state
+      refreshed.__sold = row.item.__sold;
+      refreshed.__soldPrice = row.item.__soldPrice;
+
+      row.item = refreshed;
+      row.auctionStart = newStart;
+
+      if (oldStart !== newStart) {
+        changed = true;
+      }
+
+      // mark sold
+      if (
+        refreshed.__endsAtMs &&
+        refreshed.__endsAtMs <= Date.now()
+      ) {
+        refreshed.__sold = true;
+        refreshed.__soldPrice = itemBid(refreshed);
+        changed = true;
+      }
+
+    } catch {}
+
+  }
+
+if (changed) {
+  saveWatchList(list);
+  renderWatchList();
+  renderGlobalWatchBar();
+}
+
+  }
 
 function renderWatchList() {
   let box = document.getElementById("caf-watchlist");
@@ -1636,34 +1715,58 @@ const isTarget = idMatch || statMatch;
 }
 
 function completePendingAuctionJump() {
+
   if (localStorage.getItem("joshAuctionPendingJump") !== "1") return;
   if (!location.pathname.includes("amarket.php")) return;
 
   const start = localStorage.getItem(TARGET_START_KEY) || "0";
   const wantedHash = `#itemtab=weapons&start=${start}`;
 
-  localStorage.removeItem("joshAuctionPendingJump");
+  const finish = () => {
+    startTargetSearchLoop();
+    setTimeout(startTargetSearchLoop, 1200);
+    setTimeout(startTargetSearchLoop, 2500);
+  };
 
-  setTimeout(() => {
-    if (location.hash !== wantedHash) {
-      location.hash = wantedHash;
+if (!location.hash.includes(`start=${start}`)) {
 
-      setTimeout(() => {
-        window.location.reload();
-      }, 250);
+    location.hash = wantedHash;
 
-      return;
+    setTimeout(() => {
+      window.location.reload();
+    }, 300);
+
+    return;
+  }
+
+  // wait for auction cards to actually exist
+  let tries = 0;
+
+  const waitForCards = setInterval(() => {
+
+    tries++;
+
+    const cards = getOriginalCards();
+
+    if (cards.length > 0) {
+
+      clearInterval(waitForCards);
+
+      localStorage.removeItem("joshAuctionPendingJump");
+
+      finish();
     }
 
-    startTargetSearchLoop();
-  }, 1000);
-}
+    if (tries >= 30) {
 
-  function isSoldItem(item) {
-  return !!item.__sold || (
-    Number(item.__endsAtMs || 0) > 0 &&
-    Number(item.__endsAtMs || 0) <= Date.now()
-  );
+      clearInterval(waitForCards);
+
+      localStorage.removeItem("joshAuctionPendingJump");
+
+      finish();
+    }
+
+  }, 350);
 }
 
 function markExpiredWatchedItems() {
@@ -1755,8 +1858,6 @@ function markExpiredWatchedItems() {
   function escapeAttr(value) {
     return escapeHtml(value).replace(/`/g, "&#096;");
   }
-
-renderGlobalWatchBar();
 
 renderGlobalWatchBar();
 completePendingAuctionJump();
