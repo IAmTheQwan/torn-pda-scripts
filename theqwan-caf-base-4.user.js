@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.1.0.1
+// @version      4.1.0.2
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -639,6 +639,7 @@ function renderWatchList() {
 }
 
 function renderWatchItem(item) {
+  const id = watchId(item);
   const name = item.name || item.itemName || "Unknown";
   const dmg = itemDamage(item);
   const acc = itemAccuracy(item);
@@ -646,6 +647,7 @@ function renderWatchItem(item) {
   const bonusesText = itemBonusDetails(item).join(" / ") || "None";
   const glow = itemGlowClass(item);
   const q = itemQuality(item);
+  const deal = item.__dealState || "unknown";
 
   return `
     <div style="display:flex;gap:10px;padding:10px;border-top:1px solid #444;color:#fff;">
@@ -655,6 +657,14 @@ function renderWatchItem(item) {
 
       <div style="flex:1;">
         <div style="color:#6eb6ff;font-weight:bold;">${escapeHtml(name)}</div>
+              <div style="margin-top:4px;font-weight:bold;color:
+              ${deal === "steal" ? "#00ff7f" :
+                deal === "good" ? "#30d158" :
+                deal === "fair" ? "#ffd166" :
+                deal === "bad" ? "#ff5c5c" :
+                "#888"};">
+              ${deal.toUpperCase()}
+            </div>
         ${q ? `<div class="caf-quality">Quality: ${escapeHtml(q.value)}</div>` : ""}
         <div style="color:#ccc;">Damage: ${dmg.toFixed(2)} | Accuracy: ${acc.toFixed(2)}</div>
         <div style="color:#aaa;">Bonus: ${escapeHtml(bonusesText)}</div>
@@ -668,7 +678,7 @@ function renderWatchItem(item) {
 
       <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">
           <button class="caf-open"
-            data-watch-id="${watchId(item)}"
+            data-watch-id="${id}"
             data-start="${item.__auctionStart || 0}"
             data-name="${escapeAttr(name.toLowerCase())}"
             data-dmg="${dmg.toFixed(2)}"
@@ -677,6 +687,17 @@ function renderWatchItem(item) {
             style="width:100%;padding:6px;">
             Open Original Page
           </button>
+
+          <button class="caf-watch-history"
+            data-watch-id="${id}"
+            style="width:100%;padding:6px;background:#202020;color:#8ecbff;border:1px solid #444;border-radius:4px;">
+            History
+          </button>
+          
+          <div class="caf-history-box caf35-line"
+            data-watch-id="${id}"
+            style="display:none;margin-top:6px;font-size:12px;background:#181818;border:1px solid #444;border-radius:5px;padding:6px;color:#ddd;">
+          </div>
 
         <button class="caf-unwatch"
           data-watch-id="${watchId(item)}"
@@ -736,6 +757,29 @@ body.querySelectorAll(".caf-open").forEach(btn => {
     if (!watched?.item) return;
 
     await jumpToWatchedItem(watched.item);
+  };
+});
+
+  body.querySelectorAll(".caf-watch-history").forEach(btn => {
+  btn.onclick = async e => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const id = btn.getAttribute("data-watch-id");
+    const watched = loadWatchList().find(x => x.id === id);
+
+    if (!watched?.item) return;
+
+    const historyBox = body.querySelector(
+      `.caf-history-box[data-watch-id="${CSS.escape(id)}"]`
+    );
+
+    if (historyBox) {
+      historyBox.style.display =
+        historyBox.style.display === "none" ? "block" : "none";
+    }
+
+    await cafHistoryRun(watched.item);
   };
 });
 
@@ -2263,6 +2307,18 @@ function cafHistoryRenderResult(item, auctions) {
   item.__historyLow = low;
   item.__historyMedian = med;
   item.__historyHigh = high;
+
+  const watchList = loadWatchList();
+const row = watchList.find(x => x.id === id);
+
+if (row?.item) {
+  row.item.__dealState = state;
+  row.item.__historyLow = low;
+  row.item.__historyMedian = med;
+  row.item.__historyHigh = high;
+
+  saveWatchList(watchList);
+}
 
   box.innerHTML = `
     <div>
