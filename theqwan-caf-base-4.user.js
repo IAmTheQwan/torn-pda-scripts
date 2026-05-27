@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.0.7.3
+// @version      4.0.7.4
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -415,7 +415,7 @@ function jumpToWatchedItem(item) {
 
   localStorage.setItem("joshAuctionPendingJump", "1");
 
-  window.location.href = "https://www.torn.com/amarket.php";
+  window.location.href = `https://www.torn.com/amarket.php#itemtab=weapons&start=${start}`;
 }
 
 function dealOutline(deal) {
@@ -1600,28 +1600,27 @@ const isTarget = idMatch || statMatch;
   }, 700);
 }
 
-  function completePendingAuctionJump() {
-
+function completePendingAuctionJump() {
   if (localStorage.getItem("joshAuctionPendingJump") !== "1") return;
   if (!location.pathname.includes("amarket.php")) return;
 
   const start = localStorage.getItem(TARGET_START_KEY) || "0";
+  const wantedHash = `#itemtab=weapons&start=${start}`;
 
   localStorage.removeItem("joshAuctionPendingJump");
 
   setTimeout(() => {
+    if (location.hash !== wantedHash) {
+      location.hash = wantedHash;
 
-    const targetUrl =
-      `https://www.torn.com/amarket.php#/p=shop&type=weapon&sort=default&start=${start}`;
+      setTimeout(() => {
+        window.location.reload();
+      }, 250);
 
-    if (window.location.href !== targetUrl) {
-      window.location.replace(targetUrl);
+      return;
     }
 
-    setTimeout(() => {
-      startTargetSearchLoop();
-    }, 2500);
-
+    startTargetSearchLoop();
   }, 1000);
 }
 
