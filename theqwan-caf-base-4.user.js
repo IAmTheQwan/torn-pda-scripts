@@ -12,8 +12,6 @@
 // @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/main/theqwan-caf-base-4.user.js
 // ==/UserScript==
 
-
-
 (function () {
   "use strict";
 
