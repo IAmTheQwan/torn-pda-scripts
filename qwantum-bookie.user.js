@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.2.2
+// @version      1.2.3
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -107,8 +107,8 @@
         return Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
     }
 
-    function supabaseUpsert(table, rows, onConflict) {
-    if (!rows || rows.length === 0) return Promise.resolve();
+function supabaseUpsert(table, rows, onConflict) {
+    if (!rows || rows.length === 0) return Promise.resolve(true);
 
     return new Promise(resolve => {
         GM_xmlhttpRequest({
@@ -118,11 +118,30 @@
                 "apikey": SUPABASE_ANON_KEY,
                 "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
                 "Content-Type": "application/json",
-                "Prefer": "resolution=merge-duplicates"
+                "Prefer": "resolution=merge-duplicates,return=minimal"
             },
             data: JSON.stringify(rows),
-            onload: () => resolve(true),
-            onerror: () => resolve(false)
+            onload: res => {
+                if (res.status < 200 || res.status >= 300) {
+                    console.error("SUPABASE UPSERT FAILED", {
+                        table,
+                        status: res.status,
+                        response: res.responseText,
+                        sampleRow: rows[0]
+                    });
+                    alert(`Supabase upload failed for ${table}. Status ${res.status}. Check console.`);
+                    resolve(false);
+                    return;
+                }
+
+                console.log(`Supabase upsert OK: ${table}`, rows.length);
+                resolve(true);
+            },
+            onerror: err => {
+                console.error("SUPABASE NETWORK ERROR", err);
+                alert(`Supabase network error for ${table}. Check console.`);
+                resolve(false);
+            }
         });
     });
 }
@@ -377,7 +396,22 @@
         })
         .filter(Boolean);
 
-    await supabaseUpsert("bookie_bet_logs", rows, "log_id");
+    console.log("Bookie rows prepared for Supabase:", rows.length);
+
+    const chunkSize = 250;
+
+    for (let i = 0; i < rows.length; i += chunkSize) {
+        const chunk = rows.slice(i, i + chunkSize);
+        const ok = await supabaseUpsert("bookie_bet_logs", chunk, "log_id");
+
+        if (!ok) {
+            console.error("Stopped upload at chunk", i, chunk);
+            return false;
+        }
+    }
+
+    console.log("Bookie bet log upload complete:", rows.length);
+    return true;
 }
 
     function buildDailyTotals() {
