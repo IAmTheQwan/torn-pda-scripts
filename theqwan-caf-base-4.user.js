@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.2.0.0
+// @version      4.2.0.1
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -1663,7 +1663,7 @@ function renderItem(item) {
 
       <div style="flex:1;">
         <div style="color:#6eb6ff;font-weight:bold;font-size:15px;">${escapeHtml(name)}</div>
-        ${q ? `<div class="caf-quality">Quality: ${escapeHtml(q.value)} ${escapeHtml(q.color || "")}</div>` : ""}
+        ${q ? `<div class="caf-quality">Quality: ${escapeHtml(q.value)}</div>` : ""}
         <div style="color:#ccc;">Damage: ${dmg.toFixed(2)} | Accuracy: ${acc.toFixed(2)}</div>
         <div style="color:#aaa;">Bonus: ${escapeHtml(bonusesText)}</div>
         <div style="color:#aaa;">Color: ${glow ? glow.toUpperCase() : "None"}</div>
