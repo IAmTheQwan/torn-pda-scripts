@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.1.1.4
+// @version      4.1.1.5
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -283,7 +283,7 @@ function watchedPageStarts() {
   
 function renderGlobalWatchBar() {
 
-  markExpiredWatchedItems();
+  const soldChanged = markExpiredWatchedItems();
   
   let bar = document.getElementById(GLOBAL_WATCH_BAR_ID);
 
@@ -327,7 +327,8 @@ document.body.appendChild(bar);
     <div id="theqwan-global-watch-header"
       style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 7px;background:#252525;cursor:pointer;">
       <b>${collapsed ? "CAF ▶" : "CAF Watch ▼"}</b>
-        <span style="flex:1;text-align:center;color:#ffcf70;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+        <span id="theqwan-global-watch-current"
+  style="flex:1;text-align:center;color:#ffcf70;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
           ${
             closest
               ? `${escapeHtml(closest.name || closest.itemName || "Item")} | Bid $${Number(itemBid(closest) || 0).toLocaleString()} | <span class="caf-countdown" data-ends-at="${closest.__endsAtMs || 0}">${formatCountdownShort(closest.__endsAtMs || Date.now())}</span>`
@@ -535,6 +536,7 @@ async function findCurrentAuctionStartForWatchedItem(item) {
   if (!list.length) return;
 
   let changed = false;
+    let structuralChange = false;
 
   for (const row of list) {
 
@@ -572,7 +574,7 @@ async function findCurrentAuctionStartForWatchedItem(item) {
       row.auctionStart = newStart;
 
       if (oldStart !== newStart) {
-        changed = true;
+structuralChange = true;
       }
 
       // mark sold
@@ -589,9 +591,13 @@ async function findCurrentAuctionStartForWatchedItem(item) {
 
   }
 
-if (changed) {
-  saveWatchList(list);
-  renderWatchList();
+saveWatchList(list);
+
+updateWatchListOnly();
+updateGlobalWatchBarOnly();
+
+// only full rerender if layout actually changed
+if (structuralChange) {
   renderGlobalWatchBar();
 }
 
@@ -716,6 +722,32 @@ function renderWatchItem(item) {
       </div>
     </div>
   `;
+}
+
+  function updateGlobalWatchBarOnly() {
+  const bar = document.getElementById(GLOBAL_WATCH_BAR_ID);
+  if (!bar) return;
+
+  const list = loadWatchList();
+
+  const closest = list
+    .map(w => w.item)
+    .filter(Boolean)
+    .filter(item => !isSoldItem(item))
+    .filter(item => Number(item.__endsAtMs || 0) > Date.now())
+    .sort((a, b) => Number(a.__endsAtMs || 0) - Number(b.__endsAtMs || 0))[0];
+
+  const headerText = bar.querySelector("#theqwan-global-watch-current");
+  if (headerText) {
+    headerText.innerHTML = closest
+      ? `${escapeHtml(closest.name || closest.itemName || "Item")} | Bid $${Number(itemBid(closest) || 0).toLocaleString()} | <span class="caf-countdown" data-ends-at="${closest.__endsAtMs || 0}">${formatCountdownShort(closest.__endsAtMs || Date.now())}</span>`
+      : "No watched items";
+  }
+
+  bar.querySelectorAll(".caf-countdown").forEach(el => {
+    const endMs = Number(el.getAttribute("data-ends-at") || 0);
+    if (endMs) el.textContent = formatCountdownShort(endMs);
+  });
 }
 
 function updateWatchListOnly() {
@@ -1915,6 +1947,7 @@ function markExpiredWatchedItems() {
 
   list.forEach(w => {
     const item = w.item;
+
     if (!item || item.__sold) return;
 
     const end = Number(item.__endsAtMs || 0);
@@ -1923,6 +1956,7 @@ function markExpiredWatchedItems() {
       item.__sold = true;
       item.__soldPrice = itemBid(item);
       item.__soldAt = Date.now();
+
       changed = true;
     }
   });
