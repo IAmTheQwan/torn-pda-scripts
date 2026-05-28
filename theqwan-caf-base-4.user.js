@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.1.1.3
+// @version      4.1.1.4
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -1362,9 +1362,14 @@ function itemBonusDetails(item) {
   }
 
   function setItemEndTime(item) {
-    if (item.endtime) item.__endsAtMs = Number(item.endtime) * 1000;
-    else if (item.timer?.value) item.__endsAtMs = Date.now() + Number(item.timer.value) * 1000;
-    else item.__endsAtMs = Date.now();
+    if (item.endtime && Number(item.endtime) > 0) {
+      item.__endsAtMs = Number(item.endtime) * 1000;
+    } else if (item.timer?.value && Number(item.timer.value) > 0) {
+      item.__endsAtMs = Date.now() + Number(item.timer.value) * 1000;
+    } else {
+      item.__endsAtMs = 0;
+      item.__expiredAuction = true;
+    }
   }
 
   function formatCountdown(endMs) {
@@ -1418,12 +1423,14 @@ setInterval(() => {
 
   function applyGlobalFilter() {
     const f = getFilters();
-
+  
     filteredItems = allItems.filter(item => {
       const label = `${item.name || ""} ${item.itemName || ""} ${item.arialabel || ""}`.toLowerCase();
       const ib = itemBonuses(item);
-
-      return (!f.name || label.includes(f.name))
+  
+      return !item.__expiredAuction
+        && Number(item.__endsAtMs || 0) > Date.now()
+        && (!f.name || label.includes(f.name))
         && (!f.minDmg || itemDamage(item) >= f.minDmg)
         && (!f.minAcc || itemAccuracy(item) >= f.minAcc)
         && (!f.maxBid || itemBid(item) <= f.maxBid)
