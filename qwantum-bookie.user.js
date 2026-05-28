@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.2.1
+// @version      1.2.2
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -28,7 +28,7 @@
     let apiKey = localStorage.getItem('tbp_api_key') || '';
     let scanMode = localStorage.getItem('tbp_scan_mode') || 'both';
     let scanStartDate = localStorage.getItem('tbp_scan_start_date') || defaultScanStartDate();
-    let maxPages = Number(localStorage.getItem('tbp_max_pages') || 20);
+    let maxPages = Number(localStorage.getItem('tbp_max_pages') || 5);
     let activeTab = localStorage.getItem('tbp_active_tab') || 'open';
     let isMinimized = JSON.parse(localStorage.getItem('tbp_minimized') || 'false');
     let showDebug = JSON.parse(localStorage.getItem('tbp_show_debug') || 'false');
@@ -924,11 +924,7 @@ ${safeJson(log.raw)}
 
     if (apiKey) fetchLogs().then(render);
 
-    setInterval(async () => {
-        if (apiKey) {
-            await fetchLogs();
-            render();
-        }
-    }, 60000);
+// Auto-refresh disabled to avoid Torn API rate limits.
+// Use the Refresh Bookie Data button manually.
 
 })();
