@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.1.1.6
+// @version      4.1.1.7
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -349,7 +349,7 @@ document.body.appendChild(bar);
           font-size:11px;
           font-weight:bold;
         ">
-        ✕
+        Remove
       </button>
     
       <button id="theqwan-global-watch-go"
