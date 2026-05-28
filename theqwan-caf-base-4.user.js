@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.1.1.7
+// @version      4.2.0.0
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -1381,55 +1381,40 @@ function itemBonusDetails(item) {
   }
 
   async function tryFetchQuality(item) {
-    const key = qualityKey(item);
-    const itemId = item.itemID || item.itemId || item.id || "";
-    const armoryId = item.armouryID || item.armoryID || item.ID || "";
+  const key = qualityKey(item);
+  const itemId = item.itemID || item.itemId || item.item || item.id || "";
+  const armoryId = item.armouryID || item.armoryID || item.ID || "";
 
-    const candidates = [
-      { step: "getItemDetails", ID: armoryId },
-      { step: "getItemDetails", id: armoryId },
-      { step: "getItemDetails", armoryID: armoryId },
-      { step: "getItemDetails", armouryID: armoryId },
-      { step: "getItemDetails", itemID: itemId, armoryID: armoryId },
-      { step: "getItemDetails", itemID: itemId, ID: armoryId },
-      { step: "details", ID: armoryId },
-      { step: "details", armoryID: armoryId }
-    ];
+  if (!key || !itemId || !armoryId) return false;
 
-    for (const params of candidates) {
-      try {
-        const body = new URLSearchParams();
+  try {
+    const body = new URLSearchParams();
+    body.set("itemID", String(itemId));
+    body.set("armouryID", String(armoryId));
 
-        Object.keys(params).forEach(k => {
-          if (params[k]) body.set(k, String(params[k]));
-        });
+    const res = await fetch(`/page.php?sid=inventory&rfcv=${Date.now()}`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      body
+    });
 
-        const res = await fetch(`/page.php?sid=inventory&rfcv=${Date.now()}`, {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "X-Requested-With": "XMLHttpRequest"
-          },
-          body
-        });
+    const text = await res.text();
 
-        const text = await res.text();
-
-        if (!text.includes('"extras"') || !text.includes('"Quality"')) {
-          continue;
-        }
-
-        const data = JSON.parse(text);
-
-        if (cacheQualityFromDetail(data, key)) {
-          return true;
-        }
-      } catch {}
+    if (!text.includes('"extras"') || !text.includes('"Quality"')) {
+      return false;
     }
 
+    const data = JSON.parse(text);
+
+    return cacheQualityFromDetail(data, key);
+  } catch {
     return false;
   }
+}
 
   function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
