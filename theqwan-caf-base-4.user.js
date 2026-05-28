@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.1.0.8
+// @version      4.1.0.9
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -2479,6 +2479,36 @@ async function cafHistoryRun(item, scope = document) {
   function escapeAttr(value) {
     return escapeHtml(value).replace(/`/g, "&#096;");
   }
+
+  function cafDebugBottomLayers() {
+  const candidates = [...document.querySelectorAll("body *")]
+    .map(el => {
+      const r = el.getBoundingClientRect();
+      const s = getComputedStyle(el);
+
+      return {
+        el,
+        tag: el.tagName.toLowerCase(),
+        id: el.id || "",
+        cls: String(el.className || "").slice(0, 80),
+        position: s.position,
+        z: s.zIndex,
+        bottom: s.bottom,
+        top: s.top,
+        height: Math.round(r.height),
+        y: Math.round(r.y),
+        text: (el.innerText || "").trim().slice(0, 40)
+      };
+    })
+    .filter(x =>
+      x.height > 20 &&
+      x.y > window.innerHeight - 180 &&
+      (x.position === "fixed" || x.position === "sticky")
+    );
+
+  console.table(candidates);
+  return candidates;
+}
 
 renderGlobalWatchBar();
 completePendingAuctionJump();
