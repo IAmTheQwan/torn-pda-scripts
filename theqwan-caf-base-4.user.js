@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.1.1.5
+// @version      4.1.1.6
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -40,6 +40,7 @@ const RESULTS_COLLAPSED_KEY = "joshAuctionResultsCollapsed";
 
   const GLOBAL_WATCH_BAR_ID = "theqwan-global-watch-bar";
   const GLOBAL_WATCH_COLLAPSED_KEY = "theqwanGlobalWatchCollapsed";
+  const GLOBAL_WATCH_REMOVE_MODE_KEY = "theqwanGlobalWatchRemoveMode";
 
   const TARGET_ONLY_KEY = "joshAuctionTargetOnly";
   const TARGET_ID_KEY = "joshAuctionTargetId";
@@ -316,6 +317,7 @@ document.body.appendChild(bar);
 
   const list = loadWatchList();
   const collapsed = localStorage.getItem(GLOBAL_WATCH_COLLAPSED_KEY) === "true";
+  const removeMode = localStorage.getItem(GLOBAL_WATCH_REMOVE_MODE_KEY) === "true";
 
   const closest = list
   .map(w => w.item)
@@ -335,10 +337,27 @@ document.body.appendChild(bar);
               : "No watched items"
           }
         </span>
+    <div style="display:flex;align-items:center;gap:4px;">
+    
+      <button id="theqwan-global-watch-remove"
+        style="
+          padding:3px 7px;
+          border:1px solid #663333;
+          border-radius:5px;
+          background:${removeMode ? "#551111" : "#1a1a1a"};
+          color:${removeMode ? "#ff8080" : "#bbb"};
+          font-size:11px;
+          font-weight:bold;
+        ">
+        ✕
+      </button>
+    
       <button id="theqwan-global-watch-go"
         style="padding:3px 8px;border:1px solid #555;border-radius:5px;background:#111;color:#8ecbff;">
         Go
       </button>
+    
+    </div>
     </div>
 
     <div style="display:${collapsed ? "none" : "flex"};align-items:center;gap:6px;padding:6px;overflow-x:auto;">
@@ -356,6 +375,19 @@ document.body.appendChild(bar);
     renderGlobalWatchBar();
   };
 
+  document.getElementById("theqwan-global-watch-remove").onclick = e => {
+  e.preventDefault();
+  e.stopPropagation();
+
+  localStorage.setItem(GLOBAL_WATCH_COLLAPSED_KEY, "false");
+  localStorage.setItem(
+    GLOBAL_WATCH_REMOVE_MODE_KEY,
+    removeMode ? "false" : "true"
+  );
+
+  renderGlobalWatchBar();
+};
+
   document.getElementById("theqwan-global-watch-go").onclick = e => {
     e.preventDefault();
     e.stopPropagation();
@@ -368,10 +400,20 @@ document.body.appendChild(bar);
     btn.onclick = e => {
       e.preventDefault();
       e.stopPropagation();
-
+    
       const id = btn.getAttribute("data-watch-id");
+    
+      if (localStorage.getItem(GLOBAL_WATCH_REMOVE_MODE_KEY) === "true") {
+        saveWatchList(loadWatchList().filter(w => w.id !== id));
+    
+        renderGlobalWatchBar();
+        renderWatchList();
+        renderPage(currentPage || 1);
+        return;
+      }
+    
       const watched = loadWatchList().find(w => w.id === id);
-
+    
       if (watched?.item) jumpToWatchedItem(watched.item);
     };
   });
