@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.2
+// @version      1.2.1
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
-// @author       Josh
+// @author       TheQwan
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
+// @connect      toqggxqintcityrvfxuc.supabase.co
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/Bookie/qwantum-bookie.meta.js
 // @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/Bookie/qwantum-bookie.user.js
 // ==/UserScript==
@@ -44,6 +45,9 @@
 
     const MAX_REASONABLE_OPEN_STAKE = 50000000;
     const MAX_CLUSTER_GAP_SECONDS = 8 * 60 * 60;
+
+    const SUPABASE_URL = "https://toqggxqintcityrvfxuc.supabase.co";
+    const SUPABASE_ANON_KEY = "sb_publishable_WunM8ONFcASsy57QkrD1_w_YTl_wFx-";
 
     const styles = `
         #tbp-container { position:fixed; top:20px; right:20px; width:390px; background:#1a1a1a; color:#eee; border:1px solid #444; z-index:999999!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
@@ -102,6 +106,26 @@
     function num(n) {
         return Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
     }
+
+    function supabaseUpsert(table, rows, onConflict) {
+    if (!rows || rows.length === 0) return Promise.resolve();
+
+    return new Promise(resolve => {
+        GM_xmlhttpRequest({
+            method: "POST",
+            url: `${SUPABASE_URL}/rest/v1/${table}?on_conflict=${encodeURIComponent(onConflict)}`,
+            headers: {
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+                "Content-Type": "application/json",
+                "Prefer": "resolution=merge-duplicates"
+            },
+            data: JSON.stringify(rows),
+            onload: () => resolve(true),
+            onerror: () => resolve(false)
+        });
+    });
+}
 
     function safeJson(value) {
         try {
@@ -320,6 +344,42 @@
         openBets = foundOpen.sort((a, b) => b.timestamp - a.timestamp);
     }
 
+    async function pushBetLogsToSupabase() {
+    const rows = rawLogs
+        .map(log => {
+            const type = classifyLog(log);
+            if (type === "other" || type === "deposit" || type === "withdraw") return null;
+
+            const key = getSelectionKey(log);
+            const parts = key ? key.split("/") : [];
+
+            const stake = getBetAmount(log);
+            const odds = getOdds(log);
+            const winnings = getWinnings(log);
+
+            let net = 0;
+            if (type === "win") net = (winnings || stake) - stake;
+            if (type === "loss") net = -stake;
+
+            return {
+                log_id: String(log.id),
+                timestamp_unix: log.timestamp,
+                log_type: type,
+                event_id: parts[0] || null,
+                outcome_id: parts[1] || null,
+                betting_offer_id: parts[2] || null,
+                stake,
+                odds,
+                winnings,
+                net,
+                raw_json: log.raw
+            };
+        })
+        .filter(Boolean);
+
+    await supabaseUpsert("bookie_bet_logs", rows, "log_id");
+}
+
     function buildDailyTotals() {
         const map = new Map();
 
@@ -487,6 +547,7 @@
 
         rawLogs = all.sort((a, b) => b.timestamp - a.timestamp);
         buildBookieData();
+        await pushBetLogsToSupabase();
 
         const oldest = rawLogs.length ? Math.min(...rawLogs.map(l => l.timestamp)) : 0;
         const newest = rawLogs.length ? Math.max(...rawLogs.map(l => l.timestamp)) : 0;
