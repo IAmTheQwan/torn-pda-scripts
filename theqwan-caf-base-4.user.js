@@ -293,7 +293,7 @@ function renderGlobalWatchBar() {
       position:fixed;
       left:8px;
       right:8px;
-      bottom:58px;
+      bottom:0px;
       z-index:999999;
       background:#181818;
       border:1px solid #555;
@@ -2473,6 +2473,8 @@ async function cafHistoryRun(item, scope = document) {
   function escapeAttr(value) {
     return escapeHtml(value).replace(/`/g, "&#096;");
   }
+
+  document.body.style.paddingBottom = "90px";
 
 renderGlobalWatchBar();
 completePendingAuctionJump();
