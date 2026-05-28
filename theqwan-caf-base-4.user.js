@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.2.0.1
+// @version      4.2.1.0
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -41,6 +41,7 @@ const RESULTS_COLLAPSED_KEY = "joshAuctionResultsCollapsed";
   const GLOBAL_WATCH_BAR_ID = "theqwan-global-watch-bar";
   const GLOBAL_WATCH_COLLAPSED_KEY = "theqwanGlobalWatchCollapsed";
   const GLOBAL_WATCH_REMOVE_MODE_KEY = "theqwanGlobalWatchRemoveMode";
+  const GLOBAL_WATCH_SUPER_COLLAPSED_KEY = "theqwanGlobalWatchSuperCollapsed";
 
   const TARGET_ONLY_KEY = "joshAuctionTargetOnly";
   const TARGET_ID_KEY = "joshAuctionTargetId";
@@ -316,8 +317,38 @@ document.body.appendChild(bar);
   }
 
   const list = loadWatchList();
-  const collapsed = localStorage.getItem(GLOBAL_WATCH_COLLAPSED_KEY) === "true";
-  const removeMode = localStorage.getItem(GLOBAL_WATCH_REMOVE_MODE_KEY) === "true";
+const collapsed = localStorage.getItem(GLOBAL_WATCH_COLLAPSED_KEY) === "true";
+const superCollapsed = localStorage.getItem(GLOBAL_WATCH_SUPER_COLLAPSED_KEY) === "true";
+const removeMode = localStorage.getItem(GLOBAL_WATCH_REMOVE_MODE_KEY) === "true";
+
+if (superCollapsed) {
+  bar.style.left = "8px";
+  bar.style.right = "auto";
+  bar.style.width = "64px";
+
+  bar.innerHTML = `
+    <div id="theqwan-global-watch-super"
+      style="padding:5px 7px;background:#252525;cursor:pointer;font-weight:bold;color:#fff;text-align:center;">
+      CAF ▶
+    </div>
+  `;
+
+  document.getElementById("theqwan-global-watch-super").onclick = e => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    localStorage.setItem(GLOBAL_WATCH_SUPER_COLLAPSED_KEY, "false");
+    localStorage.setItem(GLOBAL_WATCH_COLLAPSED_KEY, "true");
+
+    renderGlobalWatchBar();
+  };
+
+  return;
+}
+
+bar.style.left = "8px";
+bar.style.right = "8px";
+bar.style.width = "";
 
   const closest = list
   .map(w => w.item)
@@ -328,7 +359,7 @@ document.body.appendChild(bar);
   bar.innerHTML = `
     <div id="theqwan-global-watch-header"
       style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 7px;background:#252525;cursor:pointer;">
-      <b>${collapsed ? "CAF ▶" : "CAF Watch ▼"}</b>
+     <b id="theqwan-global-watch-title">${collapsed ? "CAF ▶" : "CAF Watch ▼"}</b>
         <span id="theqwan-global-watch-current"
   style="flex:1;text-align:center;color:#ffcf70;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
           ${
@@ -370,10 +401,30 @@ document.body.appendChild(bar);
   `;
 
   document.getElementById("theqwan-global-watch-header").onclick = e => {
-    if (e.target.id === "theqwan-global-watch-go") return;
-    localStorage.setItem(GLOBAL_WATCH_COLLAPSED_KEY, collapsed ? "false" : "true");
-    renderGlobalWatchBar();
-  };
+  if (
+    e.target.id === "theqwan-global-watch-go" ||
+    e.target.id === "theqwan-global-watch-remove"
+  ) return;
+
+  const clickedLogo = e.target.closest("#theqwan-global-watch-title");
+
+  if (clickedLogo) {
+  if (collapsed) {
+    localStorage.setItem(GLOBAL_WATCH_SUPER_COLLAPSED_KEY, "true");
+    localStorage.setItem(GLOBAL_WATCH_COLLAPSED_KEY, "true");
+  } else {
+    localStorage.setItem(GLOBAL_WATCH_COLLAPSED_KEY, "true");
+  }
+
+  localStorage.setItem(GLOBAL_WATCH_REMOVE_MODE_KEY, "false");
+  renderGlobalWatchBar();
+  return;
+}
+
+  localStorage.setItem(GLOBAL_WATCH_SUPER_COLLAPSED_KEY, "false");
+  localStorage.setItem(GLOBAL_WATCH_COLLAPSED_KEY, collapsed ? "false" : "true");
+  renderGlobalWatchBar();
+};
 
   document.getElementById("theqwan-global-watch-remove").onclick = e => {
   e.preventDefault();
@@ -1127,9 +1178,11 @@ body.querySelectorAll(".caf-open").forEach(btn => {
     return aliases.some(key => {
       const classKey = key.replace(/\s+/g, "-");
 
-      return text.includes(`<b>${key}</b>`)
-        || text.includes(`${key}:`)
-        || text.includes(`bonus-attachment-${classKey}`);
+      return (
+        text.includes(key) ||
+        text.includes(`${key}:`) ||
+        text.includes(`bonus-attachment-${classKey}`)
+      );
     });
   });
 }
@@ -1187,10 +1240,10 @@ function itemBonusDetails(item) {
 }
 
   function itemBonusPercents(item) {
-    return itemBonusDetails(item)
-      .map(x => Number((String(x).match(/(\\d+(?:\\.\\d+)?)%/) || [])[1]))
-      .filter(x => !Number.isNaN(x));
-  }
+  return itemBonusDetails(item)
+    .map(x => Number((String(x).match(/(\d+(?:\.\d+)?)%/) || [])[1]))
+    .filter(x => !Number.isNaN(x));
+}
 
   function getStatNumbers(item) {
     const text = item.item_image_icons || "";
@@ -1385,7 +1438,7 @@ function itemBonusDetails(item) {
   const itemId = item.itemID || item.itemId || item.item || item.id || "";
   const armoryId = item.armouryID || item.armoryID || item.ID || "";
 
-  if (!key || !itemId || !armoryId) return false;
+  if (!key || !armoryId) return false;
 
   try {
     const body = new URLSearchParams();
@@ -1421,15 +1474,21 @@ function itemBonusDetails(item) {
   }
 
   function setItemEndTime(item) {
-    if (item.endtime && Number(item.endtime) > 0) {
-      item.__endsAtMs = Number(item.endtime) * 1000;
-    } else if (item.timer?.value && Number(item.timer.value) > 0) {
-      item.__endsAtMs = Date.now() + Number(item.timer.value) * 1000;
-    } else {
-      item.__endsAtMs = 0;
-      item.__expiredAuction = true;
-    }
+  if (item.endtime && Number(item.endtime) > 0) {
+    item.__endsAtMs = Number(item.endtime) * 1000;
+    item.__expiredAuction = false;
+    return;
   }
+
+  if (item.timer?.value && Number(item.timer.value) > 0) {
+    item.__endsAtMs = Date.now() + Number(item.timer.value) * 1000;
+    item.__expiredAuction = false;
+    return;
+  }
+
+  item.__endsAtMs = 0;
+  item.__expiredAuction = false;
+}
 
   function formatCountdown(endMs) {
     let diff = Math.max(0, Math.floor((endMs - Date.now()) / 1000));
@@ -1488,7 +1547,10 @@ setInterval(() => {
       const ib = itemBonuses(item);
   
       return !item.__expiredAuction
-        && Number(item.__endsAtMs || 0) > Date.now()
+        && (
+  !item.__endsAtMs ||
+  Number(item.__endsAtMs) > Date.now()
+)
         && (!f.name || label.includes(f.name))
         && (!f.minDmg || itemDamage(item) >= f.minDmg)
         && (!f.minAcc || itemAccuracy(item) >= f.minAcc)
