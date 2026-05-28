@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.1.0.7
+// @version      4.1.0.8
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -289,32 +289,27 @@ function renderGlobalWatchBar() {
   if (!bar) {
     bar = document.createElement("div");
     bar.id = GLOBAL_WATCH_BAR_ID;
-    bar.style.cssText = `
-      position:fixed;
-      left:8px;
-      right:8px;
-      bottom:-58px;
-      transform:translateY(0);
-      transition:bottom .18s ease;
-      opacity:.96;
-      z-index:999999;
+   bar.style.cssText = `
+      position:sticky;
+      bottom:0;
+      z-index:20;
+      margin-top:10px;
       background:#181818;
       border:1px solid #555;
-      border-radius:9px;
-      box-shadow:0 0 10px rgba(0,0,0,.65);
+      border-radius:9px 9px 0 0;
+      box-shadow:0 -2px 10px rgba(0,0,0,.45);
       color:#fff;
       font-size:10px;
       overflow:hidden;
     `;
-    document.body.appendChild(bar);
+      const appRoot =
+  document.querySelector("#mainContainer") ||
+  document.querySelector("#mainContainerWrap") ||
+  document.querySelector(".content-wrapper") ||
+  document.querySelector("#body") ||
+  document.body;
 
-      bar.onmouseenter = () => {
-        bar.style.bottom = "0";
-      };
-      
-      bar.onmouseleave = () => {
-        bar.style.bottom = "-58px";
-      };
+appRoot.appendChild(bar);
   }
 
   const list = loadWatchList();
@@ -2484,8 +2479,6 @@ async function cafHistoryRun(item, scope = document) {
   function escapeAttr(value) {
     return escapeHtml(value).replace(/`/g, "&#096;");
   }
-
-  document.body.style.paddingBottom = "90px";
 
 renderGlobalWatchBar();
 completePendingAuctionJump();
