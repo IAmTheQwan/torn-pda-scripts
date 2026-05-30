@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.3.0.0
+// @version      4.4.0.0
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -262,17 +262,28 @@ function toggleWatch(item) {
   if (existing >= 0) {
     list.splice(existing, 1);
   } else {
+    const startingBid = itemBid(item);
+
     list.push({
       id,
       auctionStart: item.__auctionStart || 0,
-      item
+      item: {
+        ...item,
+        __watchedBid: startingBid,
+        __currentBid: startingBid,
+        __lastBid: startingBid,
+        __bidStatus: "winning",
+        __bidChanged: false,
+        __bidChangedAt: 0,
+        __bidChangeAmount: 0
+      }
     });
   }
 
-saveWatchList(list);
-renderWatchList();
-renderGlobalWatchBar();
-renderPage(currentPage || 1);
+  saveWatchList(list);
+  renderWatchList();
+  renderGlobalWatchBar();
+  renderPage(currentPage || 1);
 }
 
 function watchedPageStarts() {
@@ -317,6 +328,14 @@ document.body.appendChild(bar);
   }
 
   const list = loadWatchList();
+  const bidItems = list
+  .map(w => w.item)
+  .filter(Boolean)
+  .filter(item => item.__bidChanged || item.__bidStatus === "winning" || item.__bidStatus === "outbid");
+
+const winningCount = bidItems.filter(item => item.__bidStatus === "winning").length;
+const bidCount = bidItems.length;
+const movedCount = bidItems.filter(item => item.__bidChanged).length;
 const collapsed = localStorage.getItem(GLOBAL_WATCH_COLLAPSED_KEY) === "true";
 const superCollapsed = localStorage.getItem(GLOBAL_WATCH_SUPER_COLLAPSED_KEY) === "true";
 const removeMode = localStorage.getItem(GLOBAL_WATCH_REMOVE_MODE_KEY) === "true";
@@ -359,7 +378,7 @@ bar.style.width = "";
   bar.innerHTML = `
     <div id="theqwan-global-watch-header"
       style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 7px;background:#252525;cursor:pointer;">
-     <b id="theqwan-global-watch-title">${collapsed ? "CAF ▶" : "CAF Watch ▼"}</b>
+     <b id="theqwan-global-watch-title">${collapsed ? "CAF ▶" : `CAF Watch ▼ | Winning ${winningCount}/${bidCount} bids`}</b>
         <span id="theqwan-global-watch-current"
   style="flex:1;text-align:center;color:#ffcf70;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
           ${
@@ -484,7 +503,7 @@ function renderGlobalWatchIcon(item) {
       data-watch-id="${watchId(item)}"
       style="border:none;background:transparent;padding:0;">
       <div class="caf-img-wrap ${glow}"
-        style="width:32px;min-width:32px;height:26px;border-width:2px;outline:${dealOutline(deal)};">
+        style="width:32px;min-width:32px;height:26px;border-width:2px;outline:${bidStatusOutline(item) !== "none" ? bidStatusOutline(item) : dealOutline(deal)};">
         <img src="${item.image || item.itemImg || item.itemSrc || ""}" style="width:28px;height:20px;">
       </div>
         <div style="font-size:8px;color:#ffcf70;text-align:center;margin-top:1px;">
@@ -519,7 +538,21 @@ async function jumpToWatchedItem(item) {
 
   if (row) {
     row.auctionStart = start;
-    row.item = freshItem;
+    row.item = {
+      ...row.item,
+      ...freshItem,
+      __watchedBid: row.item.__watchedBid,
+      __currentBid: row.item.__currentBid,
+      __lastBid: row.item.__lastBid,
+      __bidStatus: row.item.__bidStatus,
+      __bidChanged: row.item.__bidChanged,
+      __bidChangedAt: row.item.__bidChangedAt,
+      __bidChangeAmount: row.item.__bidChangeAmount,
+      __dealState: row.item.__dealState,
+      __historyLow: row.item.__historyLow,
+      __historyMedian: row.item.__historyMedian,
+      __historyHigh: row.item.__historyHigh
+    };
     saveWatchList(list);
   }
 
@@ -548,6 +581,37 @@ function dealOutline(deal) {
   if (deal === "good") return "2px solid #30d158";
   if (deal === "fair") return "2px solid #ffd166";
   if (deal === "bad") return "2px solid #ff5c5c";
+  return "none";
+}
+
+function updateWatchedBidState(oldItem, newItem) {
+  const oldBid = oldItem.__currentBid ?? itemBid(oldItem);
+  const newBid = itemBid(newItem);
+
+  newItem.__watchedBid = oldItem.__watchedBid ?? oldBid;
+  newItem.__lastBid = oldBid;
+  newItem.__currentBid = newBid;
+
+  if (oldBid && newBid && newBid > oldBid) {
+    newItem.__bidChanged = true;
+    newItem.__bidChangedAt = Date.now();
+    newItem.__bidChangeAmount = newBid - oldBid;
+    newItem.__bidStatus = "outbid";
+  } else {
+    newItem.__bidChanged = oldItem.__bidChanged || false;
+    newItem.__bidChangedAt = oldItem.__bidChangedAt || 0;
+    newItem.__bidChangeAmount = oldItem.__bidChangeAmount || 0;
+
+    newItem.__bidStatus = newItem.__watchedBid ? "winning" : "watching";
+  }
+
+  return newItem;
+}
+
+function bidStatusOutline(item) {
+  if (item.__bidStatus === "winning") return "2px solid #00ff7f";
+  if (item.__bidStatus === "outbid") return "2px solid #ff4d6d";
+  if (item.__bidChanged) return "2px solid #ffcf70";
   return "none";
 }
   
@@ -663,7 +727,7 @@ async function findCurrentAuctionStartForWatchedItem(item) {
       refreshed.__sold = row.item.__sold;
       refreshed.__soldPrice = row.item.__soldPrice;
 
-      row.item = refreshed;
+      row.item = updateWatchedBidState(row.item, refreshed);
       row.auctionStart = newStart;
 
       if (oldStart !== newStart) {
@@ -684,15 +748,15 @@ structuralChange = true;
 
   }
 
-saveWatchList(list);
+    saveWatchList(list);
 
-updateWatchListOnly();
-updateGlobalWatchBarOnly();
-
-// only full rerender if layout actually changed
-if (structuralChange) {
-  renderGlobalWatchBar();
-}
+    updateWatchListOnly();
+    
+    if (structuralChange || changed) {
+      renderGlobalWatchBar();
+    } else {
+      updateGlobalWatchBarOnly();
+    }
 
   }
 
@@ -775,7 +839,13 @@ function renderWatchItem(item) {
         ${q ? `<div class="caf-quality">Quality: ${escapeHtml(q.value)}</div>` : ""}
         <div style="color:#ccc;">Damage: ${dmg.toFixed(2)} | Accuracy: ${acc.toFixed(2)}</div>
         <div style="color:#aaa;">Bonus: ${escapeHtml(bonusesText)}</div>
-        <div>Bid: $${Number(bid || 0).toLocaleString()}</div>
+                ${
+          item.__bidChanged
+            ? `<div style="color:#ffcf70;font-weight:bold;">
+                Bid moved +$${Number(item.__bidChangeAmount || 0).toLocaleString()}
+              </div>`
+            : ""
+        }
         <div style="color:#ffcf70;">
           Time left:
           <span class="caf-countdown" data-ends-at="${item.__endsAtMs || 0}">
