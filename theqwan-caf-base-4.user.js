@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.2.1.3
+// @version      4.3.0.0
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -2427,6 +2427,84 @@ function cafHistoryDealLabel(state) {
   return ["caf35-muted", "?"];
 }
 
+  function cafHistoryNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function cafHistorySaleDamage(a) {
+  return cafHistoryNum(a.stat_damage ?? a.damage ?? a.item_damage);
+}
+
+function cafHistorySaleAccuracy(a) {
+  return cafHistoryNum(a.stat_accuracy ?? a.accuracy ?? a.item_accuracy);
+}
+
+function cafHistorySaleQuality(a) {
+  return cafHistoryNum(a.stat_quality ?? a.quality);
+}
+
+function cafHistoryCompareColor(value, current, min, max, lowerIsBetter = false) {
+  value = cafHistoryNum(value);
+  current = cafHistoryNum(current);
+
+  if (value === null || current === null) return "#aaa";
+
+  const diff = lowerIsBetter ? current - value : value - current;
+  const range = Math.max(1, Math.abs(max - min));
+
+  if (Math.abs(diff) <= range * 0.03) return "#ffcf70"; // close / gold
+
+  const strength = Math.min(1, Math.abs(diff) / range);
+
+  if (diff > 0) {
+    if (strength < 0.33) return "#9dffb0";
+    if (strength < 0.66) return "#39d353";
+    return "#00ff7f";
+  }
+
+  if (strength < 0.33) return "#ffb3c1";
+  if (strength < 0.66) return "#ff7b91";
+  return "#ff4d6d";
+}
+
+function cafHistoryBonusColor(value, current, min, max) {
+  return cafHistoryCompareColor(value, current, min, max, false);
+}
+
+function cafHistoryCurrentBonusMap(item) {
+  const map = {};
+
+  itemBonusDetails(item).forEach(x => {
+    const m = String(x).match(/^(.+?)\s+([\d.]+)%$/);
+    if (!m) return;
+
+    map[m[1].trim().toLowerCase()] = Number(m[2]);
+  });
+
+  return map;
+}
+
+function cafHistoryColoredBonuses(a, item, bonusMinMax) {
+  const currentMap = cafHistoryCurrentBonusMap(item);
+
+  if (!Array.isArray(a.bonus_values) || !a.bonus_values.length) {
+    return cafHistorySaleBonuses(a);
+  }
+
+  return a.bonus_values.map(x => {
+    const name = CAF_HISTORY_BONUS_NAMES[x.bonus_id] || `Bonus ${x.bonus_id}`;
+    const val = Number(x.bonus_value);
+    const key = name.toLowerCase();
+    const current = currentMap[key];
+
+    const mm = bonusMinMax[x.bonus_id] || { min: val, max: val };
+    const color = cafHistoryBonusColor(val, current, mm.min, mm.max);
+
+    return `<span style="color:${color};font-weight:bold;">${escapeHtml(name)} ${val}%</span>`;
+  }).join(" / ");
+}
+
 function cafHistoryRenderResult(item, auctions, targetBox = null) {
   const id = watchId(item);
   const box = targetBox || document.querySelector(`.caf-history-box[data-watch-id="${CSS.escape(id)}"]`);
@@ -2452,16 +2530,48 @@ function cafHistoryRenderResult(item, auctions, targetBox = null) {
   item.__historyHigh = high;
 
   const watchList = loadWatchList();
-const row = watchList.find(x => x.id === id);
+  const row = watchList.find(x => x.id === id);
 
-if (row?.item) {
-  row.item.__dealState = state;
-  row.item.__historyLow = low;
-  row.item.__historyMedian = med;
-  row.item.__historyHigh = high;
+  if (row?.item) {
+    row.item.__dealState = state;
+    row.item.__historyLow = low;
+    row.item.__historyMedian = med;
+    row.item.__historyHigh = high;
+    saveWatchList(watchList);
+  }
 
-  saveWatchList(watchList);
-}
+  const currentDmg = itemDamage(item);
+  const currentAcc = itemAccuracy(item);
+  const currentQ = itemQualityNumber(item);
+
+  const dmgVals = auctions.map(cafHistorySaleDamage).filter(x => x !== null);
+  const accVals = auctions.map(cafHistorySaleAccuracy).filter(x => x !== null);
+  const qVals = auctions.map(cafHistorySaleQuality).filter(x => x !== null);
+
+  const dmgMin = dmgVals.length ? Math.min(...dmgVals, currentDmg) : currentDmg;
+  const dmgMax = dmgVals.length ? Math.max(...dmgVals, currentDmg) : currentDmg;
+
+  const accMin = accVals.length ? Math.min(...accVals, currentAcc) : currentAcc;
+  const accMax = accVals.length ? Math.max(...accVals, currentAcc) : currentAcc;
+
+  const qMin = qVals.length && currentQ !== null ? Math.min(...qVals, currentQ) : Math.min(...qVals, 0);
+  const qMax = qVals.length && currentQ !== null ? Math.max(...qVals, currentQ) : Math.max(...qVals, 1);
+
+  const bonusMinMax = {};
+
+  auctions.forEach(a => {
+    if (!Array.isArray(a.bonus_values)) return;
+
+    a.bonus_values.forEach(x => {
+      const id = Number(x.bonus_id);
+      const val = Number(x.bonus_value);
+      if (!id || Number.isNaN(val)) return;
+
+      if (!bonusMinMax[id]) bonusMinMax[id] = { min: val, max: val };
+      bonusMinMax[id].min = Math.min(bonusMinMax[id].min, val);
+      bonusMinMax[id].max = Math.max(bonusMinMax[id].max, val);
+    });
+  });
 
   box.innerHTML = `
     <div>
@@ -2481,15 +2591,35 @@ if (row?.item) {
     </button>
 
     <div class="caf-history-sales" style="display:none;margin-top:5px;padding-top:5px;border-top:1px solid #333;">
+      <div style="display:grid;grid-template-columns:68px 44px 44px 44px 1fr 38px;gap:5px;color:#888;font-size:10px;padding-bottom:3px;">
+        <span>Sold</span>
+        <span>Dmg</span>
+        <span>Acc</span>
+        <span>Q</span>
+        <span>Bonus</span>
+        <span>Age</span>
+      </div>
+
       ${auctions.map(a => {
-        const q = a.stat_quality ? `${Number(a.stat_quality).toFixed(1)}Q` : "?Q";
-        const b = cafHistorySaleBonuses(a);
+        const price = Number(a.price || 0);
+        const dmg = cafHistorySaleDamage(a);
+        const acc = cafHistorySaleAccuracy(a);
+        const q = cafHistorySaleQuality(a);
+
+        const priceColor = cafHistoryCompareColor(price, bid, low, high, true);
+        const dmgColor = cafHistoryCompareColor(dmg, currentDmg, dmgMin, dmgMax, false);
+        const accColor = cafHistoryCompareColor(acc, currentAcc, accMin, accMax, false);
+        const qColor = cafHistoryCompareColor(q, currentQ, qMin, qMax, false);
+
+        const b = cafHistoryColoredBonuses(a, item, bonusMinMax);
 
         return `
-          <div style="display:grid;grid-template-columns:70px 55px 1fr 38px;gap:5px;border-bottom:1px solid #292929;padding:3px 0;align-items:center;">
-            <span>${cafHistoryMoney(a.price)}</span>
-            <span>${q}</span>
-            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(b)}">${escapeHtml(b)}</span>
+          <div style="display:grid;grid-template-columns:68px 44px 44px 44px 1fr 38px;gap:5px;border-bottom:1px solid #292929;padding:3px 0;align-items:center;">
+            <span style="color:${priceColor};font-weight:bold;">${cafHistoryMoney(price)}</span>
+            <span style="color:${dmgColor};font-weight:bold;">${dmg !== null ? dmg.toFixed(1) : "?"}</span>
+            <span style="color:${accColor};font-weight:bold;">${acc !== null ? acc.toFixed(1) : "?"}</span>
+            <span style="color:${qColor};font-weight:bold;">${q !== null ? q.toFixed(1) : "?"}</span>
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(cafHistorySaleBonuses(a))}">${b}</span>
             <span>${cafHistoryDaysAgo(a.timestamp)}</span>
           </div>
         `;
