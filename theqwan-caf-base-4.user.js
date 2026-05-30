@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.0 Beta
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.4.0.0
+// @version      4.4.0.1
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -269,10 +269,10 @@ function toggleWatch(item) {
       auctionStart: item.__auctionStart || 0,
       item: {
         ...item,
-        __watchedBid: startingBid,
+        __watchedBid: 0,
         __currentBid: startingBid,
         __lastBid: startingBid,
-        __bidStatus: "winning",
+        __bidStatus: "watching",
         __bidChanged: false,
         __bidChangedAt: 0,
         __bidChangeAmount: 0
@@ -327,11 +327,12 @@ bar.style.cssText = `
 document.body.appendChild(bar);
   }
 
-  const list = loadWatchList();
-  const bidItems = list
+const list = loadWatchList();
+
+const bidItems = list
   .map(w => w.item)
   .filter(Boolean)
-  .filter(item => item.__bidChanged || item.__bidStatus === "winning" || item.__bidStatus === "outbid");
+  .filter(item => Number(item.__watchedBid || 0) > 0);
 
 const winningCount = bidItems.filter(item => item.__bidStatus === "winning").length;
 const bidCount = bidItems.length;
@@ -587,23 +588,31 @@ function dealOutline(deal) {
 function updateWatchedBidState(oldItem, newItem) {
   const oldBid = oldItem.__currentBid ?? itemBid(oldItem);
   const newBid = itemBid(newItem);
+  const watchedBid = Number(oldItem.__watchedBid || 0);
 
-  newItem.__watchedBid = oldItem.__watchedBid ?? oldBid;
+  newItem.__watchedBid = watchedBid;
   newItem.__lastBid = oldBid;
   newItem.__currentBid = newBid;
+
+  if (!watchedBid) {
+    newItem.__bidStatus = "watching";
+    newItem.__bidChanged = false;
+    newItem.__bidChangedAt = 0;
+    newItem.__bidChangeAmount = 0;
+    return newItem;
+  }
 
   if (oldBid && newBid && newBid > oldBid) {
     newItem.__bidChanged = true;
     newItem.__bidChangedAt = Date.now();
     newItem.__bidChangeAmount = newBid - oldBid;
-    newItem.__bidStatus = "outbid";
   } else {
     newItem.__bidChanged = oldItem.__bidChanged || false;
     newItem.__bidChangedAt = oldItem.__bidChangedAt || 0;
     newItem.__bidChangeAmount = oldItem.__bidChangeAmount || 0;
-
-    newItem.__bidStatus = newItem.__watchedBid ? "winning" : "watching";
   }
+
+  newItem.__bidStatus = newBid <= watchedBid ? "winning" : "outbid";
 
   return newItem;
 }
@@ -752,11 +761,7 @@ structuralChange = true;
 
     updateWatchListOnly();
     
-    if (structuralChange || changed) {
-      renderGlobalWatchBar();
-    } else {
-      updateGlobalWatchBarOnly();
-    }
+    renderGlobalWatchBar();
 
   }
 
