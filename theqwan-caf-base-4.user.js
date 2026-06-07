@@ -1389,14 +1389,23 @@ function itemBonusDetails(item) {
   }
 
   function itemMatchesQualityRange(item, min, max) {
-    const q = itemQualityNumber(item);
+  min = Number(min ?? 0);
+  max = Number(max ?? 200);
 
-    if (q === null) {
-      return Number(min || 0) <= 0 && Number(max || 200) >= 200;
-    }
-
-    return q >= Number(min || 0) && q <= Number(max || 200);
+  // Default range means "quality filter is OFF"
+  if (min <= 0 && max >= 200) {
+    return true;
   }
+
+  const q = itemQualityNumber(item);
+
+  // If user IS filtering by quality, hide unknown quality until fetched
+  if (q === null) {
+    return false;
+  }
+
+  return q >= min && q <= max;
+}
 
   function itemMatchesBonusRange(item, min, max) {
     const values = itemBonusPercents(item);
