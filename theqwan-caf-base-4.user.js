@@ -823,7 +823,7 @@ function renderWatchItem(item) {
   const bonusesText = itemBonusDetails(item).join(" / ") || "None";
   const glow = itemGlowClass(item);
   const q = itemQuality(item);
-  const deal = item.__dealState || "unknown";
+  const deal = item.__dealState || "";
 
   return `
     <div style="display:flex;gap:10px;padding:10px;border-top:1px solid #444;color:#fff;">
@@ -833,16 +833,19 @@ function renderWatchItem(item) {
 
       <div style="flex:1;">
         <div style="color:#6eb6ff;font-weight:bold;">${escapeHtml(name)}</div>
-              <div style="margin-top:4px;font-weight:bold;color:
-              ${deal === "steal" ? "#00ff7f" :
-                deal === "good" ? "#30d158" :
-                deal === "fair" ? "#ffd166" :
-                deal === "bad" ? "#ff5c5c" :
-                "#888"};">
-              ${deal.toUpperCase()}
-            </div>
+            ${deal ? `
+  <div style="margin-top:4px;font-weight:bold;color:
+  ${deal === "steal" ? "#00ff7f" :
+    deal === "good" ? "#30d158" :
+    deal === "fair" ? "#ffd166" :
+    deal === "bad" ? "#ff5c5c" :
+    "#888"};">
+    ${deal.toUpperCase()}
+  </div>
+` : ""}
         ${q ? `<div class="caf-quality">Quality: ${escapeHtml(q.value)}</div>` : ""}
         <div style="color:#ccc;">Damage: ${dmg.toFixed(2)} | Accuracy: ${acc.toFixed(2)}</div>
+        <div>Bid: $${Number(bid || 0).toLocaleString()}</div>
         <div style="color:#aaa;">Bonus: ${escapeHtml(bonusesText)}</div>
                 ${
           item.__bidChanged
