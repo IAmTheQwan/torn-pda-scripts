@@ -1,9 +1,9 @@
 // JavaScript source code
 // ==UserScript==
-// @name         TheQwan CAF Base 4.4
-// @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.4.0.4
-// @description  Global CAF watch banner with auction filter/history/watch system
+// @name         TheQwan CAF5
+// @namespace    theqwan.torn.auction-filter.caf5
+// @version      5.0.0.0
+// @description  CAF5 auction filter, watch list, history/comps, quality tracking, and global watch banner
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
 // @match        https://www.torn.com/amarket.php*
@@ -11,12 +11,16 @@
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      btrmmuuoofbonmuwrkzg.supabase.co
-// @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/main/theqwan-caf-base-4.meta.js
-// @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/main/theqwan-caf-base-4.user.js
+// @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/main/caf5/build/theqwan-caf-5.meta.js
+// @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/main/caf5/build/theqwan-caf-5.user.js
 // ==/UserScript==
 
 (function () {
     "use strict";
+
+    /* =========================
+     CAF5 Phase 0: Fork stabilization
+  ========================= */
 
     const PANEL_ID = "josh-condensed-auction-filter";
     const RESULTS_ID = "josh-condensed-auction-results";
@@ -1036,7 +1040,7 @@
         panel.innerHTML = `
       <div class="caf3-card">
         <div class="caf3-header">
-          <b>CAF3 Condensed Auction Filter</b>
+          <b>CAF5 Condensed Auction Filter</b>
           <button id="caf3-collapse" class="caf3-collapse-btn">
             ${collapsed ? "Show More" : "Hide Extra"}
           </button>
