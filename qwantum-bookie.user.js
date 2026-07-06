@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.2.3
+// @version      1.2.4
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -953,6 +953,32 @@ ${safeJson(log.raw)}
             };
         }
     }
+    
+    // Also refresh panel when Torn/PDA refresh-style buttons are clicked.
+document.addEventListener('click', async e => {
+    const btn = e.target.closest('button, a, [role="button"], input[type="button"], input[type="submit"]');
+    if (!btn) return;
+
+    const txt = (btn.innerText || btn.value || btn.title || btn.getAttribute('aria-label') || '').toLowerCase();
+
+    if (
+        txt.includes('refresh') ||
+        txt.includes('reload') ||
+        btn.className?.toString().toLowerCase().includes('refresh') ||
+        btn.id?.toLowerCase().includes('refresh')
+    ) {
+        // Ignore our own button because it already has its own handler
+        if (btn.id === 'tbp-refresh-btn') return;
+
+        setTimeout(async () => {
+            if (!apiKey) return;
+            lastLoadStatus = 'Refreshing after page button click...';
+            render();
+            await fetchLogs();
+            render();
+        }, 1500);
+    }
+}, true);
 
     render();
 
