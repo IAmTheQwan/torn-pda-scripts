@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.9.1
+// @version      1.9.2
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -751,6 +751,7 @@ startTimestamp: Number(fixture.startTimestamp || existing.startTimestamp || 0),
 placedAt: Number(placedAt || existing.placedAt || 0),
 stake: Number(betData.stake || existing.stake || 0),
 odds: Number(betData.odds || fixture.myBetsOdds || existing.odds || 0),
+sourceFingerprint: betData.sourceFingerprint || existing.sourceFingerprint || '',
 capturedAt: Date.now()
 };
 const limited = Object.entries(links)
@@ -1301,7 +1302,100 @@ if (selection === away) return awayGoals > homeGoals ? 'win' : 'loss';
 if (/^(draw|tie)$/i.test(String(link.placedSelection || '').trim())) return homeGoals === awayGoals ? 'win' : 'loss';
 return '';
 }
+function parseVisibleFootballResultMessages() {
+const text = String(document.body?.innerText || '').replace(/\r/g, '');
+if (!/3-Way Ordinary time/i.test(text)) return [];
+const messages = [];
+const patterns = [
+{
+type: 'win',
+regex: /You won \$([\d,]+) on your \$([\d,]+)(?:\s+\(x([\d.]+)\)\s+bet in the Bookie on|\s+)(.+?)\s+\(3-Way Ordinary time\)\s+bet on\s+(.+?)\s+v\s+(.+?)(?=\s+\(Football\)|\.\s+You can|\.|\n|$)/gi
+},
+{
+type: 'loss',
+regex: /You lost your \$([\d,]+)(?:\s+\(x([\d.]+)\)\s+bet in the Bookie on|\s+)(.+?)\s+\(3-Way Ordinary time\)\s+bet on\s+(.+?)\s+v\s+(.+?)(?=\s+\(Football\)|\.|\n|$)/gi
+}
+];
+patterns.forEach(({ type, regex }) => {
+for (const match of text.matchAll(regex)) {
+if (type === 'win') {
+messages.push({
+type,
+winnings: Number(match[1].replace(/,/g, '')),
+stake: Number(match[2].replace(/,/g, '')),
+odds: Number(match[3] || 0),
+selection: match[4].trim(),
+homeTeam: match[5].trim(),
+awayTeam: match[6].trim()
+});
+} else {
+messages.push({
+type,
+winnings: 0,
+stake: Number(match[1].replace(/,/g, '')),
+odds: Number(match[2] || 0),
+selection: match[3].trim(),
+homeTeam: match[4].trim(),
+awayTeam: match[5].trim()
+});
+}
+}
+});
+return messages;
+}
+function captureVisibleFootballResultNames() {
+const messages = parseVisibleFootballResultMessages();
+if (!messages.length || !rawLogs.length) return { found: messages.length, captured: 0 };
+const usedResultIds = new Set();
+let links = loadBetStatsLinks();
+let captured = 0;
+messages.forEach(message => {
+const resultCandidates = rawLogs
+.filter(log => classifyLog(log) === message.type)
+.filter(log => Math.abs(getBetAmount(log) - message.stake) < 1)
+.filter(log => !usedResultIds.has(String(log.id)))
+.filter(log => !message.odds || !getOdds(log) || Math.abs(getOdds(log) - message.odds) <= 0.011)
+.filter(log => message.type !== 'win' || !message.winnings || Math.abs(getWinnings(log) - message.winnings) < 1)
+.sort((a, b) => b.timestamp - a.timestamp);
+const resultLog = resultCandidates[0];
+if (!resultLog) return;
+usedResultIds.add(String(resultLog.id));
+const key = getSelectionKey(resultLog);
+if (!key) return;
+const placedLog = rawLogs
+.filter(log => classifyLog(log) === 'placed')
+.filter(log => getSelectionKey(log) === key)
+.filter(log => Math.abs(getBetAmount(log) - message.stake) < 1)
+.filter(log => !message.odds || !getOdds(log) || Math.abs(getOdds(log) - message.odds) <= 0.011)
+.filter(log => Number(log.timestamp || 0) <= Number(resultLog.timestamp || 0))
+.sort((a, b) => b.timestamp - a.timestamp)[0];
+if (!placedLog) return;
+const id = String(placedLog.id);
+const odds = Number(message.odds || getOdds(placedLog) || 0);
+const previous = links[id] || {};
+const fingerprint = [message.type, message.stake, odds, message.selection, message.homeTeam, message.awayTeam]
+.map(value => normalizeScoreTeamName(value))
+.join('|');
+if (previous.sourceFingerprint === fingerprint) return;
+const fixture = {
+...previous,
+homeTeam: message.homeTeam,
+awayTeam: message.awayTeam,
+placedSelection: message.selection,
+myBetsOdds: odds
+};
+saveBetStatsLink(id, fixture, placedLog.timestamp, { stake: message.stake, odds, sourceFingerprint: fingerprint });
+links = loadBetStatsLinks();
+captured++;
+});
+if (captured) {
+buildBookieData();
+lastLoadStatus = `Captured home/away names for ${captured} visible settled Football bet${captured === 1 ? '' : 's'} from Torn Events.`;
+}
+return { found: messages.length, captured };
+}
 async function measureTrackedStatsDatabase() {
+captureVisibleFootballResultNames();
 buildBookieData();
 const fromTimestamp = dateToUnixStart(scanStartDate || defaultScanStartDate());
 const settledIds = getSettledPlacedBetIds(fromTimestamp);
@@ -2509,6 +2603,7 @@ body.innerHTML = `
 <div class="tbp-muted" style="margin-bottom:8px;">Tracked Football bets from ${escapeHtml(stats.fromDate)} through today. Color is determined from the captured home/away side and original odds. Legacy bets without captured fixture evidence are excluded.</div>
 <button class="tbp-btn tbp-btn-primary" id="tbp-measure-stats-btn" style="width:100%; margin-bottom:8px;">Measure Tracked Database</button>
 <div class="tbp-row" style="margin:0 2px 9px;"><span>Tracked / Untracked excluded</span><span>${stats.trackedPlaced} / ${stats.excludedUntracked}</span></div>
+${stats.excludedUntracked ? '<div class="tbp-muted" style="margin-bottom:9px;">To recover older Football bets, open Torn Events and scroll through the visible win/loss messages. Their picked team and home v away names will be captured locally; then press Measure Tracked Database.</div>' : ''}
 <div class="tbp-summary-grid">
 <div class="tbp-summary-box"><div class="tbp-summary-label">Total Record</div><div class="tbp-summary-value">${total.wins}-${total.losses}</div></div>
 <div class="tbp-summary-box"><div class="tbp-summary-label">Win / Loss</div><div class="tbp-summary-value" style="font-size:13px;">${total.winPct.toFixed(1)}% / ${total.lossPct.toFixed(1)}%</div></div>
@@ -2828,6 +2923,23 @@ return;
 }
 if (isFootballBookiePage()) startGuidedFootballHighlightKeeper();
 });
+let visibleFootballResultCaptureTimer = null;
+let visibleFootballResultObserver = null;
+function scheduleVisibleFootballResultCapture() {
+if (visibleFootballResultCaptureTimer) clearTimeout(visibleFootballResultCaptureTimer);
+visibleFootballResultCaptureTimer = setTimeout(() => {
+visibleFootballResultCaptureTimer = null;
+if (document.visibilityState !== 'visible') return;
+const result = captureVisibleFootballResultNames();
+if (result.captured && activeTab === 'batch' && !batchFeatureEnabled) render();
+}, 700);
+}
+function startVisibleFootballResultCapture() {
+if (visibleFootballResultObserver || !document.body) return;
+visibleFootballResultObserver = new MutationObserver(scheduleVisibleFootballResultCapture);
+visibleFootballResultObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+scheduleVisibleFootballResultCapture();
+}
 let panelStarted = false;
 function startBookiePanel() {
 if (panelStarted) return;
@@ -2838,6 +2950,7 @@ try {
 render();
 hydrateFromCache();
 scheduleMyBetsSnapshotCapture();
+startVisibleFootballResultCapture();
 if (footballOddsHistoryEnabled) scheduleFootballHistoryExpiry(loadFootballOddsHistory());
 } catch (error) {
 console.error('Bookie Panel failed to start.', error);
