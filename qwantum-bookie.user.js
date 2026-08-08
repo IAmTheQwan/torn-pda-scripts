@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.4.0
+// @version      1.4.1
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -1209,8 +1209,18 @@
     }
 
     let guidedFootballSession = { active: false, hrefs: [], index: -1, results: {} };
+    let guidedFootballHighlightObserver = null;
+    let guidedFootballHighlightTimer = null;
+
+    function stopGuidedFootballHighlightKeeper() {
+        guidedFootballHighlightObserver?.disconnect();
+        guidedFootballHighlightObserver = null;
+        if (guidedFootballHighlightTimer) clearTimeout(guidedFootballHighlightTimer);
+        guidedFootballHighlightTimer = null;
+    }
 
     function resetGuidedFootballSession() {
+        stopGuidedFootballHighlightKeeper();
         guidedFootballSession = { active: false, hrefs: [], index: -1, results: {} };
     }
 
@@ -1244,11 +1254,44 @@
     }
 
     function restoreGuidedFootballHighlights() {
-        if (!guidedFootballSession.active) return;
+        if (!guidedFootballSession.active || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+        const colorClasses = [
+            'tbp-football-home-green',
+            'tbp-football-home-yellow',
+            'tbp-football-away-orange'
+        ];
         Object.entries(guidedFootballSession.results).forEach(([href, matchType]) => {
             if (!matchType) return;
-            findFootballItemForHref(href)?.classList.add('tbp-football-match', `tbp-football-${matchType}`);
+            const item = findFootballItemForHref(href);
+            if (!item) return;
+            const desiredClass = `tbp-football-${matchType}`;
+            const hasWrongColor = colorClasses.some(className => className !== desiredClass && item.classList.contains(className));
+            if (item.classList.contains('tbp-football-match') && item.classList.contains(desiredClass) && !hasWrongColor) return;
+            item.classList.remove('tbp-football-match', ...colorClasses);
+            item.classList.add('tbp-football-match', desiredClass);
         });
+    }
+
+    function scheduleGuidedFootballHighlightRestore() {
+        if (!guidedFootballSession.active || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+        if (guidedFootballHighlightTimer) clearTimeout(guidedFootballHighlightTimer);
+        guidedFootballHighlightTimer = setTimeout(() => {
+            guidedFootballHighlightTimer = null;
+            restoreGuidedFootballHighlights();
+        }, 75);
+    }
+
+    function startGuidedFootballHighlightKeeper() {
+        stopGuidedFootballHighlightKeeper();
+        if (!guidedFootballSession.active || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+        guidedFootballHighlightObserver = new MutationObserver(scheduleGuidedFootballHighlightRestore);
+        guidedFootballHighlightObserver.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['class']
+        });
+        restoreGuidedFootballHighlights();
     }
 
     function recordGuidedFootballResult(href, result) {
@@ -1304,6 +1347,7 @@
                 index: -1,
                 results: {}
             };
+            startGuidedFootballHighlightKeeper();
             started = true;
         }
 
@@ -1926,11 +1970,19 @@ document.addEventListener('click', async e => {
             endGuidedFootballReview({ leftFootball: true });
             return;
         }
-        setTimeout(restoreGuidedFootballHighlights, 0);
+        scheduleGuidedFootballHighlightRestore();
     }
 
     window.addEventListener('hashchange', handleFootballReviewRouteChange);
     window.addEventListener('popstate', handleFootballReviewRouteChange);
+    document.addEventListener('visibilitychange', () => {
+        if (!guidedFootballSession.active) return;
+        if (document.visibilityState !== 'visible') {
+            stopGuidedFootballHighlightKeeper();
+            return;
+        }
+        if (isFootballBookiePage()) startGuidedFootballHighlightKeeper();
+    });
 
     render();
     hydrateFromCache();
