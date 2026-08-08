@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.3.0
+// @version      1.4.0
 // @description  Foreground-only Auction House history and price guidance for the actively viewed page
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
@@ -17,10 +17,14 @@
 
   const PANEL_ID = "theqwan-caf-clean";
   const RESULTS_ID = "theqwan-caf-clean-results";
+  const FILTERED_RESULTS_ID = "theqwan-caf-clean-filtered-results";
   const ANALYSIS_CLASS = "caf-clean-analysis";
   const SETTINGS_KEY = "cafCleanHistorySettings";
+  const FILTER_SETTINGS_KEY = "cafCleanFilterSettings";
   const CACHE_KEY = "cafCleanHistoryCache";
   const COLLECTION_KEY = "cafCleanGuidedCollection";
+  const COLLECTOR_COLLAPSED_KEY = "cafCleanCollectorCollapsed";
+  const FILTER_COLLAPSED_KEY = "cafCleanFilterCollapsed";
   const SUPABASE_URL = "https://btrmmuuoofbonmuwrkzg.supabase.co";
   const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0cm1tdXVvb2Zib25tdXdya3pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg4NTEzMTgsImV4cCI6MjA4NDQyNzMxOH0.E-s0k46BORXLICAvxtEpqoM3Qmh4-TRLaJAwXO6wJTY";
 
@@ -77,7 +81,7 @@
     #${PANEL_ID} button,
     #${PANEL_ID} select,
     #${PANEL_ID} a.caf-clean-button,
-    #${RESULTS_ID} button,
+    .caf-clean-results button,
     .${ANALYSIS_CLASS} button {
       min-height: 34px;
       border: 1px solid #555;
@@ -95,7 +99,7 @@
       text-decoration: none;
     }
     #${PANEL_ID} button:disabled,
-    #${RESULTS_ID} button:disabled,
+    .caf-clean-results button:disabled,
     .${ANALYSIS_CLASS} button:disabled {
       color: #777;
       opacity: .75;
@@ -109,15 +113,35 @@
       color: #bbb;
     }
     #${PANEL_ID} .caf-clean-collector {
-      display: grid;
-      grid-template-columns: minmax(90px, .65fr) minmax(0, 1.35fr);
-      gap: 6px;
-      align-items: center;
       margin-top: 8px;
       padding: 7px;
       background: #181818;
       border: 1px solid #444;
       border-radius: 6px;
+    }
+    #${PANEL_ID} .caf-clean-collector-body {
+      display: grid;
+      grid-template-columns: minmax(90px, .65fr) minmax(0, 1.35fr);
+      gap: 6px;
+      align-items: center;
+      margin-top: 6px;
+    }
+    #${PANEL_ID} .caf-clean-section-toggle {
+      width: 100%;
+      min-height: 28px;
+    }
+    #${PANEL_ID} .caf-clean-filter-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 6px;
+      margin-top: 6px;
+    }
+    #${PANEL_ID} .caf-clean-filter-grid input,
+    #${PANEL_ID} .caf-clean-filter-grid select {
+      width: 100%;
+      min-width: 0;
+      min-height: 32px;
+      box-sizing: border-box;
     }
     #caf-clean-collection-progress {
       grid-column: 1 / -1;
@@ -134,7 +158,7 @@
       margin-top: 7px;
       color: #aaa;
     }
-    #${RESULTS_ID} {
+    .caf-clean-results {
       margin: 10px 0;
       color: #eee;
       background: #242424;
@@ -143,13 +167,17 @@
       overflow: hidden;
       box-sizing: border-box;
     }
-    #${RESULTS_ID} .caf-clean-results-header {
+    .caf-clean-results .caf-clean-results-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
       padding: 8px 10px;
       background: #303030;
       font-size: 13px;
       font-weight: 700;
     }
-    #${RESULTS_ID} .caf-clean-result {
+    .caf-clean-results .caf-clean-result {
       display: grid;
       grid-template-columns: 78px minmax(0, 1fr);
       gap: 9px;
@@ -157,7 +185,7 @@
       border-top: 1px solid #444;
       box-sizing: border-box;
     }
-    #${RESULTS_ID} .caf-clean-image {
+    .caf-clean-results .caf-clean-image {
       display: flex;
       align-items: center;
       justify-content: center;
@@ -170,25 +198,25 @@
       box-sizing: border-box;
       overflow: hidden;
     }
-    #${RESULTS_ID} .caf-clean-image.yellow { border-color: #d8d800; box-shadow: 0 0 8px rgba(216,216,0,.7); }
-    #${RESULTS_ID} .caf-clean-image.orange { border-color: #ff8c00; box-shadow: 0 0 8px rgba(255,140,0,.7); }
-    #${RESULTS_ID} .caf-clean-image.red { border-color: #d94444; box-shadow: 0 0 8px rgba(217,68,68,.7); }
-    #${RESULTS_ID} .caf-clean-image img,
-    #${RESULTS_ID} .caf-clean-image canvas {
+    .caf-clean-results .caf-clean-image.yellow { border-color: #d8d800; box-shadow: 0 0 8px rgba(216,216,0,.7); }
+    .caf-clean-results .caf-clean-image.orange { border-color: #ff8c00; box-shadow: 0 0 8px rgba(255,140,0,.7); }
+    .caf-clean-results .caf-clean-image.red { border-color: #d94444; box-shadow: 0 0 8px rgba(217,68,68,.7); }
+    .caf-clean-results .caf-clean-image img,
+    .caf-clean-results .caf-clean-image canvas {
       max-width: 70px;
       max-height: 50px;
       object-fit: contain;
     }
-    #${RESULTS_ID} .caf-clean-item-name {
+    .caf-clean-results .caf-clean-item-name {
       color: #6eb6ff;
       font-size: 15px;
       font-weight: 700;
       overflow-wrap: anywhere;
     }
-    #${RESULTS_ID} .caf-clean-quality { color: #c967ff; font-weight: 700; }
-    #${RESULTS_ID} .caf-clean-item-line { color: #bbb; line-height: 1.3; }
-    #${RESULTS_ID} .caf-clean-item-bid { color: #fff; line-height: 1.4; }
-    #${RESULTS_ID} .caf-clean-source-page {
+    .caf-clean-results .caf-clean-quality { color: #c967ff; font-weight: 700; }
+    .caf-clean-results .caf-clean-item-line { color: #bbb; line-height: 1.3; }
+    .caf-clean-results .caf-clean-item-bid { color: #fff; line-height: 1.4; }
+    .caf-clean-results .caf-clean-source-page {
       display: inline-block;
       margin-top: 3px;
       padding: 2px 5px;
@@ -198,13 +226,13 @@
       border-radius: 4px;
       font-size: 10px;
     }
-    #${RESULTS_ID} .caf-clean-item-actions {
+    .caf-clean-results .caf-clean-item-actions {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       gap: 6px;
       margin-top: 7px;
     }
-    #${RESULTS_ID} .caf-clean-item-actions button { width: 100%; }
+    .caf-clean-results .caf-clean-item-actions button { width: 100%; }
     .${ANALYSIS_CLASS} {
       flex-basis: 100%;
       grid-column: 1 / -1;
@@ -274,7 +302,9 @@
   document.head.appendChild(style);
 
   function isActiveView() {
-    return document.visibilityState === "visible" && document.hasFocus();
+    // Torn PDA webviews can report hasFocus() as false even while their page is
+    // foregrounded. visibilityState follows the actual app/page lifecycle.
+    return document.visibilityState === "visible";
   }
 
   function escapeHtml(value) {
@@ -289,6 +319,70 @@
 
   function delay(milliseconds) {
     return new Promise(resolve => setTimeout(resolve, milliseconds));
+  }
+
+  function durationMilliseconds(value) {
+    const text = String(value || "").toLowerCase();
+    let total = 0;
+    let matched = false;
+    const units = /([\d.]+)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b/g;
+    let match;
+
+    while ((match = units.exec(text))) {
+      matched = true;
+      const amount = Number(match[1]);
+      const unit = match[2][0];
+      if (unit === "d") total += amount * 86400000;
+      if (unit === "h") total += amount * 3600000;
+      if (unit === "m") total += amount * 60000;
+      if (unit === "s") total += amount * 1000;
+    }
+
+    return matched ? total : 0;
+  }
+
+  function normalizedFutureTimestamp(value) {
+    let timestamp = Number(value);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return 0;
+    if (timestamp < 1e12) timestamp *= 1000;
+    const now = Date.now();
+    return timestamp > now - 60000 && timestamp < now + 31 * 86400000 ? timestamp : 0;
+  }
+
+  function cardEndTimestamp(card, source, timeText) {
+    const html = card.outerHTML || "";
+    const timestampMatches = [
+      ...html.matchAll(/(?:endtime|end-time|ends-at|timestamp)["'=:\s]+(\d{10,13})/gi)
+    ];
+
+    for (const match of timestampMatches) {
+      const timestamp = normalizedFutureTimestamp(match[1]);
+      if (timestamp) return timestamp;
+    }
+
+    const duration = durationMilliseconds(timeText || source);
+    return duration ? Date.now() + duration : 0;
+  }
+
+  function countdownText(endsAtMs) {
+    let seconds = Math.max(0, Math.floor((Number(endsAtMs || 0) - Date.now()) / 1000));
+    if (!seconds) return "Ended";
+    const days = Math.floor(seconds / 86400);
+    seconds %= 86400;
+    const hours = Math.floor(seconds / 3600);
+    seconds %= 3600;
+    const minutes = Math.floor(seconds / 60);
+    seconds %= 60;
+    if (days) return `${days}d ${hours}h ${minutes}m`;
+    if (hours) return `${hours}h ${minutes}m ${seconds}s`;
+    return `${minutes}m ${seconds}s`;
+  }
+
+  function tickCountdowns() {
+    if (!isActiveView()) return;
+    document.querySelectorAll(".caf-clean-countdown[data-ends-at]").forEach(element => {
+      element.textContent = countdownText(element.getAttribute("data-ends-at"));
+    });
   }
 
   function numberFrom(value) {
@@ -407,8 +501,13 @@
       card.querySelector("img[alt]")?.getAttribute("alt") ||
       "";
 
-    if (explicit && explicit.length <= 100 && !/^image$/i.test(explicit)) {
-      return explicit.trim();
+    const cleanedExplicit = explicit
+      .replace(/^(?:image|picture|thumbnail)\s+(?:of\s+)?/i, "")
+      .replace(/\s+(?:image|picture|thumbnail)$/i, "")
+      .trim();
+
+    if (cleanedExplicit && cleanedExplicit.length <= 100 && !/^image$/i.test(cleanedExplicit)) {
+      return cleanedExplicit;
     }
 
     const ariaPrefix = rawLabel.split(/Damage:/i)[0]
@@ -474,6 +573,7 @@
     const bidMatch = source.match(/(?:current\s+bid|top\s+bid|bid)\s*[:\-]?\s*\$?([\d,]+)/i) || source.match(/\$([\d,]+)/);
     const bid = bidMatch ? Number(bidMatch[1].replace(/,/g, "")) : 0;
     const bonuses = bonusDetails(`${source}\n${card.outerHTML || ""}`);
+    const timeText = (source.match(/(?:time\s+left|ends?\s+in)\s*[:\-]?\s*([^\n]+)/i) || [])[1]?.trim() || "";
     const item = {
       name: cardName(card, rawLabel),
       damage,
@@ -482,7 +582,8 @@
       bid,
       bonuses,
       color: cardColor(card),
-      timeText: (source.match(/(?:time\s+left|ends?\s+in)\s*[:\-]?\s*([^\n]+)/i) || [])[1]?.trim() || ""
+      timeText,
+      endsAtMs: cardEndTimestamp(card, source, timeText)
     };
 
     item.id = cardIdentifier(card, item, index);
@@ -504,6 +605,118 @@
     ).join(" / ") || "No bonus";
   }
 
+  function defaultFilterSettings() {
+    return {
+      name: "",
+      minDamage: "",
+      minAccuracy: "",
+      maxBid: "",
+      qualityMin: "",
+      qualityMax: "",
+      color: "",
+      bonus1: "",
+      bonus2: "",
+      doubleOnly: false
+    };
+  }
+
+  function loadFilterSettings() {
+    try {
+      return {
+        ...defaultFilterSettings(),
+        ...JSON.parse(localStorage.getItem(FILTER_SETTINGS_KEY) || "{}")
+      };
+    } catch {
+      return defaultFilterSettings();
+    }
+  }
+
+  function filterSettingsFromControls() {
+    return {
+      name: document.getElementById("caf-clean-filter-name")?.value.trim() || "",
+      minDamage: document.getElementById("caf-clean-filter-damage")?.value || "",
+      minAccuracy: document.getElementById("caf-clean-filter-accuracy")?.value || "",
+      maxBid: document.getElementById("caf-clean-filter-bid")?.value || "",
+      qualityMin: document.getElementById("caf-clean-filter-quality-min")?.value || "",
+      qualityMax: document.getElementById("caf-clean-filter-quality-max")?.value || "",
+      color: document.getElementById("caf-clean-filter-color")?.value || "",
+      bonus1: document.getElementById("caf-clean-filter-bonus1")?.value || "",
+      bonus2: document.getElementById("caf-clean-filter-bonus2")?.value || "",
+      doubleOnly: !!document.getElementById("caf-clean-filter-double")?.checked
+    };
+  }
+
+  function bonusFilterOptions(selectedValue = "") {
+    const options = Object.entries(BONUS_NAMES)
+      .map(([id, name]) => ({ id: String(id), name }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    return `<option value="">Any bonus</option>${options.map(option =>
+      `<option value="${option.id}" ${selectedValue === option.id ? "selected" : ""}>${escapeHtml(option.name)}</option>`
+    ).join("")}`;
+  }
+
+  function itemMatchesGeneratedFilter(item, filter) {
+    const itemBonusIds = (item.bonuses || []).map(bonus => String(bonus.id));
+    const quality = item.quality === null || item.quality === undefined ? null : Number(item.quality);
+    return (!filter.name || String(item.name || "").toLowerCase().includes(filter.name.toLowerCase()))
+      && (!filter.minDamage || Number(item.damage || 0) >= Number(filter.minDamage))
+      && (!filter.minAccuracy || Number(item.accuracy || 0) >= Number(filter.minAccuracy))
+      && (!filter.maxBid || (Number(item.bid || 0) > 0 && Number(item.bid) <= Number(filter.maxBid)))
+      && (!filter.qualityMin || (quality !== null && quality >= Number(filter.qualityMin)))
+      && (!filter.qualityMax || (quality !== null && quality <= Number(filter.qualityMax)))
+      && (!filter.color || (filter.color === "none" ? !item.color : item.color === filter.color))
+      && (!filter.bonus1 || itemBonusIds.includes(filter.bonus1))
+      && (!filter.bonus2 || itemBonusIds.includes(filter.bonus2))
+      && (!filter.doubleOnly || itemBonusIds.length >= 2);
+  }
+
+  function generateFilteredResults() {
+    if (!isActiveView()) {
+      setStatus("Keep the Auction House visible while generating a filtered list.", true);
+      return;
+    }
+
+    let source = [...itemById.values()];
+    if (!source.length) {
+      source = analyzeCurrentPage();
+    }
+    if (!source.length) return;
+
+    const filter = filterSettingsFromControls();
+    localStorage.setItem(FILTER_SETTINGS_KEY, JSON.stringify(filter));
+    const filtered = source.filter(item => itemMatchesGeneratedFilter(item, filter));
+
+    if (!filtered.length) {
+      document.getElementById(FILTERED_RESULTS_ID)?.remove();
+      setStatus(`Filter generated no matches from ${source.length} compiled item(s).`, true);
+      return;
+    }
+
+    renderCompiledResults(
+      filtered,
+      `Filtered Results | ${filtered.length} of ${source.length} compiled item(s)`,
+      FILTERED_RESULTS_ID
+    );
+    setStatus(`Generated a separate filtered list with ${filtered.length} item(s).`);
+  }
+
+  function clearGeneratedFilter() {
+    const defaults = defaultFilterSettings();
+    localStorage.removeItem(FILTER_SETTINGS_KEY);
+    document.getElementById(FILTERED_RESULTS_ID)?.remove();
+    document.getElementById("caf-clean-filter-name").value = defaults.name;
+    document.getElementById("caf-clean-filter-damage").value = defaults.minDamage;
+    document.getElementById("caf-clean-filter-accuracy").value = defaults.minAccuracy;
+    document.getElementById("caf-clean-filter-bid").value = defaults.maxBid;
+    document.getElementById("caf-clean-filter-quality-min").value = defaults.qualityMin;
+    document.getElementById("caf-clean-filter-quality-max").value = defaults.qualityMax;
+    document.getElementById("caf-clean-filter-color").value = defaults.color;
+    document.getElementById("caf-clean-filter-bonus1").value = defaults.bonus1;
+    document.getElementById("caf-clean-filter-bonus2").value = defaults.bonus2;
+    document.getElementById("caf-clean-filter-double").checked = defaults.doubleOnly;
+    setStatus("Filtered list cleared. Compiled results were kept.");
+  }
+
   function readCurrentPageItems() {
     cardById.clear();
     return auctionCards().map((card, index) => {
@@ -513,15 +726,25 @@
     });
   }
 
-  function renderCompiledResults(items, heading = `Compiled Results | ${items.length} item(s) from this loaded page`) {
-    document.getElementById(RESULTS_ID)?.remove();
+  function renderCompiledResults(
+    items,
+    heading = `Compiled Results | ${items.length} item(s) from this loaded page`,
+    containerId = RESULTS_ID
+  ) {
+    document.getElementById(containerId)?.remove();
     if (!items.length) return;
 
+    const collapsedKey = `${containerId}:collapsed`;
+    const collapsed = localStorage.getItem(collapsedKey) === "true";
     const results = document.createElement("section");
-    results.id = RESULTS_ID;
+    results.id = containerId;
+    results.className = "caf-clean-results";
     results.innerHTML = `
-      <div class="caf-clean-results-header">${escapeHtml(heading)}</div>
-      <div class="caf-clean-results-body"></div>
+      <div class="caf-clean-results-header">
+        <span>${escapeHtml(heading)}</span>
+        <button class="caf-clean-results-toggle">${collapsed ? "Show ▼" : "Hide ▲"}</button>
+      </div>
+      <div class="caf-clean-results-body" style="display:${collapsed ? "none" : "block"}"></div>
     `;
     document.getElementById(PANEL_ID).after(results);
     const body = results.querySelector(".caf-clean-results-body");
@@ -541,7 +764,9 @@
           <div class="caf-clean-item-line">Bonus: ${escapeHtml(itemBonusText(item))}</div>
           <div class="caf-clean-item-line">Color: ${item.color ? item.color.toUpperCase() : "None"}</div>
           <div class="caf-clean-item-bid">Bid: ${money(item.bid)}</div>
-          ${item.timeText ? `<div class="caf-clean-item-line">Time left: ${escapeHtml(item.timeText)}</div>` : ""}
+          ${item.endsAtMs
+            ? `<div class="caf-clean-item-line">Time left: <span class="caf-clean-countdown" data-ends-at="${Number(item.endsAtMs)}">${countdownText(item.endsAtMs)}</span></div>`
+            : item.timeText ? `<div class="caf-clean-item-line">Time left: ${escapeHtml(item.timeText)}</div>` : ""}
           ${sourcePage ? `<span class="caf-clean-source-page">Collected page ${sourcePage}${sourceCard ? " — current" : " — saved"}</span>` : ""}
           <div class="caf-clean-item-actions">
             <button class="caf-clean-history">History + Price Check</button>
@@ -589,6 +814,16 @@
       });
 
       body.appendChild(result);
+    });
+
+    results.querySelector(".caf-clean-results-toggle").addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const resultsBody = results.querySelector(".caf-clean-results-body");
+      const willCollapse = resultsBody.style.display !== "none";
+      resultsBody.style.display = willCollapse ? "none" : "block";
+      event.currentTarget.textContent = willCollapse ? "Show ▼" : "Hide ▲";
+      localStorage.setItem(collapsedKey, willCollapse ? "true" : "false");
     });
   }
 
@@ -710,7 +945,7 @@
   function isNativePaginationClick(event) {
     if (!event.isTrusted) return false;
     const control = event.target.closest?.("a, button");
-    if (!control || control.closest(`#${PANEL_ID}, #${RESULTS_ID}`)) return false;
+    if (!control || control.closest(`#${PANEL_ID}, .caf-clean-results`)) return false;
 
     const href = control.getAttribute("href") || "";
     const text = String(control.textContent || control.getAttribute("aria-label") || "").trim();
@@ -754,7 +989,7 @@
   function nextTornPageUrl() {
     const currentStart = auctionStartFromUrl(location.href) || 0;
     const nativeCandidates = [...document.querySelectorAll("a[href]")]
-      .filter(link => !link.closest(`#${PANEL_ID}, #${RESULTS_ID}`))
+      .filter(link => !link.closest(`#${PANEL_ID}, .caf-clean-results`))
       .map(link => ({ href: link.href, start: auctionStartFromUrl(link.href) }))
       .filter(candidate => Number.isFinite(candidate.start) && candidate.start > currentStart)
       .sort((left, right) => left.start - right.start);
@@ -1023,10 +1258,10 @@
     return Math.abs(value - current) / span < .12 ? "#ffd166" : "#ff7b89";
   }
 
-  function renderHistory(item, sales, box) {
+  function renderHistory(item, sales, box, usedBroadFallback = false) {
     const prices = sales.map(sale => Number(sale.price || 0)).filter(Boolean);
     if (!prices.length) {
-      box.innerHTML = `<span class="caf-clean-muted">No comparable finished sales were found.</span>`;
+      box.innerHTML = `<span class="caf-clean-muted">No finished sales found for parsed item “${escapeHtml(item.name)}”.</span>`;
       return;
     }
 
@@ -1056,6 +1291,7 @@
         <span class="caf-clean-muted"> | ${sales.length} sale(s)</span>
       </div>
       <div class="caf-clean-advice">Price comparison only. The current auction can still rise before it closes.</div>
+      ${usedBroadFallback ? `<div class="caf-clean-advice">No exact bonus match was found, so this shows broader history for the same item.</div>` : ""}
       <button class="caf-clean-toggle" style="width:100%;margin-top:5px">Previous Sales ▼</button>
       <div class="caf-clean-sales">
         <div class="caf-clean-grid caf-clean-grid-header">
@@ -1109,9 +1345,24 @@
     box.innerHTML = `<span class="caf-clean-muted">Checking history for ${escapeHtml(item.name)}...</span>`;
 
     try {
-      const sales = await searchHistoryDeep(historyBody(item));
+      const body = historyBody(item);
+      let sales = await searchHistoryDeep(body);
+      let usedBroadFallback = false;
+
+      if (!sales.length && (body.__targetBonusIds.length || body.__forceDouble)) {
+        const broadBody = {
+          ...body,
+          __targetBonusIds: [],
+          __forceDouble: false
+        };
+        delete broadBody.bonus1_id;
+        delete broadBody.bonus2_id;
+        sales = await searchHistoryDeep(broadBody);
+        usedBroadFallback = sales.length > 0;
+      }
+
       if (!isActiveView()) throw new Error("History stopped because the Auction House page lost focus");
-      renderHistory(item, sales, box);
+      renderHistory(item, sales, box, usedBroadFallback);
     } catch (error) {
       box.innerHTML = `<span class="caf-clean-high">History error: ${escapeHtml(error.message)}</span>`;
     } finally {
@@ -1157,6 +1408,7 @@
   function clearAnalysis() {
     document.querySelectorAll(`.${ANALYSIS_CLASS}`).forEach(element => element.remove());
     document.getElementById(RESULTS_ID)?.remove();
+    document.getElementById(FILTERED_RESULTS_ID)?.remove();
     localStorage.removeItem(COLLECTION_KEY);
     itemById.clear();
     cardById.clear();
@@ -1164,11 +1416,28 @@
     setStatus("Analysis cleared. Torn's original Auction House page was not changed or reloaded.");
   }
 
+  function bindCollapsibleSection(buttonId, bodyId, storageKey, label) {
+    const button = document.getElementById(buttonId);
+    const body = document.getElementById(bodyId);
+    if (!button || !body) return;
+
+    button.addEventListener("click", event => {
+      event.preventDefault();
+      const willCollapse = body.style.display !== "none";
+      body.style.display = willCollapse ? "none" : "grid";
+      button.textContent = `${label} ${willCollapse ? "▶" : "▼"}`;
+      localStorage.setItem(storageKey, willCollapse ? "true" : "false");
+    });
+  }
+
   function injectPanel() {
     if (document.getElementById(PANEL_ID) || !document.body) return;
     const current = settings();
     const savedCollection = loadCollection();
     const collectionTarget = Number(savedCollection?.target || 5);
+    const filter = loadFilterSettings();
+    const collectorCollapsed = localStorage.getItem(COLLECTOR_COLLAPSED_KEY) === "true";
+    const filterCollapsed = localStorage.getItem(FILTER_COLLAPSED_KEY) === "true";
     const panel = document.createElement("div");
     panel.id = PANEL_ID;
     panel.innerHTML = `
@@ -1186,14 +1455,41 @@
         <label><input id="caf-clean-double" type="checkbox" ${current.doubleOnly ? "checked" : ""}> Double-bonus sales only</label>
       </div>
       <div class="caf-clean-collector">
-        <label>Guided pages
-          <select id="caf-clean-collector-target">
-            ${[2, 3, 4, 5, 6, 7, 8, 9, 10].map(count => `<option value="${count}" ${collectionTarget === count ? "selected" : ""}>${count}</option>`).join("")}
+        <button id="caf-clean-collector-collapse" class="caf-clean-section-toggle">Guided Collection ${collectorCollapsed ? "▶" : "▼"}</button>
+        <div id="caf-clean-collector-body" class="caf-clean-collector-body" style="display:${collectorCollapsed ? "none" : "grid"}">
+          <label>Guided pages
+            <select id="caf-clean-collector-target">
+              ${[2, 3, 4, 5, 6, 7, 8, 9, 10].map(count => `<option value="${count}" ${collectionTarget === count ? "selected" : ""}>${count}</option>`).join("")}
+            </select>
+          </label>
+          <button id="caf-clean-collector-toggle">Start Guided Collection</button>
+          <a id="caf-clean-next-page" class="caf-clean-button" href="#">Next Torn Page →</a>
+          <div id="caf-clean-collection-progress"></div>
+        </div>
+      </div>
+      <div class="caf-clean-collector">
+        <button id="caf-clean-filter-collapse" class="caf-clean-section-toggle">Generate Filtered List ${filterCollapsed ? "▶" : "▼"}</button>
+        <div id="caf-clean-filter-body" class="caf-clean-filter-grid" style="display:${filterCollapsed ? "none" : "grid"}">
+          <input id="caf-clean-filter-name" placeholder="Item name" value="${escapeAttr(filter.name)}">
+          <select id="caf-clean-filter-color">
+            <option value="" ${!filter.color ? "selected" : ""}>Any color</option>
+            <option value="none" ${filter.color === "none" ? "selected" : ""}>No color</option>
+            <option value="yellow" ${filter.color === "yellow" ? "selected" : ""}>Yellow</option>
+            <option value="orange" ${filter.color === "orange" ? "selected" : ""}>Orange</option>
+            <option value="red" ${filter.color === "red" ? "selected" : ""}>Red</option>
           </select>
-        </label>
-        <button id="caf-clean-collector-toggle">Start Guided Collection</button>
-        <a id="caf-clean-next-page" class="caf-clean-button" href="#">Next Torn Page →</a>
-        <div id="caf-clean-collection-progress"></div>
+          <input id="caf-clean-filter-damage" type="number" step="0.01" placeholder="Minimum damage" value="${escapeAttr(filter.minDamage)}">
+          <input id="caf-clean-filter-accuracy" type="number" step="0.01" placeholder="Minimum accuracy" value="${escapeAttr(filter.minAccuracy)}">
+          <input id="caf-clean-filter-bid" type="number" step="1" placeholder="Maximum bid" value="${escapeAttr(filter.maxBid)}">
+          <span></span>
+          <input id="caf-clean-filter-quality-min" type="number" step="0.01" placeholder="Minimum quality" value="${escapeAttr(filter.qualityMin)}">
+          <input id="caf-clean-filter-quality-max" type="number" step="0.01" placeholder="Maximum quality" value="${escapeAttr(filter.qualityMax)}">
+          <select id="caf-clean-filter-bonus1">${bonusFilterOptions(String(filter.bonus1 || ""))}</select>
+          <select id="caf-clean-filter-bonus2">${bonusFilterOptions(String(filter.bonus2 || ""))}</select>
+          <label style="grid-column:1 / -1"><input id="caf-clean-filter-double" type="checkbox" ${filter.doubleOnly ? "checked" : ""}> Double-bonus items only</label>
+          <button id="caf-clean-filter-generate">Generate New List</button>
+          <button id="caf-clean-filter-clear">Clear Filtered List</button>
+        </div>
       </div>
       <div class="caf-clean-controls">
         <button id="caf-clean-analyze">Compile Loaded Items</button>
@@ -1215,12 +1511,16 @@
     panel.querySelector("#caf-clean-all-history").addEventListener("click", analyzeAllVisibleHistory);
     panel.querySelector("#caf-clean-collector-toggle").addEventListener("click", toggleGuidedCollection);
     panel.querySelector("#caf-clean-next-page").addEventListener("click", prepareTopNextPage);
+    panel.querySelector("#caf-clean-filter-generate").addEventListener("click", generateFilteredResults);
+    panel.querySelector("#caf-clean-filter-clear").addEventListener("click", clearGeneratedFilter);
     panel.querySelector("#caf-clean-clear").addEventListener("click", clearAnalysis);
     panel.querySelector("#caf-clean-cache").addEventListener("click", () => {
       localStorage.removeItem(CACHE_KEY);
       setStatus("History cache cleared.");
     });
     panel.querySelectorAll("select, input").forEach(element => element.addEventListener("change", saveSettings));
+    bindCollapsibleSection("caf-clean-collector-collapse", "caf-clean-collector-body", COLLECTOR_COLLAPSED_KEY, "Guided Collection");
+    bindCollapsibleSection("caf-clean-filter-collapse", "caf-clean-filter-body", FILTER_COLLAPSED_KEY, "Generate Filtered List");
 
     document.addEventListener("click", markManualCollectionNavigation, true);
     window.addEventListener("hashchange", handleAuctionPageChange);
@@ -1238,4 +1538,5 @@
   } else {
     injectPanel();
   }
+  setInterval(tickCountdowns, 1000);
 })();
