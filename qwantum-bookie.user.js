@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.5.1
+// @version      1.5.2
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -54,6 +54,7 @@ const FOOTBALL_ODDS_HISTORY_KEY = 'tbp_football_odds_history';
 const FOOTBALL_FIXTURE_RECORDS_KEY = 'tbp_football_fixture_records';
 const MANUAL_BET_LINKS_KEY = 'tbp_manual_bet_fixture_links';
 const PENDING_MANUAL_CAPTURE_KEY = 'tbp_pending_manual_bet_capture';
+const MY_BETS_SNAPSHOT_KEY = 'tbp_my_bets_open_snapshot';
 const MAX_ODDS_HISTORY_GAMES = 100;
 const MAX_ODDS_OBSERVATIONS_PER_SELECTION = 20;
 const MAX_GUIDED_FOOTBALL_GAMES = 20;
@@ -62,6 +63,8 @@ const FOOTBALL_FIXTURE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const FOOTBALL_BET_LINK_WINDOW_MS = 10 * 60 * 1000;
 const FOOTBALL_PENDING_BET_VISIBLE_MS = 30 * 60 * 1000;
 const MANUAL_CAPTURE_TTL_MS = 30 * 60 * 1000;
+const MY_BETS_SNAPSHOT_TTL_MS = 6 * 60 * 60 * 1000;
+const MAX_CLUSTER_GAP_SECONDS = 8 * 60 * 60;
 const styles = `
 #tbp-container { position:fixed; top:20px; right:20px; width:390px; background:#1a1a1a; color:#eee; border:1px solid #444; z-index:999999!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
 #tbp-container.minimized { width:38px; height:38px; cursor:pointer; display:flex; align-items:center; justify-content:center; background:#007bff; border:1px solid #0056b3; border-radius:4px; font-weight:bold; font-size:20px; }
@@ -347,13 +350,20 @@ buildDailyTotals();
 const unsettledResultCounts = new Map();
 const seenOpenIds = new Set();
 const foundOpen = [];
+let clusterStarted = false;
+let lastClusterTimestamp = 0;
 for (const log of logs) {
 const type = classifyLog(log);
 const key = getSelectionKey(log);
 if (type === 'other') continue;
-if (type === 'withdraw' || type === 'deposit') continue;
+if (type === 'withdraw' || type === 'deposit') break;
+if (clusterStarted && lastClusterTimestamp > 0) {
+const gap = lastClusterTimestamp - log.timestamp;
+if (gap > MAX_CLUSTER_GAP_SECONDS) break;
+}
 if (type === 'win' || type === 'loss' || type === 'refund') {
 if (key) unsettledResultCounts.set(key, Number(unsettledResultCounts.get(key) || 0) + 1);
+if (clusterStarted) lastClusterTimestamp = log.timestamp;
 continue;
 }
 if (type !== 'placed') continue;
@@ -371,6 +381,8 @@ continue;
 const uniqueId = `${log.id}|${key}|${bet}|${odds}|${log.timestamp}`;
 if (seenOpenIds.has(uniqueId)) continue;
 seenOpenIds.add(uniqueId);
+clusterStarted = true;
+lastClusterTimestamp = log.timestamp;
 const fixture = findFixtureForOpenBet(log, bet, odds);
 foundOpen.push({
 id: log.id,
@@ -384,7 +396,11 @@ selection: key,
 fixture
 });
 }
-openBets = foundOpen.sort((a, b) => b.timestamp - a.timestamp);
+const fallbackOpen = foundOpen.sort((a, b) => b.timestamp - a.timestamp);
+const myBetsSnapshot = loadMyBetsOpenSnapshot();
+openBets = myBetsSnapshot
+? buildOpenBetsFromMyBetsSnapshot(myBetsSnapshot, fallbackOpen)
+: fallbackOpen;
 }
 function buildDailyTotals() {
 const map = new Map();
@@ -873,6 +889,93 @@ odds: Number(match[2]),
 selection: match[3].trim(),
 market: match[4].trim()
 };
+}
+function loadMyBetsOpenSnapshot() {
+try {
+const snapshot = JSON.parse(localStorage.getItem(MY_BETS_SNAPSHOT_KEY) || 'null');
+if (!snapshot || !Array.isArray(snapshot.entries)) return null;
+if (Date.now() - Number(snapshot.capturedAt || 0) > MY_BETS_SNAPSHOT_TTL_MS) return null;
+return snapshot;
+} catch {
+return null;
+}
+}
+function buildOpenBetsFromMyBetsSnapshot(snapshot, fallbackOpen) {
+const unusedFallback = new Set(fallbackOpen.map((_, index) => index));
+return snapshot.entries.map((entry, snapshotIndex) => {
+let matchedIndex = fallbackOpen.findIndex((bet, index) =>
+unusedFallback.has(index)
+&& Math.abs(Number(bet.stake || 0) - Number(entry.stake || 0)) < 1
+&& Math.abs(Number(bet.odds || 0) - Number(entry.odds || 0)) <= 0.011
+);
+if (matchedIndex < 0) {
+matchedIndex = fallbackOpen.findIndex((bet, index) =>
+unusedFallback.has(index)
+&& Math.abs(Number(bet.stake || 0) - Number(entry.stake || 0)) < 1
+);
+}
+const apiBet = matchedIndex >= 0 ? fallbackOpen[matchedIndex] : null;
+if (matchedIndex >= 0) unusedFallback.delete(matchedIndex);
+const stake = Number(entry.stake || apiBet?.stake || 0);
+const odds = Number(entry.odds || apiBet?.odds || 0);
+const fixture = {
+...(apiBet?.fixture || {}),
+gameId: entry.gameId,
+matchTitle: entry.matchTitle,
+homeTeam: entry.homeTeam,
+awayTeam: entry.awayTeam,
+competition: entry.competition,
+placedSelection: entry.selection,
+market: entry.market,
+myBetsOdds: odds,
+linkedBy: 'my-bets-snapshot'
+};
+return {
+id: apiBet?.id || `mybets_${entry.gameId}_${snapshotIndex}_${stake}_${odds}`,
+timestamp: apiBet?.timestamp || Math.floor(Number(snapshot.capturedAt || Date.now()) / 1000),
+key: apiBet?.key || `mybets/${entry.gameId}/${snapshotIndex}`,
+stake,
+odds,
+potentialProfit: odds > 0 ? stake * (odds - 1) : 0,
+potentialReturn: odds > 0 ? stake * odds : 0,
+selection: entry.selection || apiBet?.selection || '',
+fixture
+};
+}).sort((a, b) => b.timestamp - a.timestamp);
+}
+function captureVisibleMyBetsSnapshot() {
+if (!/^#\/your-bets(?:\/|$)/i.test(location.hash)) return false;
+const links = Array.from(document.querySelectorAll('a[href^="#/your-bets/"]'));
+if (!links.length) return false;
+const entries = [];
+links.forEach(link => {
+const href = link.getAttribute('href') || '';
+const gameId = href.match(/^#\/your-bets\/(\d+)$/i)?.[1] || '';
+const matchTitle = String(link.querySelector('.matchName p, .pop-game .name p')?.title || '')
+.replace(/\s+/g, ' ')
+.trim();
+const details = parseFootballFixtureTitle(matchTitle);
+if (!gameId || !details.homeTeam || !details.awayTeam) return;
+Array.from(link.querySelectorAll('.stick .text[title]')).forEach(element => {
+const pendingBet = parsePendingMyBetTitle(element.title);
+if (!pendingBet) return;
+entries.push({ gameId, matchTitle, ...details, ...pendingBet });
+});
+});
+const previous = loadMyBetsOpenSnapshot();
+const previousEntries = JSON.stringify(previous?.entries || []);
+const nextEntries = JSON.stringify(entries);
+localStorage.setItem(MY_BETS_SNAPSHOT_KEY, JSON.stringify({ capturedAt: Date.now(), entries }));
+if (previousEntries === nextEntries) return false;
+buildBookieData();
+lastLoadStatus = `Synced ${entries.length} open bet${entries.length === 1 ? '' : 's'} from My Bets.`;
+render();
+return true;
+}
+function scheduleMyBetsSnapshotCapture() {
+if (!/^#\/your-bets(?:\/|$)/i.test(location.hash)) return;
+setTimeout(captureVisibleMyBetsSnapshot, 500);
+setTimeout(captureVisibleMyBetsSnapshot, 1600);
 }
 function captureArmedBetFromMyBetsLink(link) {
 const pending = getPendingManualCapture();
@@ -1979,6 +2082,7 @@ scheduleGuidedFootballHighlightRestore();
 }
 window.addEventListener('hashchange', handleFootballReviewRouteChange);
 window.addEventListener('hashchange', captureArmedBetFromCurrentMyBetsRoute);
+window.addEventListener('hashchange', scheduleMyBetsSnapshotCapture);
 window.addEventListener('popstate', handleFootballReviewRouteChange);
 document.addEventListener('visibilitychange', () => {
 if (!guidedFootballSession.active) return;
@@ -1997,6 +2101,7 @@ startPanelMountObserver();
 try {
 render();
 hydrateFromCache();
+scheduleMyBetsSnapshotCapture();
 if (footballOddsHistoryEnabled) scheduleFootballHistoryExpiry(loadFootballOddsHistory());
 } catch (error) {
 console.error('Bookie Panel failed to start.', error);
