@@ -7,6 +7,8 @@ Torn PDA scripts by TheQwan
 
 The Auction House **Generate Filtered List** action uses the saved guided collection whenever captured pages exist, even if **Compile Loaded Items** was used afterward. Every newly generated list is expanded and brought into view, and its heading/status identify how many saved items and captured pages were used.
 
+Guided Collection arms on touch/pointer-down before Torn changes pages, polls independently of the page's ongoing DOM updates, and records a new page only after its visible auction-card data has remained stable. This lets it recognize a page that is already rendered without getting stuck waiting for one more mutation.
+
 The Item Market panel includes a persistent **Double bonuses only** toggle. Turning it on clears the two bonus-name selectors so every currently loaded double-bonus listing is shown, while any minimum/maximum bonus-percentage range remains in effect. Bonus selectors can then be used again to narrow that double-bonus set.
 
 Beside it, **Only GOOD/STEAL** filters the Item Market to listings whose strength-adjusted (bottom-rail) history result is GOOD or STEAL. If enabled before analysis, **Analyze Visible Deals** temporarily processes every listing matching the other filters, then leaves only the qualifying deals visible.

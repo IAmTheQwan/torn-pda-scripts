@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.14.0
+// @version      1.15.0
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -94,6 +94,8 @@
   const marketPicks = new Map();
   const historyRequestsInFlight = new Map();
   const MARKET_ANALYSIS_CONCURRENCY = 6;
+  const COLLECTION_CAPTURE_POLL_MS = 250;
+  const COLLECTION_CAPTURE_STABLE_MS = 400;
   let collectionCaptureTimer = null;
   let watchLocateTimer = null;
   let marketRefreshTimer = null;
@@ -1360,7 +1362,15 @@
   }
 
   function collectionContentKey(items) {
-    return items.map(collectionItemKey).slice(0, 12).join("~");
+    return items.map(item => [
+      normalizeItemName(item.name),
+      Number(item.damage || 0).toFixed(2),
+      Number(item.accuracy || 0).toFixed(2),
+      item.quality === null || item.quality === undefined ? "" : Number(item.quality).toFixed(2),
+      Number(item.bid || 0),
+      itemBonusText(item),
+      item.color || ""
+    ].join("|")).slice(0, 12).join("~");
   }
 
   function collectionPageKey(items) {
@@ -1823,6 +1833,11 @@
 
     if (!items.length || collection.pages.some(page => page.key === pageKey)) {
       collection.pending = false;
+      collection.pendingAt = 0;
+      collection.pendingFromContentKey = "";
+      collection.pendingCandidateKey = "";
+      collection.pendingCandidateAt = 0;
+      clearCollectionCaptureTimer();
       saveCollection(collection);
       updateCollectionControls();
       setStatus("That page is already in this collection. Manually choose a different Torn page.", true);
@@ -1851,6 +1866,10 @@
     collection.lastContentKey = contentKey;
     collection.pending = false;
     collection.pendingAt = 0;
+    collection.pendingFromContentKey = "";
+    collection.pendingCandidateKey = "";
+    collection.pendingCandidateAt = 0;
+    clearCollectionCaptureTimer();
 
     if (collection.pages.length >= collection.target) {
       collection.active = false;
@@ -1876,6 +1895,11 @@
     if (existing?.active) {
       existing.active = false;
       existing.pending = false;
+      existing.pendingAt = 0;
+      existing.pendingFromContentKey = "";
+      existing.pendingCandidateKey = "";
+      existing.pendingCandidateAt = 0;
+      clearCollectionCaptureTimer();
       saveCollection(existing);
       renderCollection(existing);
       setStatus(`Collection stopped with ${existing.pages.length} saved page(s).`);
@@ -1896,7 +1920,10 @@
       startedAt: Date.now(),
       pages: [],
       items: [],
-      lastContentKey: ""
+      lastContentKey: "",
+      pendingFromContentKey: "",
+      pendingCandidateKey: "",
+      pendingCandidateAt: 0
     };
     addPageToCollection(collection, items);
   }
@@ -1920,9 +1947,22 @@
   function armCollectionForManualNavigation() {
     const collection = loadCollection();
     if (!collection?.active) return false;
+    if (collection.pending) {
+      schedulePendingCollectionCapture();
+      return true;
+    }
 
+    const currentItems = readCurrentPageItems();
+    const currentContentKey = collectionContentKey(currentItems);
+    const currentLocationPrefix = `${location.pathname}${location.search}${location.hash}|`;
+    const lastPageKey = collection.pages[collection.pages.length - 1]?.key || "";
     collection.pending = true;
     collection.pendingAt = Date.now();
+    collection.pendingFromContentKey = lastPageKey.startsWith(currentLocationPrefix)
+      ? currentContentKey
+      : collection.lastContentKey;
+    collection.pendingCandidateKey = "";
+    collection.pendingCandidateAt = 0;
     saveCollection(collection);
     updateCollectionControls();
     return true;
@@ -1988,11 +2028,23 @@
     schedulePendingCollectionCapture();
   }
 
-  function schedulePendingCollectionCapture() {
-    const collection = loadCollection();
-    if (!collection?.active || !collection.pending) return;
+  function clearCollectionCaptureTimer() {
+    if (collectionCaptureTimer === null) return;
     clearTimeout(collectionCaptureTimer);
-    collectionCaptureTimer = setTimeout(capturePendingCollectionPage, 900);
+    collectionCaptureTimer = null;
+  }
+
+  function schedulePendingCollectionCapture(delay = COLLECTION_CAPTURE_POLL_MS) {
+    const collection = loadCollection();
+    if (!collection?.active || !collection.pending) {
+      clearCollectionCaptureTimer();
+      return;
+    }
+    if (collectionCaptureTimer !== null) return;
+    collectionCaptureTimer = setTimeout(() => {
+      collectionCaptureTimer = null;
+      capturePendingCollectionPage();
+    }, Math.max(50, Number(delay) || COLLECTION_CAPTURE_POLL_MS));
   }
 
   function capturePendingCollectionPage() {
@@ -2000,7 +2052,32 @@
     if (!collection?.active || !collection.pending || !isActiveView()) return;
 
     const items = readCurrentPageItems();
-    if (!items.length || collectionContentKey(items) === collection.lastContentKey) return;
+    const contentKey = collectionContentKey(items);
+    const previousContentKey = collection.pendingFromContentKey || collection.lastContentKey;
+    if (!items.length || contentKey === previousContentKey) {
+      if (collection.pendingCandidateKey || collection.pendingCandidateAt) {
+        collection.pendingCandidateKey = "";
+        collection.pendingCandidateAt = 0;
+        saveCollection(collection);
+      }
+      schedulePendingCollectionCapture();
+      return;
+    }
+
+    const now = Date.now();
+    if (collection.pendingCandidateKey !== contentKey) {
+      collection.pendingCandidateKey = contentKey;
+      collection.pendingCandidateAt = now;
+      saveCollection(collection);
+      schedulePendingCollectionCapture(COLLECTION_CAPTURE_STABLE_MS);
+      return;
+    }
+
+    const stableFor = now - Number(collection.pendingCandidateAt || 0);
+    if (stableFor < COLLECTION_CAPTURE_STABLE_MS) {
+      schedulePendingCollectionCapture(COLLECTION_CAPTURE_STABLE_MS - stableFor);
+      return;
+    }
     addPageToCollection(collection, items);
   }
 
@@ -3619,6 +3696,7 @@
     bindCollapsibleSection("caf-clean-collector-collapse", "caf-clean-collector-body", COLLECTOR_COLLAPSED_KEY, "Guided Collection");
     bindCollapsibleSection("caf-clean-filter-collapse", "caf-clean-filter-body", FILTER_COLLAPSED_KEY, "Generate Filtered List");
 
+    document.addEventListener("pointerdown", markManualCollectionNavigation, true);
     document.addEventListener("click", markManualCollectionNavigation, true);
     window.addEventListener("hashchange", handleAuctionPageChange);
     window.addEventListener("focus", () => {
