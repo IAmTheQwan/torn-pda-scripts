@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.16.0
+// @version      1.17.0
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -203,6 +203,7 @@
       line-height: 1.3;
     }
     #caf-clean-next-page { grid-column: 1 / -1; }
+    #caf-clean-capture-page { grid-column: 1 / -1; }
     #${PANEL_ID} .caf-clean-disclosure {
       margin-top: 6px;
       color: #999;
@@ -1414,12 +1415,15 @@
   function updateCollectionControls() {
     const collection = loadCollection();
     const button = document.getElementById("caf-clean-collector-toggle");
+    const captureButton = document.getElementById("caf-clean-capture-page");
     const target = document.getElementById("caf-clean-collector-target");
     const progress = document.getElementById("caf-clean-collection-progress");
-    if (!button || !target || !progress) return;
+    if (!button || !captureButton || !target || !progress) return;
 
     if (!collection) {
       button.textContent = "Start Guided Collection";
+      captureButton.textContent = "Capture Loaded Page Now";
+      captureButton.disabled = true;
       target.disabled = false;
       progress.textContent = "No active collection. Every Torn page change must be manually clicked.";
       return;
@@ -1429,8 +1433,10 @@
     target.value = String(collection.target || 5);
     target.disabled = !!collection.active;
     button.textContent = collection.active ? "Stop & Keep Results" : "Start New Collection";
+    captureButton.textContent = collection.pending ? "Capture Loaded Page Now" : "Capture Current Page";
+    captureButton.disabled = !collection.active;
     progress.textContent = collection.active
-      ? `${count}/${collection.target} page(s) collected — ${collection.pending ? "waiting for the manually selected page to finish loading" : "tap Torn's native Next or page-number control"}.`
+      ? `${count}/${collection.target} page(s) collected — ${collection.pending ? "waiting for the manually selected page to finish loading; tap Capture Loaded Page Now if it is already visible" : "tap Torn's native Next or page-number control"}.`
       : `${count}/${collection.target} page(s) saved — ${collection.items.length} unique item(s).`;
   }
 
@@ -1442,14 +1448,20 @@
       return /Damage:\s*[\d.]+/i.test(label) && /Accuracy:\s*[\d.]+/i.test(label);
     });
 
-    const cards = labeled.map(element =>
-      element.closest("li") ||
-      element.closest("div[class*='auction']") ||
-      element.closest("div[class*='item']") ||
-      element.parentElement
-    ).filter(Boolean);
-
-    return [...new Set(cards)].filter(card => !card.closest(`#${PANEL_ID}`));
+    const candidates = labeled.map(element => ({
+      element,
+      card: element.closest("li") ||
+        element.closest("div[class*='auction']") ||
+        element.closest("div[class*='item']") ||
+        element.parentElement
+    })).filter(({ card }) => card && !card.closest(`#${PANEL_ID}, .caf-clean-results`));
+    const rendered = candidates.filter(({ element, card }) =>
+      !element.closest('[hidden], [aria-hidden="true"]')
+      && !card.closest('[hidden], [aria-hidden="true"]')
+      && (element.getClientRects().length > 0 || card.getClientRects().length > 0)
+    );
+    const selected = rendered.length ? rendered : candidates;
+    return [...new Set(selected.map(({ card }) => card))];
   }
 
   function normalizeItemName(value) {
@@ -1959,6 +1971,25 @@
       pendingCandidateKey: "",
       pendingCandidateAt: 0
     };
+    addPageToCollection(collection, items);
+  }
+
+  function captureLoadedCollectionPage() {
+    const collection = loadCollection();
+    if (!collection?.active) {
+      setStatus("Start Guided Collection before capturing the loaded page.", true);
+      return;
+    }
+    if (!isActiveView()) {
+      setStatus("Bring the Auction House page into focus before capturing it.", true);
+      return;
+    }
+
+    const items = readCurrentPageItems();
+    if (!items.length) {
+      setStatus("No visible auction cards are rendered yet. Wait for Torn to finish loading, then tap Capture Loaded Page Now again.", true);
+      return;
+    }
     addPageToCollection(collection, items);
   }
 
@@ -3697,6 +3728,7 @@
           </label>
           <button id="caf-clean-collector-toggle">Start Guided Collection</button>
           <a id="caf-clean-next-page" class="caf-clean-button" href="#">Next Torn Page →</a>
+          <button id="caf-clean-capture-page" disabled>Capture Loaded Page Now</button>
           <div id="caf-clean-collection-progress"></div>
         </div>
       </div>
@@ -3750,6 +3782,7 @@
     panel.querySelector("#caf-clean-all-history").addEventListener("click", analyzeAllVisibleHistory);
     panel.querySelector("#caf-clean-collector-toggle").addEventListener("click", toggleGuidedCollection);
     panel.querySelector("#caf-clean-next-page").addEventListener("click", prepareTopNextPage);
+    panel.querySelector("#caf-clean-capture-page").addEventListener("click", captureLoadedCollectionPage);
     panel.querySelector("#caf-clean-filter-generate").addEventListener("click", generateFilteredResults);
     panel.querySelector("#caf-clean-filter-clear").addEventListener("click", clearGeneratedFilter);
     panel.querySelector("#caf-clean-clear").addEventListener("click", clearAnalysis);
