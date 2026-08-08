@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.5.0
+// @version      1.5.1
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -46,9 +46,6 @@
     let todaySummary = { bets: 0, wins: 0, losses: 0, refunds: 0, won: 0, lost: 0, net: 0 };
     let overallBookieNet = 0;
     let lastLoadStatus = 'Not loaded yet.';
-
-    const MAX_REASONABLE_OPEN_STAKE = 50000000;
-    const MAX_CLUSTER_GAP_SECONDS = 8 * 60 * 60;
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
     const CACHE_DB_VERSION = 1;
@@ -411,12 +408,9 @@
 
         buildDailyTotals();
 
-        const settledKeysSeenNewer = new Set();
+        const unsettledResultCounts = new Map();
         const seenOpenIds = new Set();
         const foundOpen = [];
-
-        let clusterStarted = false;
-        let lastClusterTimestamp = 0;
 
         for (const log of logs) {
             const type = classifyLog(log);
@@ -424,16 +418,10 @@
 
             if (type === 'other') continue;
 
-            if (type === 'withdraw' || type === 'deposit') break;
-
-            if (clusterStarted && lastClusterTimestamp > 0) {
-                const gap = lastClusterTimestamp - log.timestamp;
-                if (gap > MAX_CLUSTER_GAP_SECONDS) break;
-            }
+            if (type === 'withdraw' || type === 'deposit') continue;
 
             if (type === 'win' || type === 'loss' || type === 'refund') {
-                if (key) settledKeysSeenNewer.add(key);
-                if (clusterStarted) lastClusterTimestamp = log.timestamp;
+                if (key) unsettledResultCounts.set(key, Number(unsettledResultCounts.get(key) || 0) + 1);
                 continue;
             }
 
@@ -445,15 +433,17 @@
             if (!key) continue;
             if (!bet || bet <= 0) continue;
             if (!odds || odds <= 1) continue;
-            if (bet > MAX_REASONABLE_OPEN_STAKE) continue;
-            if (settledKeysSeenNewer.has(key)) continue;
+            const settledCount = Number(unsettledResultCounts.get(key) || 0);
+            if (settledCount > 0) {
+                if (settledCount === 1) unsettledResultCounts.delete(key);
+                else unsettledResultCounts.set(key, settledCount - 1);
+                continue;
+            }
 
             const uniqueId = `${log.id}|${key}|${bet}|${odds}|${log.timestamp}`;
             if (seenOpenIds.has(uniqueId)) continue;
             seenOpenIds.add(uniqueId);
 
-            clusterStarted = true;
-            lastClusterTimestamp = log.timestamp;
             const fixture = findFixtureForOpenBet(log, bet, odds);
 
             foundOpen.push({
