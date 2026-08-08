@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.4.3
+// @version      1.4.4
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -964,8 +964,9 @@
 
     function findFixtureForOpenBet(log, stake, odds) {
         const placedAt = Number(log.timestamp || 0) * 1000;
+        const fixtures = loadFootballFixtureRecords();
         let best = null;
-        loadFootballFixtureRecords().forEach(fixture => {
+        fixtures.forEach(fixture => {
             (fixture.betClicks || []).forEach(click => {
                 const timeGap = Math.abs(placedAt - Number(click.clickedAt || 0));
                 const oddsMatch = Math.abs(Number(click.odds || 0) - Number(odds || 0)) <= 0.011;
@@ -974,12 +975,45 @@
                 if (!best || timeGap < best.timeGap) best = { fixture, click, timeGap };
             });
         });
-        return best ? {
-            ...best.fixture,
-            placedSelection: best.click.selection,
-            linkedClickAt: best.click.clickedAt,
-            linkedBy: 'bet-click'
-        } : null;
+        if (best) {
+            return {
+                ...best.fixture,
+                placedSelection: best.click.selection,
+                linkedClickAt: best.click.clickedAt,
+                linkedBy: 'bet-click'
+            };
+        }
+
+        const retroCandidates = [];
+        fixtures.forEach(fixture => {
+            const kickoff = Number(fixture.startTimestamp || 0);
+            if (!kickoff || !placedAt || placedAt >= kickoff) return;
+
+            [
+                { selection: fixture.homeTeam, odds: fixture.homeOdds },
+                { selection: 'Draw', odds: fixture.drawOdds },
+                { selection: fixture.awayTeam, odds: fixture.awayOdds }
+            ].forEach(candidate => {
+                if (!candidate.selection || !Number(candidate.odds || 0)) return;
+                if (Math.abs(Number(candidate.odds) - Number(odds || 0)) > 0.011) return;
+                retroCandidates.push({ fixture, selection: candidate.selection });
+            });
+        });
+
+        const uniqueCandidates = Array.from(new Map(
+            retroCandidates.map(candidate => [
+                `${candidate.fixture.gameId}:${candidate.selection.toLowerCase()}`,
+                candidate
+            ])
+        ).values());
+
+        if (uniqueCandidates.length !== 1) return null;
+        const retro = uniqueCandidates[0];
+        return {
+            ...retro.fixture,
+            placedSelection: retro.selection,
+            linkedBy: 'unique-reviewed-odds'
+        };
     }
 
     function getPendingFootballBetCaptures() {
@@ -1471,6 +1505,9 @@
     }
 
     function renderOpen(body) {
+        // Re-run local matching so fixtures reviewed after the API log was cached can
+        // retroactively supply names without making another Torn API request.
+        buildBookieData();
         const totalStake = openBets.reduce((s, b) => s + b.stake, 0);
         const totalProfit = openBets.reduce((s, b) => s + b.potentialProfit, 0);
         const totalReturn = openBets.reduce((s, b) => s + b.potentialReturn, 0);
@@ -1517,6 +1554,7 @@
                 <div style="font-weight:bold; font-size:13px; margin-bottom:2px;">${escapeHtml(fixture.homeTeam)} v ${escapeHtml(fixture.awayTeam)}</div>
                 ${fixture.competition ? `<div class="tbp-muted" style="margin-bottom:7px;">${escapeHtml(fixture.competition)}</div>` : ''}
                 <div class="tbp-row"><span>Pick</span><span>${escapeHtml(fixture.placedSelection || fixture.recommendedSelection || '')}</span></div>
+                ${fixture.linkedBy === 'unique-reviewed-odds' ? '<div class="tbp-muted" style="margin-bottom:5px;">Auto-matched from uniquely matching reviewed odds</div>' : ''}
                 ${fixture.startTimestamp ? `<div class="tbp-row"><span>Kickoff</span><span>${escapeHtml(formatDate(Math.floor(fixture.startTimestamp / 1000)))}</span></div>` : ''}
             ` : `
                 <div style="font-weight:bold; font-size:12px;">Selection</div>
