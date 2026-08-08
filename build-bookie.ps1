@@ -3,6 +3,11 @@ $ErrorActionPreference = 'Stop'
 $sourcePath = Join-Path $PSScriptRoot 'qwantum-bookie.source.js'
 $targetPath = Join-Path $PSScriptRoot 'qwantum-bookie.user.js'
 $lines = Get-Content -LiteralPath $sourcePath
+
+if ($lines -match '[‘’“”]') {
+    throw 'Smart quotes are not PDA-safe because Torn PDA rewrites them before JavaScript evaluation.'
+}
+
 $compactLines = $lines |
     ForEach-Object { $_.Trim() } |
     Where-Object { $_.Length -gt 0 }

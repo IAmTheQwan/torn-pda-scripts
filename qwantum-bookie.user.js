@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.4.8
+// @version      1.4.9
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -899,7 +899,7 @@ const oddsMatch = Math.abs(candidate.odds - Number(pending.odds || 0)) <= 0.011;
 return stakeMatches && oddsMatch;
 });
 if (!gameId || !details.homeTeam || !details.awayTeam || !match) {
-return { captured: false, inactive: false, reason: 'That My Bets game does not match the armed bet’s exact stake and odds.' };
+return { captured: false, inactive: false, reason: 'That My Bets game does not match the exact stake and odds of the armed bet.' };
 }
 saveManualBetLink(pending.betId, {
 gameId,
