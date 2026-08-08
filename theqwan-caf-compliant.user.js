@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.6.1
+// @version      1.6.2
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -571,6 +571,29 @@
       text-align: center;
       white-space: nowrap;
       pointer-events: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .caf-clean-market-deal-dot {
+      display: inline-block;
+      flex: 0 0 auto;
+      width: 7px;
+      height: 7px;
+      background: #8b949e;
+      border: 1px solid rgba(255,255,255,.8);
+      border-radius: 50%;
+      box-shadow: 0 0 3px rgba(0,0,0,.9);
+      box-sizing: border-box;
+    }
+    .caf-clean-market-deal-dot.is-steal { background: #00e676; box-shadow: 0 0 5px rgba(0,230,118,.95); }
+    .caf-clean-market-deal-dot.is-good { background: #5ee27a; }
+    .caf-clean-market-deal-dot.is-fair { background: #ffd166; }
+    .caf-clean-market-deal-dot.is-high { background: #ff5c70; }
+    .caf-clean-market-deal-dot.is-broad,
+    .caf-clean-market-deal-dot.is-unknown { background: #8b949e; }
+    .caf-clean-market-bonus-value {
+      display: inline-block;
     }
     .caf-clean-market-tools {
       display: block !important;
@@ -2224,6 +2247,31 @@
       "caf-clean-market-high"
     );
     row.querySelector(".caf-clean-market-deal-badge")?.remove();
+    setMarketBonusDealIndicator(row, "UNKNOWN");
+  }
+
+  function setMarketBonusDealIndicator(row, label = "UNKNOWN", broad = false) {
+    const badge = row.querySelector(".caf-clean-market-bonus-percent");
+    const dot = badge?.querySelector(".caf-clean-market-deal-dot");
+    if (!badge || !dot) return;
+
+    const normalized = broad ? "BROAD" : String(label || "UNKNOWN").toUpperCase();
+    const state = ["STEAL", "GOOD", "FAIR", "HIGH"].includes(normalized)
+      ? normalized.toLowerCase()
+      : normalized === "BROAD" ? "broad" : "unknown";
+    const descriptions = {
+      steal: "STEAL — asking price is below the exact-match historical low",
+      good: "GOOD — asking price is below the exact-match historical median",
+      fair: "FAIR — asking price is within the exact-match historical range",
+      high: "HIGH — asking price is above the exact-match historical high",
+      broad: "Broad history only — no exact bonus match was found",
+      unknown: "Deal not analyzed yet"
+    };
+
+    dot.className = `caf-clean-market-deal-dot is-${state}`;
+    badge.dataset.dealState = state;
+    badge.title = `${badge.dataset.bonusLabel || "Bonus"} · ${descriptions[state]}`;
+    badge.setAttribute("aria-label", `${badge.dataset.bonusAria || "Bonus percentages"}. ${descriptions[state]}.`);
   }
 
   function ensureMarketBonusBadge(row, item) {
@@ -2250,11 +2298,19 @@
     if (!badge) {
       badge = document.createElement("span");
       badge.className = "caf-clean-market-bonus-percent";
+      badge.innerHTML = `<span class="caf-clean-market-deal-dot is-unknown"></span><span class="caf-clean-market-bonus-value"></span>`;
       holder.appendChild(badge);
     }
-    badge.textContent = bonuses.map(bonus => `${bonus.value}%`).join(" · ");
-    badge.title = itemBonusText(item);
-    badge.setAttribute("aria-label", `Bonus percentages: ${bonuses.map(bonus => `${bonus.name} ${bonus.value}%`).join(", ")}`);
+    if (!badge.querySelector(".caf-clean-market-deal-dot") || !badge.querySelector(".caf-clean-market-bonus-value")) {
+      badge.innerHTML = `<span class="caf-clean-market-deal-dot is-unknown"></span><span class="caf-clean-market-bonus-value"></span>`;
+      delete badge.dataset.dealState;
+    }
+    const bonusLabel = itemBonusText(item);
+    const bonusAria = `Bonus percentages: ${bonuses.map(bonus => `${bonus.name} ${bonus.value}%`).join(", ")}`;
+    badge.querySelector(".caf-clean-market-bonus-value").textContent = bonuses.map(bonus => `${bonus.value}%`).join(" · ");
+    badge.dataset.bonusLabel = bonusLabel;
+    badge.dataset.bonusAria = bonusAria;
+    if (!badge.dataset.dealState) setMarketBonusDealIndicator(row, "UNKNOWN");
   }
 
   function applyMarketDeal(row, summary) {
@@ -2267,8 +2323,10 @@
     if (summary.usedBroadFallback) {
       badge.textContent = `BROAD ${summary.dealLabel}`;
       badge.title = "This is based on broader same-item history because no exact bonus match was found; the row is not highlighted as a deal.";
+      setMarketBonusDealIndicator(row, summary.dealLabel, true);
     } else {
       badge.textContent = summary.dealLabel;
+      setMarketBonusDealIndicator(row, summary.dealLabel);
       const rowClass = {
         STEAL: "caf-clean-market-steal",
         GOOD: "caf-clean-market-good",
