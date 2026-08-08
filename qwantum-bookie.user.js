@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.7.0
+// @version      1.8.0
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -37,6 +37,7 @@ let guidedFootballReviewEnabled = JSON.parse(localStorage.getItem('tbp_guided_fo
 let footballScoreEnabled = JSON.parse(localStorage.getItem('tbp_football_score_enabled') || 'false');
 let footballScoreApiKey = localStorage.getItem('tbp_football_score_api_key') || '';
 let footballScoreProvider = localStorage.getItem('tbp_football_score_provider') || 'sportsdb';
+let batchFeatureEnabled = JSON.parse(localStorage.getItem('tbp_batch_feature_enabled') || 'false');
 let batches = JSON.parse(localStorage.getItem('tbp_batches') || '[]');
 let selectedBatchId = localStorage.getItem('tbp_selected_batch_id') || '';
 let rawLogs = [];
@@ -78,6 +79,7 @@ const FOOTBALL_SCORE_CACHE_MS = 10 * 60 * 1000;
 const SPORTSDB_REQUEST_TIMES_KEY = 'tbp_sportsdb_request_times';
 const SPORTSDB_MIN_REQUEST_GAP_MS = 2100;
 const SPORTSDB_MINUTE_LIMIT = 30;
+const BET_STATS_LINKS_KEY = 'tbp_bet_stats_links';
 const styles = `
 #tbp-container { position:fixed; top:20px; right:20px; width:390px; background:#1a1a1a; color:#eee; border:1px solid #444; z-index:999999!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
 #tbp-container.minimized { width:38px; height:38px; cursor:pointer; display:flex; align-items:center; justify-content:center; background:#007bff; border:1px solid #0056b3; border-radius:4px; font-weight:bold; font-size:20px; }
@@ -170,6 +172,7 @@ localStorage.setItem('tbp_guided_football_review_enabled', JSON.stringify(guided
 localStorage.setItem('tbp_football_score_enabled', JSON.stringify(footballScoreEnabled));
 localStorage.setItem('tbp_football_score_api_key', footballScoreApiKey);
 localStorage.setItem('tbp_football_score_provider', footballScoreProvider);
+localStorage.setItem('tbp_batch_feature_enabled', JSON.stringify(batchFeatureEnabled));
 localStorage.setItem('tbp_batches', JSON.stringify(batches));
 localStorage.setItem('tbp_selected_batch_id', selectedBatchId);
 }
@@ -708,6 +711,41 @@ function isOnOrAfterDate(log, dateString) {
 if (!dateString) return true;
 return log.timestamp >= dateToUnixStart(dateString);
 }
+function loadBetStatsLinks() {
+try {
+const parsed = JSON.parse(localStorage.getItem(BET_STATS_LINKS_KEY) || '{}');
+return parsed && typeof parsed === 'object' ? parsed : {};
+} catch {
+return {};
+}
+}
+function getFixtureStatsCategory(fixture) {
+if (!fixture?.matchType) return 'other';
+const selection = normalizeScoreTeamName(fixture.placedSelection || fixture.recommendedSelection);
+const home = normalizeScoreTeamName(fixture.homeTeam);
+const away = normalizeScoreTeamName(fixture.awayTeam);
+if (fixture.matchType === 'home-green' && selection && selection === home) return 'green';
+if (fixture.matchType === 'home-yellow' && selection && selection === home) return 'yellow';
+if (fixture.matchType === 'away-orange' && selection && selection === away) return 'orange';
+return 'other';
+}
+function saveBetStatsLink(betId, fixture, placedAt = 0) {
+if (!betId || !fixture) return;
+const links = loadBetStatsLinks();
+links[String(betId)] = {
+category: getFixtureStatsCategory(fixture),
+gameId: fixture.gameId || '',
+homeTeam: fixture.homeTeam || '',
+awayTeam: fixture.awayTeam || '',
+placedSelection: fixture.placedSelection || fixture.recommendedSelection || '',
+placedAt: Number(placedAt || 0),
+capturedAt: Date.now()
+};
+const limited = Object.entries(links)
+.sort((a, b) => Number(b[1]?.capturedAt || 0) - Number(a[1]?.capturedAt || 0))
+.slice(0, 1000);
+localStorage.setItem(BET_STATS_LINKS_KEY, JSON.stringify(Object.fromEntries(limited)));
+}
 function buildBookieData() {
 const todayStart = getTodayStartUnix();
 todaySummary = { bets: 0, wins: 0, losses: 0, refunds: 0, won: 0, lost: 0, net: 0 };
@@ -775,6 +813,7 @@ seenOpenIds.add(uniqueId);
 clusterStarted = true;
 lastClusterTimestamp = log.timestamp;
 const fixture = findFixtureForOpenBet(log, bet, odds);
+if (fixture) saveBetStatsLink(log.id, fixture, log.timestamp);
 foundOpen.push({
 id: log.id,
 timestamp: log.timestamp,
@@ -1125,6 +1164,75 @@ awayTeam: (competitionIndex >= 0 ? remainder.slice(0, competitionIndex) : remain
 competition: (competitionIndex >= 0 ? remainder.slice(competitionIndex + 3) : '').trim()
 };
 }
+function getColorBetStats() {
+const categories = {
+green: { key: 'green', label: 'Green Home', wins: 0, losses: 0, net: 0 },
+yellow: { key: 'yellow', label: 'Yellow Home', wins: 0, losses: 0, net: 0 },
+orange: { key: 'orange', label: 'Orange Away', wins: 0, losses: 0, net: 0 },
+other: { key: 'other', label: 'All Others', wins: 0, losses: 0, net: 0 }
+};
+const links = loadBetStatsLinks();
+const pendingBySelection = new Map();
+const fromTimestamp = dateToUnixStart(scanStartDate || defaultScanStartDate());
+const logs = [...rawLogs].sort((a, b) => a.timestamp - b.timestamp);
+logs.forEach(log => {
+if (Number(log.timestamp || 0) < fromTimestamp) return;
+const type = classifyLog(log);
+const key = getSelectionKey(log);
+if (!key) return;
+if (type === 'placed') {
+const bet = getBetAmount(log);
+const odds = getOdds(log);
+let category = links[String(log.id)]?.category || '';
+if (!category) {
+const fixture = findFixtureForOpenBet(log, bet, odds);
+category = getFixtureStatsCategory(fixture);
+if (fixture) saveBetStatsLink(log.id, fixture, log.timestamp);
+}
+if (!categories[category]) category = 'other';
+if (!pendingBySelection.has(key)) pendingBySelection.set(key, []);
+pendingBySelection.get(key).push({ log, bet, category });
+return;
+}
+if (!['win', 'loss', 'refund'].includes(type)) return;
+const pending = pendingBySelection.get(key) || [];
+if (!pending.length) return;
+const resultBet = getBetAmount(log);
+let matchIndex = resultBet
+? pending.findIndex(candidate => Math.abs(Number(candidate.bet || 0) - resultBet) < 1)
+: -1;
+if (matchIndex < 0) matchIndex = 0;
+const [placed] = pending.splice(matchIndex, 1);
+if (!pending.length) pendingBySelection.delete(key);
+if (type === 'refund') return;
+const row = categories[placed.category] || categories.other;
+if (type === 'win') {
+row.wins++;
+row.net += (getWinnings(log) || resultBet || placed.bet) - (resultBet || placed.bet);
+} else {
+row.losses++;
+row.net -= resultBet || placed.bet;
+}
+});
+const rows = Object.values(categories).map(row => {
+const settled = row.wins + row.losses;
+return {
+...row,
+settled,
+winPct: settled ? row.wins / settled * 100 : 0,
+lossPct: settled ? row.losses / settled * 100 : 0
+};
+});
+const total = rows.reduce((summary, row) => ({
+wins: summary.wins + row.wins,
+losses: summary.losses + row.losses,
+net: summary.net + row.net
+}), { wins: 0, losses: 0, net: 0 });
+total.settled = total.wins + total.losses;
+total.winPct = total.settled ? total.wins / total.settled * 100 : 0;
+total.lossPct = total.settled ? total.losses / total.settled * 100 : 0;
+return { rows, total, fromDate: scanStartDate || defaultScanStartDate() };
+}
 function getFootballFixtureDetails(item, href = '') {
 const matchElement = item?.querySelector('.matchName p, .pop-game .name p');
 const matchTitle = String(matchElement?.title || matchElement?.textContent || '')
@@ -1242,6 +1350,7 @@ const limited = Object.entries(links)
 .sort((a, b) => Number(b[1]?.capturedAt || 0) - Number(a[1]?.capturedAt || 0))
 .slice(0, 200);
 localStorage.setItem(MANUAL_BET_LINKS_KEY, JSON.stringify(Object.fromEntries(limited)));
+saveBetStatsLink(betId, fixture);
 }
 function getPendingManualCapture() {
 try {
@@ -1914,7 +2023,7 @@ ${guidedFootballReviewEnabled && guidedFootballSession.active ? '<button class="
 <div class="tbp-tab ${activeTab === 'open' ? 'active' : ''}" data-tab="open">Open</div>
 <div class="tbp-tab ${activeTab === 'today' ? 'active' : ''}" data-tab="today">Today</div>
 <div class="tbp-tab ${activeTab === 'daily' ? 'active' : ''}" data-tab="daily">Daily</div>
-<div class="tbp-tab ${activeTab === 'batch' ? 'active' : ''}" data-tab="batch">Batch</div>
+<div class="tbp-tab ${activeTab === 'batch' ? 'active' : ''}" data-tab="batch">${batchFeatureEnabled ? 'Batch' : 'Stats'}</div>
 ${showDebug ? `<div class="tbp-tab ${activeTab === 'debug' ? 'active' : ''}" data-tab="debug">Debug</div>` : ''}
 <div class="tbp-tab ${activeTab === 'settings' ? 'active' : ''}" data-tab="settings">Settings</div>
 </div>
@@ -1928,7 +2037,10 @@ const body = document.getElementById('tbp-body');
 if (activeTab === 'open') renderOpen(body);
 if (activeTab === 'today') renderToday(body);
 if (activeTab === 'daily') renderDaily(body);
-if (activeTab === 'batch') renderBatch(body);
+if (activeTab === 'batch') {
+if (batchFeatureEnabled) renderBatch(body);
+else renderStats(body);
+}
 if (activeTab === 'debug') renderDebug(body);
 if (activeTab === 'settings') renderSettings(body);
 attachEvents();
@@ -2226,11 +2338,45 @@ Game Review opens the first upcoming game immediately, then advances one game pe
 </div>
 <div class="tbp-card">
 <div class="tbp-row">
+<span>Use Batch tab instead of Stats</span>
+<input type="checkbox" id="tbp-batch-feature-enabled" ${batchFeatureEnabled ? 'checked' : ''}>
+</div>
+<div class="tbp-muted" style="margin-top:7px;">Leave off to show green, yellow, orange, and all-other Football records from the configured scan date.</div>
+</div>
+<div class="tbp-card">
+<div class="tbp-row">
 <span>Show Debug Tab</span>
 <input type="checkbox" id="tbp-show-debug" ${showDebug ? 'checked' : ''}>
 </div>
 </div>
 <button class="tbp-btn tbp-btn-success" id="tbp-save-settings" style="width:100%;">Save Settings</button>
+`;
+}
+function renderStats(body) {
+const stats = getColorBetStats();
+const total = stats.total;
+const colorStyles = {
+green: 'border-left:6px solid #28a745;',
+yellow: 'border-left:6px solid #d4ad00;',
+orange: 'border-left:6px solid #e87800;',
+other: 'border-left:6px solid #777;'
+};
+body.innerHTML = `
+<div class="tbp-muted" style="margin-bottom:8px;">Settled bets placed from ${escapeHtml(stats.fromDate)} through today. Categories use the color recorded when the Football fixture was reviewed.</div>
+<div class="tbp-summary-grid">
+<div class="tbp-summary-box"><div class="tbp-summary-label">Total Record</div><div class="tbp-summary-value">${total.wins}-${total.losses}</div></div>
+<div class="tbp-summary-box"><div class="tbp-summary-label">Win / Loss</div><div class="tbp-summary-value" style="font-size:13px;">${total.winPct.toFixed(1)}% / ${total.lossPct.toFixed(1)}%</div></div>
+<div class="tbp-summary-box" style="grid-column:1 / -1;"><div class="tbp-summary-label">Total Net</div><div class="tbp-summary-value ${total.net >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(total.net)}</div></div>
+</div>
+${stats.rows.map(row => `
+<div class="tbp-card" style="${colorStyles[row.key]}">
+<div style="font-weight:bold; font-size:13px;">${row.label}</div>
+<div class="tbp-row"><span>Record</span><span>${row.wins}-${row.losses}</span></div>
+<div class="tbp-row"><span>Win / Loss</span><span>${row.winPct.toFixed(1)}% / ${row.lossPct.toFixed(1)}%</span></div>
+<div class="tbp-row"><span>Net</span><span class="${row.net >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(row.net)}</span></div>
+</div>
+`).join('')}
+${total.settled === 0 ? '<div class="tbp-muted">No settled bets with captured results were found in this date range yet.</div>' : ''}
 `;
 }
 function captureVisibleScanSettings() {
@@ -2376,6 +2522,7 @@ guidedFootballReviewEnabled = document.getElementById('tbp-guided-football-revie
 footballScoreEnabled = document.getElementById('tbp-football-score-enabled').checked;
 footballScoreProvider = document.getElementById('tbp-football-score-provider').value;
 footballScoreApiKey = document.getElementById('tbp-football-score-api-key').value.trim();
+batchFeatureEnabled = document.getElementById('tbp-batch-feature-enabled').checked;
 saveData();
 if (!footballScanEnabled) clearFootballHighlights();
 if (!footballOddsHistoryEnabled) {
