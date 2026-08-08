@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.4.1
+// @version      1.4.2
 // @description  Foreground-only Auction House history and price guidance for the actively viewed page
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
@@ -150,10 +150,15 @@
     }
     #caf-clean-next-page { grid-column: 1 / -1; }
     #${PANEL_ID} .caf-clean-disclosure {
-      margin-top: 8px;
+      margin-top: 6px;
       color: #999;
       line-height: 1.3;
     }
+    #${PANEL_ID} .caf-clean-disclosure summary {
+      cursor: pointer;
+      font-size: 10px;
+    }
+    #${PANEL_ID} .caf-clean-disclosure div { margin-top: 4px; }
     #caf-clean-status {
       margin-top: 7px;
       color: #aaa;
@@ -1503,12 +1508,10 @@
         <button id="caf-clean-clear">Clear Results</button>
         <button id="caf-clean-cache">Clear History Cache</button>
       </div>
-      <div class="caf-clean-disclosure">
-        Guided collection records each focused page only after you manually use Torn's native pagination; it never advances a page itself.
-        History checks send the visible item's name, stats, quality range, and bonus filters to the external
-        btrmmuuoofbonmuwrkzg Supabase history service. No Torn password, session cookie, or API key is sent.
-        Results are cached in this browser for five minutes.
-      </div>
+      <details class="caf-clean-disclosure">
+        <summary>Data use</summary>
+        <div>History sends visible item details to the external Supabase history service. No Torn password, session cookie, or API key is sent. Results are cached locally for five minutes.</div>
+      </details>
       <div id="caf-clean-status">Ready. This build makes no scripted requests to Torn.</div>
     `;
     document.body.prepend(panel);
