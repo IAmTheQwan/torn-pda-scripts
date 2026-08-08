@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.9.3
+// @version      1.9.4
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -1360,10 +1360,10 @@
 
     function getColorBetStats() {
         const categories = {
-            green: { key: 'green', label: 'Green Home', wins: 0, losses: 0, net: 0 },
-            yellow: { key: 'yellow', label: 'Yellow Home', wins: 0, losses: 0, net: 0 },
-            orange: { key: 'orange', label: 'Orange Away', wins: 0, losses: 0, net: 0 },
-            other: { key: 'other', label: 'All Others', wins: 0, losses: 0, net: 0 }
+            green: { key: 'green', label: 'Green Home', rule: `Home Win Odds: ${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}-${FOOTBALL_HOME_ODDS_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+            yellow: { key: 'yellow', label: 'Yellow Home', rule: `Home Win Odds: ${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}-${(FOOTBALL_HOME_GREEN_MIN - 0.01).toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+            orange: { key: 'orange', label: 'Orange Away', rule: `Away Win Odds: ${FOOTBALL_AWAY_ODDS_MIN.toFixed(2)}-${FOOTBALL_AWAY_ODDS_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+            other: { key: 'other', label: 'All Others', rule: 'Captured 3-Way bets outside the colored ranges', wins: 0, losses: 0, net: 0 }
         };
         const links = loadBetStatsLinks();
         const pendingBySelection = new Map();
@@ -3053,6 +3053,7 @@ ${safeJson(log.raw)}
             ${stats.rows.map(row => `
                 <div class="tbp-card" style="${colorStyles[row.key]}">
                     <div style="font-weight:bold; font-size:13px;">${row.label}</div>
+                    <div class="tbp-muted" style="margin:2px 0 5px;">${escapeHtml(row.rule)}</div>
                     <div class="tbp-row"><span>Record</span><span>${row.wins}-${row.losses}</span></div>
                     <div class="tbp-row"><span>Win / Loss</span><span>${row.winPct.toFixed(1)}% / ${row.lossPct.toFixed(1)}%</span></div>
                     <div class="tbp-row"><span>Net</span><span class="${row.net >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(row.net)}</span></div>
