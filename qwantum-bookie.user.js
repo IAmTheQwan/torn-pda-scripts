@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.4.6
+// @version      1.4.7
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      api.torn.com
+// @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/Bookie/qwantum-bookie.meta.js
 // @downloadURL  https://github.com/IAmTheQwan/torn-pda-scripts/raw/refs/heads/Bookie/qwantum-bookie.user.js
 // ==/UserScript==
@@ -135,21 +136,26 @@
 
     const styleSheet = document.createElement('style');
     styleSheet.innerText = styles;
-    document.head.appendChild(styleSheet);
+    if (document.head) document.head.appendChild(styleSheet);
 
     const container = document.createElement('div');
     container.id = 'tbp-container';
-    document.body.appendChild(container);
+    if (document.body) document.body.appendChild(container);
 
     function ensurePanelMounted() {
         if (!styleSheet.isConnected && document.head) document.head.appendChild(styleSheet);
         if (!container.isConnected && document.body) document.body.appendChild(container);
     }
 
-    const panelMountObserver = new MutationObserver(() => {
-        if (!styleSheet.isConnected || !container.isConnected) ensurePanelMounted();
-    });
-    panelMountObserver.observe(document.documentElement, { childList: true, subtree: true });
+    let panelMountObserver = null;
+
+    function startPanelMountObserver() {
+        if (panelMountObserver || !document.documentElement) return;
+        panelMountObserver = new MutationObserver(() => {
+            if (!styleSheet.isConnected || !container.isConnected) ensurePanelMounted();
+        });
+        panelMountObserver.observe(document.documentElement, { childList: true, subtree: true });
+    }
 
     function saveData() {
         localStorage.setItem('tbp_api_key', apiKey);
@@ -2247,8 +2253,39 @@ document.addEventListener('click', async e => {
         if (isFootballBookiePage()) startGuidedFootballHighlightKeeper();
     });
 
-    render();
-    hydrateFromCache();
-    if (footballOddsHistoryEnabled) scheduleFootballHistoryExpiry(loadFootballOddsHistory());
+    let panelStarted = false;
+
+    function startBookiePanel() {
+        if (panelStarted) return;
+        panelStarted = true;
+        ensurePanelMounted();
+        startPanelMountObserver();
+
+        try {
+            render();
+            hydrateFromCache();
+            if (footballOddsHistoryEnabled) scheduleFootballHistoryExpiry(loadFootballOddsHistory());
+        } catch (error) {
+            console.error('Bookie Panel failed to start.', error);
+            isMinimized = true;
+            container.className = 'minimized';
+            container.innerHTML = 'B';
+            container.title = 'Bookie Panel encountered a startup error. Tap to retry.';
+            container.onclick = () => {
+                try {
+                    render();
+                    hydrateFromCache();
+                } catch (retryError) {
+                    console.error('Bookie Panel retry failed.', retryError);
+                }
+            };
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startBookiePanel, { once: true });
+    } else {
+        startBookiePanel();
+    }
 
 })();
