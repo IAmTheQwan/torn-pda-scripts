@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.2.8
+// @version      1.2.9
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -92,7 +92,15 @@
         .tbp-debug { font-size:10px; color:#bbb; white-space:pre-wrap; word-break:break-word; background:#111; border:1px solid #333; padding:6px; border-radius:4px; margin-top:6px; }
         .tbp-btn-row { display:flex; gap:6px; margin-top:8px; }
         .tbp-btn-row .tbp-btn { flex:1; }
-        li.tbp-football-match > a > ul.pop-game { background:rgba(40,167,69,.2)!important; box-shadow:inset 4px 0 0 #28a745; }
+        li.tbp-football-match > a > ul.pop-game {
+            position:relative;
+            background:linear-gradient(90deg, rgba(40,167,69,.48), rgba(40,167,69,.2))!important;
+            outline:2px solid #39d353;
+            outline-offset:-2px;
+            box-shadow:inset 7px 0 0 #28a745, 0 0 9px rgba(57,211,83,.75)!important;
+        }
+        li.tbp-football-match > a > ul.pop-game .matchName,
+        li.tbp-football-match > a > ul.pop-game .team-names { font-weight:700!important; }
         .tbp-football-badge { display:inline-block; margin-left:7px; padding:2px 5px; border-radius:3px; background:#28a745; color:#fff; font-size:10px; font-weight:bold; vertical-align:middle; }
         .tbp-odds-delta { display:inline-block; margin-left:5px; padding:1px 4px; border-radius:3px; color:#fff; font-size:10px; font-weight:bold; }
         .tbp-odds-delta-up { background:#28a745; }
