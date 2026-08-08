@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.1.0
+// @version      1.2.0
 // @description  Foreground-only Auction House history and price guidance for the actively viewed page
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
@@ -20,6 +20,7 @@
   const ANALYSIS_CLASS = "caf-clean-analysis";
   const SETTINGS_KEY = "cafCleanHistorySettings";
   const CACHE_KEY = "cafCleanHistoryCache";
+  const COLLECTION_KEY = "cafCleanGuidedCollection";
   const SUPABASE_URL = "https://btrmmuuoofbonmuwrkzg.supabase.co";
   const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0cm1tdXVvb2Zib25tdXdya3pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg4NTEzMTgsImV4cCI6MjA4NDQyNzMxOH0.E-s0k46BORXLICAvxtEpqoM3Qmh4-TRLaJAwXO6wJTY";
 
@@ -48,6 +49,7 @@
 
   const itemById = new Map();
   const cardById = new Map();
+  let collectionCaptureTimer = null;
 
   const style = document.createElement("style");
   style.textContent = `
@@ -97,6 +99,22 @@
       align-items: center;
       margin-top: 8px;
       color: #bbb;
+    }
+    #${PANEL_ID} .caf-clean-collector {
+      display: grid;
+      grid-template-columns: minmax(90px, .65fr) minmax(0, 1.35fr);
+      gap: 6px;
+      align-items: center;
+      margin-top: 8px;
+      padding: 7px;
+      background: #181818;
+      border: 1px solid #444;
+      border-radius: 6px;
+    }
+    #caf-clean-collection-progress {
+      grid-column: 1 / -1;
+      color: #ffcf70;
+      line-height: 1.3;
     }
     #${PANEL_ID} .caf-clean-disclosure {
       margin-top: 8px;
@@ -161,6 +179,16 @@
     #${RESULTS_ID} .caf-clean-quality { color: #c967ff; font-weight: 700; }
     #${RESULTS_ID} .caf-clean-item-line { color: #bbb; line-height: 1.3; }
     #${RESULTS_ID} .caf-clean-item-bid { color: #fff; line-height: 1.4; }
+    #${RESULTS_ID} .caf-clean-source-page {
+      display: inline-block;
+      margin-top: 3px;
+      padding: 2px 5px;
+      color: #ffcf70;
+      background: #171717;
+      border: 1px solid #444;
+      border-radius: 4px;
+      font-size: 10px;
+    }
     #${RESULTS_ID} .caf-clean-item-actions {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -290,6 +318,61 @@
     status.style.color = isError ? "#ff7b89" : "#aaa";
   }
 
+  function loadCollection() {
+    try {
+      const collection = JSON.parse(localStorage.getItem(COLLECTION_KEY) || "null");
+      return collection && Array.isArray(collection.pages) && Array.isArray(collection.items)
+        ? collection
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function saveCollection(collection) {
+    localStorage.setItem(COLLECTION_KEY, JSON.stringify(collection));
+  }
+
+  function collectionItemKey(item) {
+    return String(item.id || [
+      item.name,
+      Number(item.damage || 0).toFixed(2),
+      Number(item.accuracy || 0).toFixed(2),
+      itemBonusText(item)
+    ].join("|"));
+  }
+
+  function collectionContentKey(items) {
+    return items.map(collectionItemKey).slice(0, 12).join("~");
+  }
+
+  function collectionPageKey(items) {
+    return `${location.pathname}${location.search}${location.hash}|${collectionContentKey(items)}`;
+  }
+
+  function updateCollectionControls() {
+    const collection = loadCollection();
+    const button = document.getElementById("caf-clean-collector-toggle");
+    const target = document.getElementById("caf-clean-collector-target");
+    const progress = document.getElementById("caf-clean-collection-progress");
+    if (!button || !target || !progress) return;
+
+    if (!collection) {
+      button.textContent = "Start Guided Collection";
+      target.disabled = false;
+      progress.textContent = "No active collection. Every Torn page change must be manually clicked.";
+      return;
+    }
+
+    const count = collection.pages.length;
+    target.value = String(collection.target || 5);
+    target.disabled = !!collection.active;
+    button.textContent = collection.active ? "Stop & Keep Results" : "Start New Collection";
+    progress.textContent = collection.active
+      ? `${count}/${collection.target} page(s) collected — ${collection.pending ? "waiting for the manually selected page to finish loading" : "tap Torn's native Next or page-number control"}.`
+      : `${count}/${collection.target} page(s) saved — ${collection.items.length} unique item(s).`;
+  }
+
   function auctionCards() {
     if (!isActiveView()) return [];
 
@@ -360,11 +443,12 @@
   function cardIdentifier(card, item, index) {
     const html = card.outerHTML || "";
     const match =
-      html.match(/armou?r?yID["'=:\s]+(\d+)/i) ||
-      html.match(/data-(?:armou?r?y|item|auction)-id=["']?(\d+)/i) ||
-      html.match(/ID["'=:\s]+(\d+)/i);
+      html.match(/(?:armou?r?yID|auctionID|listingID|uid)["'=:\s]+(\d+)/i) ||
+      html.match(/data-(?:armou?r?y|auction|listing|uid)-id=["']?(\d+)/i);
 
-    return match?.[1] || `${item.name}|${item.damage}|${item.accuracy}|${item.bid}|${index}`;
+    const pageStart = (location.hash.match(/(?:#|&)start=(\d+)/i) || [])[1] || "0";
+    const bonuses = (item.bonuses || []).map(bonus => `${bonus.id}:${bonus.value ?? ""}`).join(",");
+    return match?.[1] || `${pageStart}|${index}|${item.name}|${item.damage}|${item.accuracy}|${bonuses}`;
   }
 
   function parseCard(card, index) {
@@ -411,14 +495,23 @@
     ).join(" / ") || "No bonus";
   }
 
-  function renderCompiledResults(items) {
+  function readCurrentPageItems() {
+    cardById.clear();
+    return auctionCards().map((card, index) => {
+      const item = parseCard(card, index);
+      cardById.set(item.id, card);
+      return item;
+    });
+  }
+
+  function renderCompiledResults(items, heading = `Compiled Results | ${items.length} item(s) from this loaded page`) {
     document.getElementById(RESULTS_ID)?.remove();
     if (!items.length) return;
 
     const results = document.createElement("section");
     results.id = RESULTS_ID;
     results.innerHTML = `
-      <div class="caf-clean-results-header">Compiled Results | ${items.length} item(s) from this loaded page</div>
+      <div class="caf-clean-results-header">${escapeHtml(heading)}</div>
       <div class="caf-clean-results-body"></div>
     `;
     document.getElementById(PANEL_ID).after(results);
@@ -426,6 +519,7 @@
 
     items.forEach(item => {
       const sourceCard = cardById.get(item.id);
+      const sourcePage = Number(item.collectedPage || 0);
       const result = document.createElement("article");
       result.className = "caf-clean-result";
       result.dataset.cafCleanId = item.id;
@@ -439,9 +533,10 @@
           <div class="caf-clean-item-line">Color: ${item.color ? item.color.toUpperCase() : "None"}</div>
           <div class="caf-clean-item-bid">Bid: ${money(item.bid)}</div>
           ${item.timeText ? `<div class="caf-clean-item-line">Time left: ${escapeHtml(item.timeText)}</div>` : ""}
+          ${sourcePage ? `<span class="caf-clean-source-page">Collected page ${sourcePage}${sourceCard ? " — current" : " — saved"}</span>` : ""}
           <div class="caf-clean-item-actions">
             <button class="caf-clean-history">History + Price Check</button>
-            <button class="caf-clean-locate">Show Original</button>
+            <button class="caf-clean-locate" ${sourceCard ? "" : "disabled"}>${sourceCard ? "Show Original" : `Saved Page ${sourcePage || "?"}`}</button>
           </div>
         </div>
         <div class="${ANALYSIS_CLASS}">
@@ -495,22 +590,167 @@
     }
 
     itemById.clear();
-    cardById.clear();
-    const cards = auctionCards();
-    const items = cards.map((card, index) => {
-      const item = parseCard(card, index);
+    const items = readCurrentPageItems();
+    items.forEach(item => {
       itemById.set(item.id, item);
-      cardById.set(item.id, card);
-      return item;
     });
     renderCompiledResults(items);
 
-    setStatus(cards.length
-      ? `Ready: ${cards.length} currently loaded auction item(s). No additional Torn requests were made.`
+    setStatus(items.length
+      ? `Ready: ${items.length} currently loaded auction item(s). No additional Torn requests were made.`
       : "No weapon or armor cards are currently rendered. Open an Auction House category or page, then try again.",
-      !cards.length
+      !items.length
     );
     return items;
+  }
+
+  function renderCollection(collection) {
+    itemById.clear();
+    collection.items.forEach(item => itemById.set(item.id, item));
+    renderCompiledResults(
+      collection.items,
+      `Guided Collection | ${collection.pages.length}/${collection.target} page(s) | ${collection.items.length} unique item(s)`
+    );
+    updateCollectionControls();
+  }
+
+  function addPageToCollection(collection, items) {
+    const contentKey = collectionContentKey(items);
+    const pageKey = collectionPageKey(items);
+
+    if (!items.length || collection.pages.some(page => page.key === pageKey)) {
+      collection.pending = false;
+      saveCollection(collection);
+      updateCollectionControls();
+      setStatus("That page is already in this collection. Manually choose a different Torn page.", true);
+      return false;
+    }
+
+    const pageNumber = collection.pages.length + 1;
+    const capturedAt = Date.now();
+    const merged = new Map(collection.items.map(item => [collectionItemKey(item), item]));
+
+    items.forEach(item => {
+      const key = collectionItemKey(item);
+      const existing = merged.get(key);
+      merged.set(key, {
+        ...(existing || {}),
+        ...item,
+        collectedPage: existing?.collectedPage || pageNumber,
+        lastSeenPage: pageNumber,
+        collectedAt: existing?.collectedAt || capturedAt,
+        lastSeenAt: capturedAt
+      });
+    });
+
+    collection.items = [...merged.values()];
+    collection.pages.push({ key: pageKey, contentKey, number: pageNumber, capturedAt });
+    collection.lastContentKey = contentKey;
+    collection.pending = false;
+    collection.pendingAt = 0;
+
+    if (collection.pages.length >= collection.target) {
+      collection.active = false;
+      collection.completedAt = Date.now();
+    }
+
+    saveCollection(collection);
+    renderCollection(collection);
+    setStatus(collection.active
+      ? `Collected page ${pageNumber}/${collection.target}. Manually tap Torn's native Next or a page number.`
+      : `Collection complete: ${collection.pages.length} page(s), ${collection.items.length} unique item(s).`
+    );
+    return true;
+  }
+
+  function toggleGuidedCollection() {
+    if (!isActiveView()) {
+      setStatus("Bring the Auction House page into focus before starting collection.", true);
+      return;
+    }
+
+    const existing = loadCollection();
+    if (existing?.active) {
+      existing.active = false;
+      existing.pending = false;
+      saveCollection(existing);
+      renderCollection(existing);
+      setStatus(`Collection stopped with ${existing.pages.length} saved page(s).`);
+      return;
+    }
+
+    const items = readCurrentPageItems();
+    if (!items.length) {
+      setStatus("No auction items are rendered yet. Open a Torn Auction House results page first.", true);
+      return;
+    }
+
+    const target = Math.max(2, Math.min(10, Number(document.getElementById("caf-clean-collector-target")?.value || 5)));
+    const collection = {
+      active: true,
+      pending: false,
+      target,
+      startedAt: Date.now(),
+      pages: [],
+      items: [],
+      lastContentKey: ""
+    };
+    addPageToCollection(collection, items);
+  }
+
+  function isNativePaginationClick(event) {
+    if (!event.isTrusted) return false;
+    const control = event.target.closest?.("a, button");
+    if (!control || control.closest(`#${PANEL_ID}, #${RESULTS_ID}`)) return false;
+
+    const href = control.getAttribute("href") || "";
+    const text = String(control.textContent || control.getAttribute("aria-label") || "").trim();
+    const ancestry = [control, control.parentElement, control.parentElement?.parentElement]
+      .map(element => `${element?.id || ""} ${element?.className || ""}`)
+      .join(" ");
+
+    return /(?:[?#&](?:start|page)=\d+)/i.test(href)
+      || /pag(?:e|er|ination)|pagination|page-nav/i.test(ancestry)
+      || /^(next|previous|prev|[›»‹«]|page\s+\d+)$/i.test(text);
+  }
+
+  function markManualCollectionNavigation(event) {
+    const collection = loadCollection();
+    if (!collection?.active || !isNativePaginationClick(event)) return;
+
+    collection.pending = true;
+    collection.pendingAt = Date.now();
+    saveCollection(collection);
+    updateCollectionControls();
+    setStatus("Manual Torn navigation recognized. Waiting for the newly selected page to finish rendering.");
+    schedulePendingCollectionCapture();
+  }
+
+  function schedulePendingCollectionCapture() {
+    const collection = loadCollection();
+    if (!collection?.active || !collection.pending) return;
+    clearTimeout(collectionCaptureTimer);
+    collectionCaptureTimer = setTimeout(capturePendingCollectionPage, 900);
+  }
+
+  function capturePendingCollectionPage() {
+    const collection = loadCollection();
+    if (!collection?.active || !collection.pending || !isActiveView()) return;
+
+    const items = readCurrentPageItems();
+    if (!items.length || collectionContentKey(items) === collection.lastContentKey) return;
+    addPageToCollection(collection, items);
+  }
+
+  function restoreCollection() {
+    const collection = loadCollection();
+    if (!collection?.items.length) {
+      updateCollectionControls();
+      return;
+    }
+
+    renderCollection(collection);
+    if (collection.pending) schedulePendingCollectionCapture();
   }
 
   function money(value) {
@@ -813,11 +1053,14 @@
   }
 
   async function analyzeAllVisibleHistory() {
-    const items = analyzeCurrentPage();
-    if (!items.length) return;
+    let resultCards = [...document.querySelectorAll(`#${RESULTS_ID} .caf-clean-result`)];
+    if (!resultCards.length) {
+      const items = analyzeCurrentPage();
+      if (!items.length) return;
+      resultCards = [...document.querySelectorAll(`#${RESULTS_ID} .caf-clean-result`)];
+    }
 
     const analyzeAllButton = document.getElementById("caf-clean-all-history");
-    const resultCards = [...document.querySelectorAll(`#${RESULTS_ID} .caf-clean-result`)];
     analyzeAllButton.disabled = true;
 
     try {
@@ -846,14 +1089,18 @@
   function clearAnalysis() {
     document.querySelectorAll(`.${ANALYSIS_CLASS}`).forEach(element => element.remove());
     document.getElementById(RESULTS_ID)?.remove();
+    localStorage.removeItem(COLLECTION_KEY);
     itemById.clear();
     cardById.clear();
+    updateCollectionControls();
     setStatus("Analysis cleared. Torn's original Auction House page was not changed or reloaded.");
   }
 
   function injectPanel() {
     if (document.getElementById(PANEL_ID) || !document.body) return;
     const current = settings();
+    const savedCollection = loadCollection();
+    const collectionTarget = Number(savedCollection?.target || 5);
     const panel = document.createElement("div");
     panel.id = PANEL_ID;
     panel.innerHTML = `
@@ -870,13 +1117,23 @@
         <label><input id="caf-clean-match-bonuses" type="checkbox" ${current.matchBonuses ? "checked" : ""}> Match this item's bonuses</label>
         <label><input id="caf-clean-double" type="checkbox" ${current.doubleOnly ? "checked" : ""}> Double-bonus sales only</label>
       </div>
+      <div class="caf-clean-collector">
+        <label>Guided pages
+          <select id="caf-clean-collector-target">
+            ${[2, 3, 4, 5, 6, 7, 8, 9, 10].map(count => `<option value="${count}" ${collectionTarget === count ? "selected" : ""}>${count}</option>`).join("")}
+          </select>
+        </label>
+        <button id="caf-clean-collector-toggle">Start Guided Collection</button>
+        <div id="caf-clean-collection-progress"></div>
+      </div>
       <div class="caf-clean-controls">
         <button id="caf-clean-analyze">Compile Loaded Items</button>
-        <button id="caf-clean-all-history">Compile + Load History</button>
+        <button id="caf-clean-all-history">Load History for Results</button>
         <button id="caf-clean-clear">Clear Results</button>
         <button id="caf-clean-cache">Clear History Cache</button>
       </div>
       <div class="caf-clean-disclosure">
+        Guided collection records each focused page only after you manually use Torn's native pagination; it never advances a page itself.
         History checks send the visible item's name, stats, quality range, and bonus filters to the external
         btrmmuuoofbonmuwrkzg Supabase history service. No Torn password, session cookie, or API key is sent.
         Results are cached in this browser for five minutes.
@@ -887,12 +1144,22 @@
 
     panel.querySelector("#caf-clean-analyze").addEventListener("click", analyzeCurrentPage);
     panel.querySelector("#caf-clean-all-history").addEventListener("click", analyzeAllVisibleHistory);
+    panel.querySelector("#caf-clean-collector-toggle").addEventListener("click", toggleGuidedCollection);
     panel.querySelector("#caf-clean-clear").addEventListener("click", clearAnalysis);
     panel.querySelector("#caf-clean-cache").addEventListener("click", () => {
       localStorage.removeItem(CACHE_KEY);
       setStatus("History cache cleared.");
     });
     panel.querySelectorAll("select, input").forEach(element => element.addEventListener("change", saveSettings));
+
+    document.addEventListener("click", markManualCollectionNavigation, true);
+    window.addEventListener("hashchange", schedulePendingCollectionCapture);
+    window.addEventListener("focus", schedulePendingCollectionCapture);
+    document.addEventListener("visibilitychange", schedulePendingCollectionCapture);
+
+    const observer = new MutationObserver(schedulePendingCollectionCapture);
+    observer.observe(document.body, { childList: true, subtree: true });
+    restoreCollection();
   }
 
   if (document.readyState === "loading") {
