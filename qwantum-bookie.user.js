@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.2.6
+// @version      1.2.7
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -34,6 +34,7 @@
     let showDebug = JSON.parse(localStorage.getItem('tbp_show_debug') || 'false');
     let footballScanEnabled = JSON.parse(localStorage.getItem('tbp_football_scan_enabled') || 'false');
     let footballOddsHistoryEnabled = JSON.parse(localStorage.getItem('tbp_football_odds_history_enabled') || 'false');
+    let guidedFootballReviewEnabled = JSON.parse(localStorage.getItem('tbp_guided_football_review_enabled') || 'false');
 
     let batches = JSON.parse(localStorage.getItem('tbp_batches') || '[]');
     let selectedBatchId = localStorage.getItem('tbp_selected_batch_id') || '';
@@ -58,6 +59,7 @@
     const FOOTBALL_ODDS_HISTORY_KEY = 'tbp_football_odds_history';
     const MAX_ODDS_HISTORY_GAMES = 100;
     const MAX_ODDS_OBSERVATIONS_PER_SELECTION = 20;
+    const MAX_GUIDED_FOOTBALL_GAMES = 20;
 
     const styles = `
         #tbp-container { position:fixed; top:20px; right:20px; width:390px; background:#1a1a1a; color:#eee; border:1px solid #444; z-index:999999!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
@@ -65,6 +67,7 @@
         .tbp-header { background:#252525; padding:10px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #333; }
         .tbp-header-title { display:flex; align-items:center; gap:8px; }
         .tbp-scan-btn { padding:4px 7px; font-size:10px; background:#705b00; color:#fff; border:1px solid #a98a00; }
+        .tbp-guide-btn { padding:4px 7px; font-size:10px; background:#275a7a; color:#fff; border:1px solid #3b82a8; }
         .tbp-tabs { display:flex; background:#222; border-bottom:1px solid #333; }
         .tbp-tab { flex:1; padding:10px 3px; text-align:center; cursor:pointer; font-size:9px; text-transform:uppercase; color:#888; }
         .tbp-tab.active { background:#333; border-bottom:2px solid #007bff; color:#fff; font-weight:bold; }
@@ -114,6 +117,7 @@
         localStorage.setItem('tbp_show_debug', JSON.stringify(showDebug));
         localStorage.setItem('tbp_football_scan_enabled', JSON.stringify(footballScanEnabled));
         localStorage.setItem('tbp_football_odds_history_enabled', JSON.stringify(footballOddsHistoryEnabled));
+        localStorage.setItem('tbp_guided_football_review_enabled', JSON.stringify(guidedFootballReviewEnabled));
         localStorage.setItem('tbp_batches', JSON.stringify(batches));
         localStorage.setItem('tbp_selected_batch_id', selectedBatchId);
     }
@@ -670,18 +674,70 @@
         return match ? Number(match[1]) : 0;
     }
 
+    function parseFootballStartTimestamp(item) {
+        const value = String(item.querySelector('.state-wrap .state')?.title || '').trim();
+        const match = value.match(/Due to start at\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s+-\s+(\d{1,2})\/(\d{1,2})\/(\d{4})\s+TCT/i);
+        if (!match) return 0;
+
+        return Date.UTC(
+            Number(match[6]),
+            Number(match[5]) - 1,
+            Number(match[4]),
+            Number(match[1]),
+            Number(match[2]),
+            Number(match[3] || 0)
+        );
+    }
+
+    function purgeExpiredFootballOddsHistory(history, now = Date.now()) {
+        let removed = 0;
+        Object.entries(history.games || {}).forEach(([gameId, game]) => {
+            const startTimestamp = Number(game?.startTimestamp || 0);
+            if (startTimestamp && startTimestamp <= now) {
+                delete history.games[gameId];
+                removed++;
+            }
+        });
+        return removed;
+    }
+
+    let footballHistoryExpiryTimer = null;
+
+    function scheduleFootballHistoryExpiry(history) {
+        if (footballHistoryExpiryTimer) clearTimeout(footballHistoryExpiryTimer);
+        footballHistoryExpiryTimer = null;
+
+        const now = Date.now();
+        const futureStarts = Object.values(history.games || {})
+            .map(game => Number(game?.startTimestamp || 0))
+            .filter(timestamp => timestamp > now)
+            .sort((a, b) => a - b);
+        if (!futureStarts.length) return;
+
+        const wait = Math.min(futureStarts[0] - now + 1000, 2147483647);
+        footballHistoryExpiryTimer = setTimeout(() => {
+            const current = loadFootballOddsHistory();
+            saveFootballOddsHistory(current);
+        }, wait);
+    }
+
     function loadFootballOddsHistory() {
         try {
             const parsed = JSON.parse(localStorage.getItem(FOOTBALL_ODDS_HISTORY_KEY) || '{}');
-            return parsed && typeof parsed === 'object' && parsed.games
+            const history = parsed && typeof parsed === 'object' && parsed.games
                 ? parsed
                 : { version: 1, games: {} };
+            if (purgeExpiredFootballOddsHistory(history)) {
+                localStorage.setItem(FOOTBALL_ODDS_HISTORY_KEY, JSON.stringify(history));
+            }
+            return history;
         } catch {
             return { version: 1, games: {} };
         }
     }
 
     function saveFootballOddsHistory(history) {
+        purgeExpiredFootballOddsHistory(history);
         const games = Object.entries(history.games || {})
             .sort((a, b) => Number(b[1]?.lastViewedAt || 0) - Number(a[1]?.lastViewedAt || 0))
             .slice(0, MAX_ODDS_HISTORY_GAMES);
@@ -691,6 +747,7 @@
         } catch (error) {
             console.error('Could not save Football odds history.', error);
         }
+        scheduleFootballHistoryExpiry(history);
     }
 
     function getThreeWayMarket(item) {
@@ -718,10 +775,18 @@
             .replace(/\s+/g, ' ')
             .trim();
         const observedAt = Date.now();
+        const startTimestamp = parseFootballStartTimestamp(item);
         const history = loadFootballOddsHistory();
         const game = history.games[gameId] || { matchTitle, lastViewedAt: 0, selections: {} };
         game.matchTitle = matchTitle;
         game.lastViewedAt = observedAt;
+        game.startTimestamp = startTimestamp || Number(game.startTimestamp || 0);
+
+        if (game.startTimestamp && game.startTimestamp <= observedAt) {
+            delete history.games[gameId];
+            saveFootballOddsHistory(history);
+            return 0;
+        }
 
         let recorded = 0;
         const rows = Array.from(market.querySelectorAll(':scope > li.bets')).filter(row => {
@@ -786,7 +851,9 @@
                 .find(candidate => candidate.getAttribute('href') === href);
             const item = link?.parentElement;
             const info = item?.querySelector('.info-wrap');
-            if (!item?.classList.contains('active') || info?.style?.display === 'none' || !recordFootballOddsForItem(item)) return false;
+            if (!item?.classList.contains('active') || info?.style?.display === 'none' || !getThreeWayMarket(item)) return false;
+            if (footballOddsHistoryEnabled) recordFootballOddsForItem(item);
+            if (footballScanEnabled) scanFootballItem(item);
 
             pendingFootballOddsObserver?.disconnect();
             pendingFootballOddsObserver = null;
@@ -814,6 +881,58 @@
         }, 10000);
     }
 
+    function scanFootballItem(item) {
+        if (item.classList.contains('disabled')) return { scanned: 0, matched: 0 };
+
+        const sport = String(item.querySelector('li.game')?.title || '').trim().toLowerCase();
+        if (sport && sport !== 'football') return { scanned: 0, matched: 0 };
+
+        const matchElement = item.querySelector('.matchName p, .pop-game .name p');
+        const matchTitle = String(matchElement?.title || matchElement?.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!matchTitle) return { scanned: 0, matched: 0 };
+
+        const homeName = String(
+            matchElement.querySelector('b')?.textContent
+            || matchTitle.split(/\s+v\s+/i)[0]
+            || ''
+        ).replace(/\s+/g, ' ').trim();
+
+        const market = getThreeWayMarket(item);
+        if (!market) return { scanned: 0, matched: 0 };
+        if (!market.querySelector('[data-tbp-observed-at]')) recordFootballOddsForItem(item);
+
+        const rows = Array.from(market.querySelectorAll(':scope > li.bets')).filter(row => {
+            return row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal');
+        });
+        if (rows.length !== 3) return { scanned: 0, matched: 0 };
+
+        const homeRow = rows.find(row => {
+            const result = String(row.querySelector('.bet-cell.result')?.textContent || '')
+                .replace(/\s+/g, ' ')
+                .trim();
+            return result.toLowerCase() === homeName.toLowerCase();
+        }) || rows[0];
+
+        const suspended = homeRow.querySelector('.input-money-group')?.classList.contains('disabled')
+            || homeRow.querySelector('input.amount')?.value === 'Suspended';
+        const odds = parseDecimalMultiplier(homeRow.querySelector('.bet-cell.odds.decimal')?.textContent);
+        if (!odds || suspended) return { scanned: 0, matched: 0 };
+
+        item.classList.remove('tbp-football-match');
+        matchElement.querySelector('.tbp-football-badge')?.remove();
+        if (odds < FOOTBALL_HOME_ODDS_MIN || odds > FOOTBALL_HOME_ODDS_MAX) {
+            return { scanned: 1, matched: 0 };
+        }
+
+        item.classList.add('tbp-football-match');
+        const badge = document.createElement('span');
+        badge.className = 'tbp-football-badge';
+        badge.textContent = `HOME x${odds.toFixed(2)}`;
+        badge.title = `${homeName} — 3-Way Ordinary time`;
+        matchElement.appendChild(badge);
+        return { scanned: 1, matched: 1 };
+    }
+
     function scanLoadedFootballGames() {
         clearFootballHighlights();
 
@@ -831,57 +950,77 @@
         let matched = 0;
 
         document.querySelectorAll('li.c-pointer').forEach(item => {
-            if (item.classList.contains('disabled')) return;
-
-            const sport = String(item.querySelector('li.game')?.title || '').trim().toLowerCase();
-            if (sport && sport !== 'football') return;
-
-            const matchElement = item.querySelector('.matchName p, .pop-game .name p');
-            const matchTitle = String(matchElement?.title || matchElement?.textContent || '').replace(/\s+/g, ' ').trim();
-            if (!matchTitle) return;
-
-            const homeName = String(
-                matchElement.querySelector('b')?.textContent
-                || matchTitle.split(/\s+v\s+/i)[0]
-                || ''
-            ).replace(/\s+/g, ' ').trim();
-
-            const market = getThreeWayMarket(item);
-            if (!market) return;
-
-            if (!market.querySelector('[data-tbp-observed-at]')) recordFootballOddsForItem(item);
-
-            const rows = Array.from(market.querySelectorAll(':scope > li.bets')).filter(row => {
-                return row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal');
-            });
-            if (rows.length !== 3) return;
-
-            const homeRow = rows.find(row => {
-                const result = String(row.querySelector('.bet-cell.result')?.textContent || '')
-                    .replace(/\s+/g, ' ')
-                    .trim();
-                return result.toLowerCase() === homeName.toLowerCase();
-            }) || rows[0];
-
-            const suspended = homeRow.querySelector('.input-money-group')?.classList.contains('disabled')
-                || homeRow.querySelector('input.amount')?.value === 'Suspended';
-            const odds = parseDecimalMultiplier(homeRow.querySelector('.bet-cell.odds.decimal')?.textContent);
-            if (!odds || suspended) return;
-
-            scanned++;
-            if (odds < FOOTBALL_HOME_ODDS_MIN || odds > FOOTBALL_HOME_ODDS_MAX) return;
-
-            matched++;
-            item.classList.add('tbp-football-match');
-
-            const badge = document.createElement('span');
-            badge.className = 'tbp-football-badge';
-            badge.textContent = `HOME x${odds.toFixed(2)}`;
-            badge.title = `${homeName} — 3-Way Ordinary time`;
-            matchElement.appendChild(badge);
+            const result = scanFootballItem(item);
+            scanned += result.scanned;
+            matched += result.matched;
         });
 
         return { scanned, matched };
+    }
+
+    let guidedFootballSession = { hrefs: [], index: -1 };
+
+    function resetGuidedFootballSession() {
+        guidedFootballSession = { hrefs: [], index: -1 };
+    }
+
+    function getGuidedFootballCandidates() {
+        const seen = new Set();
+        return Array.from(document.querySelectorAll('li.c-pointer'))
+            .filter(item => {
+                if (item.classList.contains('disabled')) return false;
+                const startTitle = String(item.querySelector('.state-wrap .state')?.title || '');
+                return /^Due to start at/i.test(startTitle);
+            })
+            .map(item => item.querySelector('a[href*="#/football/"]')?.getAttribute('href') || '')
+            .filter(href => {
+                if (!/^#\/football\/\d+$/i.test(href) || seen.has(href)) return false;
+                seen.add(href);
+                return true;
+            })
+            .slice(0, MAX_GUIDED_FOOTBALL_GAMES);
+    }
+
+    function advanceGuidedFootballReview() {
+        if (!guidedFootballReviewEnabled) {
+            return { error: 'Enable Guided Football review in Settings first.' };
+        }
+        if (!isFootballBookiePage() || document.visibilityState !== 'visible') {
+            return { error: 'Open and actively view the Football section before starting guided review.' };
+        }
+
+        if (!guidedFootballSession.hrefs.length) {
+            const hrefs = getGuidedFootballCandidates();
+            if (!hrefs.length) return { error: 'No upcoming Football games are currently available in the loaded list.' };
+            guidedFootballSession = {
+                hrefs,
+                index: hrefs.indexOf(location.hash)
+            };
+        }
+
+        if (guidedFootballSession.index >= guidedFootballSession.hrefs.length - 1) {
+            const total = guidedFootballSession.hrefs.length;
+            location.hash = '#/football/';
+            resetGuidedFootballSession();
+            return { complete: true, total };
+        }
+
+        const nextIndex = guidedFootballSession.index + 1;
+        const href = guidedFootballSession.hrefs[nextIndex];
+        const link = Array.from(document.querySelectorAll('a[href*="#/football/"]'))
+            .find(candidate => candidate.getAttribute('href') === href);
+        if (!link) {
+            resetGuidedFootballSession();
+            return { error: 'The Football list changed. Press Guided Review again to start a fresh session.' };
+        }
+
+        guidedFootballSession.index = nextIndex;
+        link.click();
+        return {
+            complete: false,
+            position: nextIndex + 1,
+            total: guidedFootballSession.hrefs.length
+        };
     }
 
     function render() {
@@ -906,6 +1045,7 @@
                 <div class="tbp-header-title">
                     <strong>Bookie Panel</strong>
                     ${footballScanEnabled ? '<button class="tbp-btn tbp-scan-btn" id="tbp-football-scan-btn">Scan Games</button>' : ''}
+                    ${guidedFootballReviewEnabled ? '<button class="tbp-btn tbp-guide-btn" id="tbp-football-guide-btn">Guided Review</button>' : ''}
                 </div>
                 <button class="tbp-btn" id="tbp-hide-btn" style="background:transparent; color:#888;">_</button>
             </div>
@@ -1167,7 +1307,17 @@ ${safeJson(log.raw)}
                     <input type="checkbox" id="tbp-football-odds-history-enabled" ${footballOddsHistoryEnabled ? 'checked' : ''}>
                 </div>
                 <div class="tbp-muted" style="margin-top:7px;">
-                    Records home, draw, and away multipliers locally when you manually open a Football game. Changed odds receive a signed badge such as +0.12 or −0.08; tap or hover the badge to see the prior observation time.
+                    Records home, draw, and away multipliers locally when you manually open a Football game. Changed odds receive a signed badge such as +0.12 or −0.08; tap or hover the badge to see the prior observation time. A game's records are deleted when its Torn start time is reached.
+                </div>
+            </div>
+
+            <div class="tbp-card">
+                <div class="tbp-row">
+                    <span>Enable Guided Football review</span>
+                    <input type="checkbox" id="tbp-guided-football-review-enabled" ${guidedFootballReviewEnabled ? 'checked' : ''}>
+                </div>
+                <div class="tbp-muted" style="margin-top:7px;">
+                    Adds a header button that advances through up to ${MAX_GUIDED_FOOTBALL_GAMES} upcoming games. Each manual press opens one game and collapses the previous game; there is no automatic progression.
                 </div>
             </div>
 
@@ -1229,6 +1379,26 @@ ${safeJson(log.raw)}
             };
         }
 
+        const footballGuideBtn = document.getElementById('tbp-football-guide-btn');
+        if (footballGuideBtn) {
+            footballGuideBtn.onclick = () => {
+                const result = advanceGuidedFootballReview();
+                if (result.error) {
+                    alert(result.error);
+                    return;
+                }
+
+                if (result.complete) {
+                    footballGuideBtn.textContent = `Done ${result.total}`;
+                    footballGuideBtn.title = `Completed the guided review of ${result.total} games.`;
+                    return;
+                }
+
+                footballGuideBtn.textContent = `Next ${result.position}/${result.total}`;
+                footballGuideBtn.title = 'Press once to open the next game.';
+            };
+        }
+
         document.getElementById('tbp-full-rescan-btn').onclick = async () => {
             if (!confirm(`Full rescan may request up to ${Math.min(maxPages, MAX_API_PAGES_PER_SCAN)} API pages. Continue?`)) return;
 
@@ -1257,6 +1427,7 @@ ${safeJson(log.raw)}
                 showDebug = document.getElementById('tbp-show-debug').checked;
                 footballScanEnabled = document.getElementById('tbp-football-scan-enabled').checked;
                 footballOddsHistoryEnabled = document.getElementById('tbp-football-odds-history-enabled').checked;
+                guidedFootballReviewEnabled = document.getElementById('tbp-guided-football-review-enabled').checked;
                 saveData();
                 if (!footballScanEnabled) clearFootballHighlights();
                 if (!footballOddsHistoryEnabled) {
@@ -1266,7 +1437,12 @@ ${safeJson(log.raw)}
                     pendingFootballOddsTimeout = null;
                     if (pendingFootballOddsSettleTimeout) clearTimeout(pendingFootballOddsSettleTimeout);
                     pendingFootballOddsSettleTimeout = null;
+                    if (footballHistoryExpiryTimer) clearTimeout(footballHistoryExpiryTimer);
+                    footballHistoryExpiryTimer = null;
+                } else {
+                    scheduleFootballHistoryExpiry(loadFootballOddsHistory());
                 }
+                if (!guidedFootballReviewEnabled) resetGuidedFootballSession();
                 await hydrateFromCache();
             };
         }
@@ -1359,7 +1535,7 @@ document.addEventListener('click', async e => {
 }, true);
 
     document.addEventListener('click', event => {
-        if (!footballOddsHistoryEnabled || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+        if ((!footballOddsHistoryEnabled && !footballScanEnabled) || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
         const target = event.target instanceof Element ? event.target : null;
         const link = target?.closest('a[href*="#/football/"]');
         const href = link?.getAttribute('href') || '';
@@ -1369,5 +1545,6 @@ document.addEventListener('click', async e => {
 
     render();
     hydrateFromCache();
+    if (footballOddsHistoryEnabled) scheduleFootballHistoryExpiry(loadFootballOddsHistory());
 
 })();
