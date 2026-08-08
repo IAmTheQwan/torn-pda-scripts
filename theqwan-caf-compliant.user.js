@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.17.0
+// @version      1.18.0
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -97,9 +97,13 @@
   const BUY_NOW_THRESHOLD = 25_000_000;
   const COLLECTION_CAPTURE_POLL_MS = 250;
   const COLLECTION_CAPTURE_STABLE_MS = 400;
+  const MARKET_LOAD_RUNWAY_LIFETIME_MS = 3000;
   let collectionCaptureTimer = null;
   let watchLocateTimer = null;
   let marketRefreshTimer = null;
+  let marketLoadRunwayTimer = null;
+  let marketLoadRunwayFilterKey = "";
+  let marketLoadRunwaysExpired = false;
 
   const style = document.createElement("style");
   style.textContent = `
@@ -2868,9 +2872,43 @@
       || filter.bonusMin !== "" || filter.bonusMax !== "");
   }
 
+  function marketLoadRunwayKey(filter) {
+    return JSON.stringify({
+      doubleOnly: !!filter.doubleOnly,
+      strongDealsOnly: !!filter.strongDealsOnly,
+      color: filter.color || "",
+      bonus1: filter.bonus1 || "",
+      bonus2: filter.bonus2 || "",
+      bonusMin: filter.bonusMin || "",
+      bonusMax: filter.bonusMax || ""
+    });
+  }
+
+  function clearMarketLoadRunways() {
+    document.querySelectorAll(".caf-clean-market-load-runway, .caf-clean-market-load-runway-compact").forEach(container => {
+      container.classList.remove("caf-clean-market-load-runway", "caf-clean-market-load-runway-compact");
+    });
+  }
+
+  function expireMarketLoadRunways() {
+    marketLoadRunwayTimer = null;
+    marketLoadRunwaysExpired = true;
+    clearMarketLoadRunways();
+    if (!isActiveView() || !isItemMarketPage()) return;
+    const firstMatch = marketRows().find(row => !row.classList.contains("caf-clean-market-hidden"));
+    firstMatch?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   function updateMarketLoadRunways(parsedRows, filter) {
     const marketRoot = document.querySelector(MARKET_SELECTORS.root);
     if (!marketRoot) return;
+    const filterKey = marketLoadRunwayKey(filter);
+    if (filterKey !== marketLoadRunwayFilterKey) {
+      clearTimeout(marketLoadRunwayTimer);
+      marketLoadRunwayTimer = null;
+      marketLoadRunwayFilterKey = filterKey;
+      marketLoadRunwaysExpired = false;
+    }
     const activeParents = [];
     const activeParentSet = new Set();
     if (hasMarketNarrowingFilter(filter)) {
@@ -2885,13 +2923,15 @@
         }
       });
     }
-    marketRoot.querySelectorAll(".caf-clean-market-load-runway, .caf-clean-market-load-runway-compact").forEach(container => {
-      container.classList.remove("caf-clean-market-load-runway", "caf-clean-market-load-runway-compact");
-    });
+    clearMarketLoadRunways();
+    if (marketLoadRunwaysExpired) return;
     activeParents.forEach((container, index) => {
       container.classList.add("caf-clean-market-load-runway");
       container.classList.toggle("caf-clean-market-load-runway-compact", index > 0);
     });
+    if (activeParents.length && marketLoadRunwayTimer === null) {
+      marketLoadRunwayTimer = setTimeout(expireMarketLoadRunways, MARKET_LOAD_RUNWAY_LIFETIME_MS);
+    }
   }
 
   function ensureMarketDealRail(row, item) {
@@ -3600,6 +3640,10 @@
   function scheduleMarketRefresh() {
     clearTimeout(marketRefreshTimer);
     if (!isItemMarketPage()) {
+      clearTimeout(marketLoadRunwayTimer);
+      marketLoadRunwayTimer = null;
+      marketLoadRunwayFilterKey = "";
+      marketLoadRunwaysExpired = false;
       document.getElementById(MARKET_PANEL_ID)?.remove();
       document.querySelectorAll(".caf-clean-market-row").forEach(row => {
         row.classList.remove(
@@ -3620,9 +3664,7 @@
         row.querySelectorAll(".caf-clean-market-bonus-line, .caf-clean-market-add").forEach(element => element.remove());
         row.querySelectorAll(".caf-clean-market-thumb").forEach(holder => holder.classList.remove("caf-clean-market-thumb"));
       });
-      document.querySelectorAll(".caf-clean-market-load-runway, .caf-clean-market-load-runway-compact").forEach(container => {
-        container.classList.remove("caf-clean-market-load-runway", "caf-clean-market-load-runway-compact");
-      });
+      clearMarketLoadRunways();
       return;
     }
     if (!isActiveView()) return;
