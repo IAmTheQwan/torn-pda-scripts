@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.2.5
+// @version      1.2.6
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -33,6 +33,7 @@
     let isMinimized = JSON.parse(localStorage.getItem('tbp_minimized') || 'false');
     let showDebug = JSON.parse(localStorage.getItem('tbp_show_debug') || 'false');
     let footballScanEnabled = JSON.parse(localStorage.getItem('tbp_football_scan_enabled') || 'false');
+    let footballOddsHistoryEnabled = JSON.parse(localStorage.getItem('tbp_football_odds_history_enabled') || 'false');
 
     let batches = JSON.parse(localStorage.getItem('tbp_batches') || '[]');
     let selectedBatchId = localStorage.getItem('tbp_selected_batch_id') || '';
@@ -54,6 +55,9 @@
     const API_PAGE_DELAY_MS = 1100;
     const FOOTBALL_HOME_ODDS_MIN = 1.3;
     const FOOTBALL_HOME_ODDS_MAX = 1.7;
+    const FOOTBALL_ODDS_HISTORY_KEY = 'tbp_football_odds_history';
+    const MAX_ODDS_HISTORY_GAMES = 100;
+    const MAX_ODDS_OBSERVATIONS_PER_SELECTION = 20;
 
     const styles = `
         #tbp-container { position:fixed; top:20px; right:20px; width:390px; background:#1a1a1a; color:#eee; border:1px solid #444; z-index:999999!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
@@ -87,6 +91,9 @@
         .tbp-btn-row .tbp-btn { flex:1; }
         li.tbp-football-match > a > ul.pop-game { background:rgba(40,167,69,.2)!important; box-shadow:inset 4px 0 0 #28a745; }
         .tbp-football-badge { display:inline-block; margin-left:7px; padding:2px 5px; border-radius:3px; background:#28a745; color:#fff; font-size:10px; font-weight:bold; vertical-align:middle; }
+        .tbp-odds-delta { display:inline-block; margin-left:5px; padding:1px 4px; border-radius:3px; color:#fff; font-size:10px; font-weight:bold; }
+        .tbp-odds-delta-up { background:#28a745; }
+        .tbp-odds-delta-down { background:#d9534f; }
     `;
 
     const styleSheet = document.createElement('style');
@@ -106,6 +113,7 @@
         localStorage.setItem('tbp_minimized', JSON.stringify(isMinimized));
         localStorage.setItem('tbp_show_debug', JSON.stringify(showDebug));
         localStorage.setItem('tbp_football_scan_enabled', JSON.stringify(footballScanEnabled));
+        localStorage.setItem('tbp_football_odds_history_enabled', JSON.stringify(footballOddsHistoryEnabled));
         localStorage.setItem('tbp_batches', JSON.stringify(batches));
         localStorage.setItem('tbp_selected_batch_id', selectedBatchId);
     }
@@ -662,6 +670,150 @@
         return match ? Number(match[1]) : 0;
     }
 
+    function loadFootballOddsHistory() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(FOOTBALL_ODDS_HISTORY_KEY) || '{}');
+            return parsed && typeof parsed === 'object' && parsed.games
+                ? parsed
+                : { version: 1, games: {} };
+        } catch {
+            return { version: 1, games: {} };
+        }
+    }
+
+    function saveFootballOddsHistory(history) {
+        const games = Object.entries(history.games || {})
+            .sort((a, b) => Number(b[1]?.lastViewedAt || 0) - Number(a[1]?.lastViewedAt || 0))
+            .slice(0, MAX_ODDS_HISTORY_GAMES);
+        history.games = Object.fromEntries(games);
+        try {
+            localStorage.setItem(FOOTBALL_ODDS_HISTORY_KEY, JSON.stringify(history));
+        } catch (error) {
+            console.error('Could not save Football odds history.', error);
+        }
+    }
+
+    function getThreeWayMarket(item) {
+        return Array.from(item.querySelectorAll('.info-wrap ul.bets-wrap')).find(wrap => {
+            const name = String(wrap.querySelector('.market-name-cell .bold')?.textContent || '')
+                .replace(/\s+/g, ' ')
+                .trim();
+            const rows = wrap.querySelectorAll(':scope > li.bets .bet-cell.result');
+            return /^3-Way Ordinary time$/i.test(name) && rows.length === 3;
+        }) || null;
+    }
+
+    function recordFootballOddsForItem(item) {
+        if (!footballOddsHistoryEnabled || document.visibilityState !== 'visible' || !isFootballBookiePage()) return 0;
+
+        const market = getThreeWayMarket(item);
+        if (!market) return 0;
+
+        const link = item.querySelector('a[href*="#/football/"]');
+        const gameId = String(link?.getAttribute('href') || '').match(/#\/football\/(\d+)/i)?.[1] || '';
+        if (!gameId) return 0;
+
+        const matchElement = item.querySelector('.matchName p, .pop-game .name p');
+        const matchTitle = String(matchElement?.title || matchElement?.textContent || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        const observedAt = Date.now();
+        const history = loadFootballOddsHistory();
+        const game = history.games[gameId] || { matchTitle, lastViewedAt: 0, selections: {} };
+        game.matchTitle = matchTitle;
+        game.lastViewedAt = observedAt;
+
+        let recorded = 0;
+        const rows = Array.from(market.querySelectorAll(':scope > li.bets')).filter(row => {
+            return row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal');
+        });
+
+        rows.forEach(row => {
+            const selection = String(row.querySelector('.bet-cell.result')?.textContent || '')
+                .replace(/\s+/g, ' ')
+                .trim();
+            const oddsCell = row.querySelector('.bet-cell.odds.decimal');
+            const odds = parseDecimalMultiplier(oddsCell?.textContent);
+            if (!selection || !odds) return;
+
+            oddsCell.querySelector('.tbp-odds-delta')?.remove();
+
+            const selectionKey = selection.toLowerCase();
+            const observations = Array.isArray(game.selections[selectionKey])
+                ? game.selections[selectionKey]
+                : [];
+            const previous = observations[observations.length - 1] || null;
+            const delta = previous ? odds - Number(previous.odds || 0) : 0;
+
+            if (!previous || Math.abs(delta) > 0.0001) {
+                observations.push({ odds, observedAt, firstObservedAt: observedAt });
+                if (observations.length > MAX_ODDS_OBSERVATIONS_PER_SELECTION) {
+                    observations.splice(0, observations.length - MAX_ODDS_OBSERVATIONS_PER_SELECTION);
+                }
+            } else {
+                previous.observedAt = observedAt;
+            }
+            game.selections[selectionKey] = observations;
+            recorded++;
+
+            oddsCell.dataset.tbpObservedAt = String(observedAt);
+            if (previous && Math.abs(delta) > 0.0001) {
+                const badge = document.createElement('span');
+                const isUp = delta > 0;
+                badge.className = `tbp-odds-delta ${isUp ? 'tbp-odds-delta-up' : 'tbp-odds-delta-down'}`;
+                badge.textContent = `${isUp ? '+' : '−'}${Math.abs(delta).toFixed(2)}`;
+                badge.title = `Previous x${Number(previous.odds).toFixed(2)} at ${new Date(previous.observedAt).toLocaleString()}; viewed now at ${new Date(observedAt).toLocaleString()}.`;
+                oddsCell.appendChild(badge);
+            }
+        });
+
+        history.games[gameId] = game;
+        saveFootballOddsHistory(history);
+        return recorded;
+    }
+
+    let pendingFootballOddsObserver = null;
+    let pendingFootballOddsTimeout = null;
+    let pendingFootballOddsSettleTimeout = null;
+
+    function watchManuallyOpenedFootballGame(href) {
+        pendingFootballOddsObserver?.disconnect();
+        if (pendingFootballOddsTimeout) clearTimeout(pendingFootballOddsTimeout);
+        if (pendingFootballOddsSettleTimeout) clearTimeout(pendingFootballOddsSettleTimeout);
+
+        const tryRecord = () => {
+            const link = Array.from(document.querySelectorAll('a[href*="#/football/"]'))
+                .find(candidate => candidate.getAttribute('href') === href);
+            const item = link?.parentElement;
+            const info = item?.querySelector('.info-wrap');
+            if (!item?.classList.contains('active') || info?.style?.display === 'none' || !recordFootballOddsForItem(item)) return false;
+
+            pendingFootballOddsObserver?.disconnect();
+            pendingFootballOddsObserver = null;
+            if (pendingFootballOddsTimeout) clearTimeout(pendingFootballOddsTimeout);
+            pendingFootballOddsTimeout = null;
+            if (pendingFootballOddsSettleTimeout) clearTimeout(pendingFootballOddsSettleTimeout);
+            pendingFootballOddsSettleTimeout = null;
+            return true;
+        };
+
+        const scheduleRecord = () => {
+            if (pendingFootballOddsSettleTimeout) clearTimeout(pendingFootballOddsSettleTimeout);
+            pendingFootballOddsSettleTimeout = setTimeout(() => tryRecord(), 400);
+        };
+
+        pendingFootballOddsObserver = new MutationObserver(scheduleRecord);
+        pendingFootballOddsObserver.observe(document.body, { childList: true, subtree: true });
+        scheduleRecord();
+        pendingFootballOddsTimeout = setTimeout(() => {
+            pendingFootballOddsObserver?.disconnect();
+            pendingFootballOddsObserver = null;
+            if (pendingFootballOddsSettleTimeout) clearTimeout(pendingFootballOddsSettleTimeout);
+            pendingFootballOddsSettleTimeout = null;
+            pendingFootballOddsTimeout = null;
+        }, 10000);
+    }
+
     function scanLoadedFootballGames() {
         clearFootballHighlights();
 
@@ -694,14 +846,10 @@
                 || ''
             ).replace(/\s+/g, ' ').trim();
 
-            const market = Array.from(item.querySelectorAll('.info-wrap ul.bets-wrap')).find(wrap => {
-                const name = String(wrap.querySelector('.market-name-cell .bold')?.textContent || '')
-                    .replace(/\s+/g, ' ')
-                    .trim();
-                const rows = wrap.querySelectorAll(':scope > li.bets .bet-cell.result');
-                return /^3-Way Ordinary time$/i.test(name) && rows.length === 3;
-            });
+            const market = getThreeWayMarket(item);
             if (!market) return;
+
+            if (!market.querySelector('[data-tbp-observed-at]')) recordFootballOddsForItem(item);
 
             const rows = Array.from(market.querySelectorAll(':scope > li.bets')).filter(row => {
                 return row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal');
@@ -1015,6 +1163,16 @@ ${safeJson(log.raw)}
 
             <div class="tbp-card">
                 <div class="tbp-row">
+                    <span>Track viewed 3-Way odds</span>
+                    <input type="checkbox" id="tbp-football-odds-history-enabled" ${footballOddsHistoryEnabled ? 'checked' : ''}>
+                </div>
+                <div class="tbp-muted" style="margin-top:7px;">
+                    Records home, draw, and away multipliers locally when you manually open a Football game. Changed odds receive a signed badge such as +0.12 or −0.08; tap or hover the badge to see the prior observation time.
+                </div>
+            </div>
+
+            <div class="tbp-card">
+                <div class="tbp-row">
                     <span>Show Debug Tab</span>
                     <input type="checkbox" id="tbp-show-debug" ${showDebug ? 'checked' : ''}>
                 </div>
@@ -1098,8 +1256,17 @@ ${safeJson(log.raw)}
                 ));
                 showDebug = document.getElementById('tbp-show-debug').checked;
                 footballScanEnabled = document.getElementById('tbp-football-scan-enabled').checked;
+                footballOddsHistoryEnabled = document.getElementById('tbp-football-odds-history-enabled').checked;
                 saveData();
                 if (!footballScanEnabled) clearFootballHighlights();
+                if (!footballOddsHistoryEnabled) {
+                    pendingFootballOddsObserver?.disconnect();
+                    pendingFootballOddsObserver = null;
+                    if (pendingFootballOddsTimeout) clearTimeout(pendingFootballOddsTimeout);
+                    pendingFootballOddsTimeout = null;
+                    if (pendingFootballOddsSettleTimeout) clearTimeout(pendingFootballOddsSettleTimeout);
+                    pendingFootballOddsSettleTimeout = null;
+                }
                 await hydrateFromCache();
             };
         }
@@ -1190,6 +1357,15 @@ document.addEventListener('click', async e => {
         }, 1500);
     }
 }, true);
+
+    document.addEventListener('click', event => {
+        if (!footballOddsHistoryEnabled || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+        const target = event.target instanceof Element ? event.target : null;
+        const link = target?.closest('a[href*="#/football/"]');
+        const href = link?.getAttribute('href') || '';
+        if (!/^#\/football\/\d+$/i.test(href)) return;
+        watchManuallyOpenedFootballGame(href);
+    }, true);
 
     render();
     hydrateFromCache();
