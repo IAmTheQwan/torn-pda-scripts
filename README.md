@@ -5,6 +5,8 @@ Torn PDA scripts by TheQwan
 
 `theqwan-caf-compliant.user.js` provides foreground-only Auction House compilation/history, a local snapshot watch bar, and Item Market bonus-equipment filtering. On both the Item Market equipment grid and individual seller-list views, it overlays parsed bonus percentages and a deal-status color dot on weapon/equipment thumbnails, filters the cards already loaded by bonus type and percentage, then manually compares visible asking prices with finished-sale history and colors the rows as STEAL, GOOD, FAIR, or HIGH.
 
+Any parsed Auction House bid or Item Market asking price from $1 through **$25,000,000** receives a separate **BUY NOW** badge. This fixed price flag also appears in Market Picks and local watch snapshots; it does not replace or change the history-based STEAL/GOOD/FAIR/HIGH result.
+
 The Auction House **Generate Filtered List** action uses the saved guided collection whenever captured pages exist, even if **Compile Loaded Items** was used afterward. Every newly generated list is expanded and brought into view, and its heading/status identify how many saved items and captured pages were used.
 
 Guided Collection arms on touch/pointer-down before Torn changes pages, polls independently of the page's ongoing DOM updates, and records a new page only after its visible auction-card data has remained stable. This lets it recognize a page that is already rendered without getting stuck waiting for one more mutation.

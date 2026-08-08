@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.15.0
+// @version      1.16.0
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -94,6 +94,7 @@
   const marketPicks = new Map();
   const historyRequestsInFlight = new Map();
   const MARKET_ANALYSIS_CONCURRENCY = 6;
+  const BUY_NOW_THRESHOLD = 25_000_000;
   const COLLECTION_CAPTURE_POLL_MS = 250;
   const COLLECTION_CAPTURE_STABLE_MS = 400;
   let collectionCaptureTimer = null;
@@ -274,6 +275,25 @@
     .caf-clean-results .caf-clean-quality { color: #c967ff; font-weight: 700; }
     .caf-clean-results .caf-clean-item-line { color: #bbb; line-height: 1.3; }
     .caf-clean-results .caf-clean-item-bid { color: #fff; line-height: 1.4; }
+    .caf-clean-buy-now {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-left: 4px;
+      padding: 2px 5px;
+      color: #07140b;
+      background: #7dff9b;
+      border: 1px solid #c2ffcf;
+      border-radius: 4px;
+      box-shadow: 0 0 5px rgba(0,230,118,.75);
+      box-sizing: border-box;
+      font-size: 9px;
+      font-weight: 900;
+      line-height: 1.1;
+      letter-spacing: .2px;
+      white-space: nowrap;
+    }
+    .caf-clean-results .caf-clean-buy-now { margin-left: 5px; vertical-align: middle; }
     .caf-clean-results .caf-clean-source-page {
       display: inline-block;
       margin-top: 3px;
@@ -479,6 +499,12 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+    #${WATCH_BAR_ID} .caf-clean-buy-now {
+      margin-left: 3px;
+      padding: 1px 3px;
+      font-size: 7px;
+      vertical-align: middle;
     }
     #${WATCH_BAR_ID} .caf-clean-watch-time { color: #ffcf70; }
     #${WATCH_BAR_ID} .caf-clean-watch-empty {
@@ -807,6 +833,14 @@
       line-height: 1.2;
       vertical-align: middle;
     }
+    .caf-clean-market-buy-now {
+      position: absolute;
+      left: 2px;
+      bottom: 2px;
+      z-index: 6;
+      margin-left: 0;
+      pointer-events: none;
+    }
     .caf-clean-market-grid-card > .caf-clean-market-tools {
       display: none !important;
     }
@@ -1098,7 +1132,7 @@
     return `
       <button class="caf-clean-watch-item${removeMode ? " is-remove-mode" : ""}" data-watch-id="${escapeAttr(item.id)}" title="${escapeAttr(removeMode ? `Remove ${item.name}` : `Open ${item.name} on its saved auction page`)}">
         <span class="caf-clean-watch-thumb ${escapeAttr(item.color)}">${safeImage}</span>
-        <span class="caf-clean-watch-name">${escapeHtml(item.name)}</span>
+        <span class="caf-clean-watch-name">${escapeHtml(item.name)}${buyNowBadgeHtml(item.bid)}</span>
         ${timeHtml}
       </button>
     `;
@@ -1133,7 +1167,7 @@
     }
 
     const closestHtml = closest
-      ? `${escapeHtml(closest.name)} | ${closest.endsAtMs
+      ? `${escapeHtml(closest.name)}${buyNowBadgeHtml(closest.bid)} | ${closest.endsAtMs
         ? `<span class="caf-clean-countdown" data-prefix="Est. " data-ends-at="${Number(closest.endsAtMs)}">Est. ${escapeHtml(countdownText(closest.endsAtMs))}</span>`
         : "Time unknown"}`
       : "No watched items";
@@ -1725,7 +1759,7 @@
           <div class="caf-clean-item-line">Damage: ${item.damage.toFixed(2)} | Accuracy: ${item.accuracy.toFixed(2)}</div>
           <div class="caf-clean-item-line">Bonus: ${escapeHtml(itemBonusText(item))}</div>
           <div class="caf-clean-item-line">Color: ${item.color ? item.color.toUpperCase() : "None"}</div>
-          <div class="caf-clean-item-bid">Bid: ${money(item.bid)}</div>
+          <div class="caf-clean-item-bid">Bid: ${money(item.bid)}${buyNowBadgeHtml(item.bid)}</div>
           ${item.endsAtMs
             ? `<div class="caf-clean-item-line">Time left: <span class="caf-clean-countdown" data-ends-at="${Number(item.endsAtMs)}">${countdownText(item.endsAtMs)}</span></div>`
             : item.timeText ? `<div class="caf-clean-item-line">Time left: ${escapeHtml(item.timeText)}</div>` : ""}
@@ -2098,6 +2132,16 @@
     if (number >= 1e6) return `$${(number / 1e6).toFixed(1)}M`;
     if (number >= 1e3) return `$${(number / 1e3).toFixed(0)}K`;
     return `$${number.toLocaleString()}`;
+  }
+
+  function isBuyNowPrice(value) {
+    const price = Number(value);
+    return Number.isFinite(price) && price > 0 && price <= BUY_NOW_THRESHOLD;
+  }
+
+  function buyNowBadgeHtml(value) {
+    if (!isBuyNowPrice(value)) return "";
+    return `<span class="caf-clean-buy-now" title="Price is ${money(value)}, at or below the ${money(BUY_NOW_THRESHOLD)} BUY NOW threshold">BUY NOW</span>`;
   }
 
   function median(values) {
@@ -2694,7 +2738,7 @@
 
   function marketListingSource(row) {
     const clone = row.cloneNode(true);
-    clone.querySelectorAll(".caf-clean-market-tools, .caf-clean-market-bonus-percent, .caf-clean-market-bonus-line, .caf-clean-market-add, .caf-clean-market-deal-rail").forEach(element => element.remove());
+    clone.querySelectorAll(".caf-clean-market-tools, .caf-clean-market-bonus-percent, .caf-clean-market-bonus-line, .caf-clean-market-add, .caf-clean-market-deal-rail, .caf-clean-market-buy-now").forEach(element => element.remove());
     const attributes = [...clone.querySelectorAll("[aria-label], [title], [data-item-name], [data-bonus], [data-bonus-name], [data-bonus-value]")]
       .flatMap(element => [
         element.getAttribute("aria-label"),
@@ -2998,6 +3042,26 @@
     if (!badge.dataset.dealState) setMarketBonusDealIndicator(row, "UNKNOWN");
   }
 
+  function ensureMarketBuyNowBadge(row, item) {
+    const { holder } = marketImageHolder(row);
+    row.querySelectorAll(".caf-clean-market-buy-now").forEach(badge => {
+      if (!holder || badge.parentElement !== holder) badge.remove();
+    });
+    const existing = holder?.querySelector(":scope > .caf-clean-market-buy-now");
+    if (!holder || !isBuyNowPrice(item.bid)) {
+      existing?.remove();
+      return;
+    }
+
+    holder.classList.add("caf-clean-market-thumb");
+    const badge = existing || document.createElement("span");
+    badge.className = "caf-clean-buy-now caf-clean-market-buy-now";
+    badge.textContent = "BUY NOW";
+    badge.title = `Ask ${money(item.bid)} is at or below the ${money(BUY_NOW_THRESHOLD)} BUY NOW threshold`;
+    badge.setAttribute("aria-label", badge.title);
+    if (!existing) holder.appendChild(badge);
+  }
+
   function marketDealStateFromRow(row) {
     if (row.dataset.cafMarketDealState) return row.dataset.cafMarketDealState;
     const stateByClass = [
@@ -3080,7 +3144,7 @@
           <span class="caf-clean-market-pick-deal">RAW ${marketDealLabel(entry.typeDealState || "unknown")} · ADJ ${marketDealLabel(entry.dealState || "unknown")}</span>
           <button class="caf-clean-market-pick-remove" type="button">Remove</button>
         </div>
-        <div class="caf-clean-market-pick-meta">Ask ${money(item.bid)} · ${escapeHtml(itemBonusText(item))}</div>
+        <div class="caf-clean-market-pick-meta">Ask ${money(item.bid)}${buyNowBadgeHtml(item.bid)} · ${escapeHtml(itemBonusText(item))}</div>
         <button class="caf-clean-history" data-idle-label="History + Deal ▼">History + Deal ▼</button>
         <div class="caf-clean-history-box"></div>
       `;
@@ -3212,7 +3276,7 @@
     tools.dataset.identity = identity;
     tools.innerHTML = `
       <div class="caf-clean-market-tool-head">
-        <span class="caf-clean-market-bonus">${escapeHtml(itemBonusText(item))} · Ask ${money(item.bid)}</span>
+        <span class="caf-clean-market-bonus">${escapeHtml(itemBonusText(item))} · Ask ${money(item.bid)}${buyNowBadgeHtml(item.bid)}</span>
         <button class="caf-clean-history" data-idle-label="History + Deal">History + Deal</button>
       </div>
       <div class="caf-clean-history-box"></div>
@@ -3250,6 +3314,7 @@
       ensureMarketBonusLine(row, item);
       ensureMarketBonusBadge(row, item);
       ensureMarketAddButton(row, item);
+      ensureMarketBuyNowBadge(row, item);
     });
 
     if (rows.length && !bonusCount) {
@@ -3520,7 +3585,7 @@
         delete row.dataset.cafMarketDealState;
         delete row.dataset.cafMarketComparableDealState;
         row.querySelector(":scope > .caf-clean-market-tools")?.remove();
-        row.querySelectorAll(".caf-clean-market-bonus-percent, .caf-clean-market-deal-rail").forEach(element => element.remove());
+        row.querySelectorAll(".caf-clean-market-bonus-percent, .caf-clean-market-deal-rail, .caf-clean-market-buy-now").forEach(element => element.remove());
         row.querySelectorAll(".caf-clean-market-bonus-line, .caf-clean-market-add").forEach(element => element.remove());
         row.querySelectorAll(".caf-clean-market-thumb").forEach(holder => holder.classList.remove("caf-clean-market-thumb"));
       });
@@ -3731,7 +3796,7 @@
     if (document.body) {
       const marketObserver = new MutationObserver(records => {
         const hasMarketPageMutation = records.some(record =>
-          !record.target.closest?.(`#${MARKET_PANEL_ID}, .caf-clean-market-tools, .caf-clean-market-deal-rail`)
+          !record.target.closest?.(`#${MARKET_PANEL_ID}, .caf-clean-market-tools, .caf-clean-market-deal-rail, .caf-clean-market-buy-now`)
         );
         if (hasMarketPageMutation) scheduleMarketRefresh();
       });
