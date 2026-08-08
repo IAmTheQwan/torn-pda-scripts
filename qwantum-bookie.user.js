@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.9.7
+// @version      1.9.8
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -1190,7 +1190,7 @@ green: { key: 'green', label: 'Green Home', rule: `Home Win Odds: ${FOOTBALL_HOM
 yellow: { key: 'yellow', label: 'Yellow Home', rule: `Home Win Odds: ${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}-${(FOOTBALL_HOME_GREEN_MIN - 0.01).toFixed(2)}`, wins: 0, losses: 0, net: 0 },
 orange: { key: 'orange', label: 'Orange Away', rule: `Away Win Odds: ${FOOTBALL_AWAY_ODDS_MIN.toFixed(2)}-${FOOTBALL_AWAY_ODDS_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
 other: { key: 'other', label: 'All Other 3-Way Bets', rule: 'Captured 3-Way bets outside the colored ranges', wins: 0, losses: 0, net: 0 },
-non3way: { key: 'non3way', label: 'Other Non-3-Way Bets', rule: 'Captured bets using any other market', wins: 0, losses: 0, net: 0 }
+non3way: { key: 'non3way', label: 'Other / Non-3-Way Bets', rule: 'Other markets, sports, or bets without captured 3-Way details', wins: 0, losses: 0, net: 0 }
 };
 }
 function hasColorStatsFixtureEvidence(link) {
@@ -1215,7 +1215,7 @@ total.settled = total.wins + total.losses;
 total.winPct = total.settled ? total.wins / total.settled * 100 : 0;
 total.lossPct = total.settled ? total.losses / total.settled * 100 : 0;
 total.refunds = scope.refunds;
-total.open = Math.max(0, scope.classifiedPlaced - total.settled - scope.refunds);
+total.open = Math.max(0, scope.totalPlaced - total.settled - scope.refunds);
 return { ...scope, rows, total };
 }
 function getColorBetStats() {
@@ -1224,8 +1224,8 @@ const pendingBySelection = new Map();
 const fromTimestamp = dateToUnixStart(scanStartDate || defaultScanStartDate());
 const logs = [...rawLogs].sort((a, b) => a.timestamp - b.timestamp);
 const scopes = {
-current: { categories: createColorStatCategories(), classifiedPlaced: 0, missingFixture: 0, refunds: 0 },
-before: { categories: createColorStatCategories(), classifiedPlaced: 0, missingFixture: 0, refunds: 0 }
+current: { categories: createColorStatCategories(), totalPlaced: 0, classifiedPlaced: 0, missingFixture: 0, refunds: 0 },
+before: { categories: createColorStatCategories(), totalPlaced: 0, classifiedPlaced: 0, missingFixture: 0, refunds: 0 }
 };
 logs.forEach(log => {
 const type = classifyLog(log);
@@ -1234,6 +1234,7 @@ if (!key) return;
 if (type === 'placed') {
 const scopeKey = Number(log.timestamp || 0) < fromTimestamp ? 'before' : 'current';
 const scope = scopes[scopeKey];
+scope.totalPlaced++;
 const bet = getBetAmount(log);
 const odds = getOdds(log);
 let link = links[String(log.id)] || null;
@@ -1248,10 +1249,11 @@ link = loadBetStatsLinks()[String(log.id)] || fixture;
 }
 if (!hasColorStatsFixtureEvidence(link)) {
 scope.missingFixture++;
-return;
+category = 'non3way';
+} else {
+scope.classifiedPlaced++;
 }
 if (!scope.categories[category]) category = 'other';
-scope.classifiedPlaced++;
 if (!pendingBySelection.has(key)) pendingBySelection.set(key, []);
 pendingBySelection.get(key).push({ log, bet, category, scopeKey });
 return;
@@ -1662,7 +1664,7 @@ selection: match[3].trim(),
 market: match[4].trim()
 };
 }
-function parseCompletedMyBetTitle(value) {
+function parseCompletedMyBetTitlePart(value) {
 const title = String(value || '').replace(/\s+/g, ' ').trim();
 let match = title.match(/^Won\s+\$([\d,]+)\s+\(x([\d.]+)\)\s+from a\s+\$([\d,]+)\s+bet on\s+(.+?)\s+\((.+)\)$/i);
 if (match) {
@@ -1686,7 +1688,26 @@ selection: match[3].trim(),
 market: match[4].trim()
 };
 }
+match = title.match(/^Refunded\s+\$([\d,]+)\s+\(x([\d.]+)\)\s+bet on\s+(.+?)\s+\((.+)\)$/i);
+if (match) {
+return {
+type: 'refund',
+profit: 0,
+odds: Number(match[2]),
+stake: Number(match[1].replace(/,/g, '')),
+selection: match[3].trim(),
+market: match[4].trim()
+};
+}
 return null;
+}
+function parseCompletedMyBetTitles(value) {
+return String(value || '')
+.replace(/<br\s*\/?>/gi, '\n')
+.replace(/\r/g, '')
+.split(/\n(?=(?:Won|Lost|Refunded)\s)/i)
+.map(parseCompletedMyBetTitlePart)
+.filter(Boolean);
 }
 function selectionKeyGameId(log) {
 return String(getSelectionKey(log) || '').split('/')[0] || '';
@@ -1708,8 +1729,8 @@ const matchTitle = String(link.querySelector('.matchName p, .pop-game .name p')?
 const details = parseFootballFixtureTitle(matchTitle);
 if (!gameId || !details.homeTeam || !details.awayTeam) return;
 Array.from(link.querySelectorAll('.stick .text[title]')).forEach(element => {
-const completed = parseCompletedMyBetTitle(element.title);
-if (!completed) return;
+const completedBets = parseCompletedMyBetTitles(element.title);
+completedBets.forEach(completed => {
 found++;
 const resultCandidates = rawLogs
 .filter(log => classifyLog(log) === completed.type)
@@ -1748,6 +1769,7 @@ linkedBy: 'completed-my-bets'
 }, placedLog.timestamp, { stake: completed.stake, odds: completed.odds, sourceFingerprint: fingerprint });
 statsLinks = loadBetStatsLinks();
 captured++;
+});
 });
 });
 if (captured) lastLoadStatus = `Captured market details for ${captured} completed Bookie bet${captured === 1 ? '' : 's'} from My Bets.`;
@@ -2730,12 +2752,12 @@ non3way: 'border-left:6px solid #4da3ff;'
 };
 body.innerHTML = `
 <div class="tbp-muted" style="margin-bottom:8px;">${lastLoadStatus}</div>
-<div class="tbp-muted" style="margin-bottom:8px;">Stats include captured Bookie bets with market details from ${escapeHtml(stats.fromDate)} through today. Green, Yellow, Orange, and All Other 3-Way use the Football rules; other markets appear in the fifth box.</div>
+<div class="tbp-muted" style="margin-bottom:8px;">Stats group all cached Bookie bets placed from ${escapeHtml(stats.fromDate)} through today. Captured 3-Way Football bets use the colored rules; every other or still-unclassified bet appears in the fifth box.</div>
 <button class="tbp-btn tbp-btn-primary" id="tbp-measure-stats-btn" style="width:100%; margin-bottom:8px;">Refresh Outcome Audit</button>
 <div class="tbp-row" style="margin:0 2px 4px;"><span>Captured with market details</span><span>${stats.trackedPlaced}</span></div>
 <div class="tbp-row" style="margin:0 2px 4px;"><span>Settled / Open / Refunded</span><span>${stats.total.settled} / ${stats.total.open} / ${stats.total.refunds}</span></div>
 <div class="tbp-row" style="margin:0 2px 9px;"><span>Other/unclassified Bookie bets</span><span>${stats.excludedUntracked}</span></div>
-${stats.excludedUntracked ? '<div class="tbp-muted" style="margin-bottom:9px;">Other/unclassified can include other sports, other markets, and older bets without captured fixture details. Their outcomes and money still count in Daily; they are only excluded from the colored Football records below.</div>' : ''}
+${stats.excludedUntracked ? '<div class="tbp-muted" style="margin-bottom:9px;">Other/unclassified can include other sports, other markets, and older bets without captured fixture details. Their Torn outcomes are included in the fifth box so they are no longer dropped from the Stats record or net.</div>' : ''}
 <div class="tbp-summary-grid">
 <div class="tbp-summary-box"><div class="tbp-summary-label">Total Record</div><div class="tbp-summary-value">${total.wins}-${total.losses}</div></div>
 <div class="tbp-summary-box"><div class="tbp-summary-label">Win / Loss</div><div class="tbp-summary-value" style="font-size:13px;">${total.winPct.toFixed(1)}% / ${total.lossPct.toFixed(1)}%</div></div>
@@ -2753,7 +2775,7 @@ ${stats.rows.map(row => `
 ${(stats.before.classifiedPlaced || stats.before.missingFixture) ? `
 <div class="tbp-card" style="border-left:6px solid #4da3ff;">
 <div style="font-weight:bold; font-size:13px;">Before ${escapeHtml(stats.fromDate)}</div>
-<div class="tbp-muted" style="margin:2px 0 5px;">Captured history outside the selected Stats date range; kept separate from the totals above.</div>
+<div class="tbp-muted" style="margin:2px 0 5px;">Cached history outside the selected Stats date range; kept separate from the totals above.</div>
 <div class="tbp-row"><span>Captured with market details</span><span>${stats.before.classifiedPlaced}</span></div>
 <div class="tbp-row"><span>Other/unclassified Bookie bets</span><span>${stats.before.missingFixture}</span></div>
 <div class="tbp-row"><span>Record</span><span>${stats.before.total.wins}-${stats.before.total.losses}</span></div>
@@ -3070,7 +3092,7 @@ if (isFootballBookiePage()) startGuidedFootballHighlightKeeper();
 let visibleFootballResultCaptureTimer = null;
 let visibleFootballResultObserver = null;
 function scheduleVisibleFootballResultCapture() {
-if (visibleFootballResultCaptureTimer) clearTimeout(visibleFootballResultCaptureTimer);
+if (visibleFootballResultCaptureTimer) return;
 visibleFootballResultCaptureTimer = setTimeout(() => {
 visibleFootballResultCaptureTimer = null;
 if (document.visibilityState !== 'visible') return;
@@ -3079,7 +3101,7 @@ captureVisibleMyBetsSnapshot();
 }
 const result = captureVisibleFootballResultNames();
 if (result.captured && activeTab === 'batch' && !batchFeatureEnabled) render();
-}, 700);
+}, 350);
 }
 function startVisibleFootballResultCapture() {
 if (visibleFootballResultObserver || !document.body) return;
