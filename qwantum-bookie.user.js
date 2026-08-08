@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.13.0
+// @version      1.13.1
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -149,6 +149,8 @@ li.tbp-football-match > a > ul.pop-game .team-names { font-weight:700!important;
 .tbp-odds-delta { display:inline-block; margin-left:5px; padding:1px 4px; border-radius:3px; color:#fff; font-size:10px; font-weight:bold; }
 .tbp-odds-delta-up { background:#28a745; }
 .tbp-odds-delta-down { background:#d9534f; }
+.tbp-odds-change-strip { display:none; padding:6px 10px; background:#172633; border-bottom:1px solid #3b82a8; color:#d9effb; font-size:10px; line-height:1.35; }
+.tbp-odds-change-strip.visible { display:block; }
 .tbp-capture-btn { padding:3px 8px; min-width:auto; font-size:10px; }
 `;
 const styleSheet = document.createElement('style');
@@ -1424,6 +1426,7 @@ const wait = Math.min(futureStarts[0] - now + 1000, 2147483647);
 footballHistoryExpiryTimer = setTimeout(() => {
 const current = loadFootballOddsHistory();
 saveFootballOddsHistory(current);
+updateFootballOddsChangeStrip();
 }, wait);
 }
 function loadFootballOddsHistory() {
@@ -1452,6 +1455,28 @@ localStorage.setItem(FOOTBALL_ODDS_HISTORY_KEY, JSON.stringify(history));
 console.error('Could not save Football odds history.', error);
 }
 scheduleFootballHistoryExpiry(history);
+}
+function getLatestFootballOddsChange(history = loadFootballOddsHistory()) {
+return Object.values(history.games || {})
+.filter(game => game?.latestChanges?.changes?.length)
+.sort((a, b) => Number(b.latestChanges.observedAt || 0) - Number(a.latestChanges.observedAt || 0))[0] || null;
+}
+function formatFootballOddsChangeSummary(game) {
+if (!game?.latestChanges?.changes?.length) return '';
+const changes = game.latestChanges.changes.map(change => {
+const sign = Number(change.delta || 0) > 0 ? '+' : '−';
+return `${change.selection} ${sign}${Math.abs(Number(change.delta || 0)).toFixed(2)} → x${Number(change.odds || 0).toFixed(2)}`;
+}).join(' · ');
+const time = new Date(Number(game.latestChanges.observedAt || Date.now())).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+return `Odds moved — ${game.matchTitle || 'Football'}: ${changes} (${time})`;
+}
+function updateFootballOddsChangeStrip() {
+const strip = document.getElementById('tbp-odds-change-strip');
+if (!strip) return;
+const summary = formatFootballOddsChangeSummary(getLatestFootballOddsChange());
+strip.textContent = summary;
+strip.classList.toggle('visible', Boolean(summary));
+strip.title = summary;
 }
 function getThreeWayMarket(item) {
 return Array.from(item.querySelectorAll('.info-wrap ul.bets-wrap')).find(wrap => {
@@ -2469,16 +2494,18 @@ game.startTimestamp = startTimestamp || Number(game.startTimestamp || 0);
 if (game.startTimestamp && game.startTimestamp <= observedAt) {
 delete history.games[gameId];
 saveFootballOddsHistory(history);
+updateFootballOddsChangeStrip();
 return 0;
 }
 let recorded = 0;
+const visibleChanges = [];
 const comparisonMarkets = [market, getHalfGoalAsianHandicapMarket(item)].filter(Boolean);
 const rows = comparisonMarkets.flatMap(comparisonMarket => {
-return Array.from(comparisonMarket.querySelectorAll(':scope > li.bets')).filter(row => {
-return row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal');
+return Array.from(comparisonMarket.querySelectorAll(':scope > li.bets'))
+.filter(row => row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal'))
+.map(row => ({ row, marketName: getMarketName(comparisonMarket) }));
 });
-});
-rows.forEach(row => {
+rows.forEach(({ row, marketName }) => {
 const selection = String(row.querySelector('.bet-cell.result')?.textContent || '')
 .replace(/\s+/g, ' ')
 .trim();
@@ -2510,10 +2537,15 @@ badge.className = `tbp-odds-delta ${isUp ? 'tbp-odds-delta-up' : 'tbp-odds-delta
 badge.textContent = `${isUp ? '+' : '−'}${Math.abs(delta).toFixed(2)}`;
 badge.title = `Previous x${Number(previous.odds).toFixed(2)} at ${new Date(previous.observedAt).toLocaleString()}; viewed now at ${new Date(observedAt).toLocaleString()}.`;
 oddsCell.appendChild(badge);
+visibleChanges.push({ selection, market: marketName, delta, odds, previousOdds: Number(previous.odds || 0) });
 }
 });
+if (visibleChanges.length) {
+game.latestChanges = { observedAt, changes: visibleChanges };
+}
 history.games[gameId] = game;
 saveFootballOddsHistory(history);
+updateFootballOddsChangeStrip();
 return recorded;
 }
 let pendingFootballOddsObserver = null;
@@ -2861,6 +2893,7 @@ ${guidedFootballReviewEnabled && guidedFootballSession.active ? '<button class="
 </div>
 <button class="tbp-btn" id="tbp-hide-btn" style="background:transparent; color:#888;">_</button>
 </div>
+<div class="tbp-odds-change-strip" id="tbp-odds-change-strip"></div>
 <div class="tbp-tabs">
 <div class="tbp-tab ${activeTab === 'open' ? 'active' : ''}" data-tab="open">Open</div>
 <div class="tbp-tab ${activeTab === 'today' ? 'active' : ''}" data-tab="today">Today</div>
@@ -2886,6 +2919,7 @@ else renderStats(body);
 if (activeTab === 'debug') renderDebug(body);
 if (activeTab === 'settings') renderSettings(body);
 attachEvents();
+updateFootballOddsChangeStrip();
 }
 function renderOpen(body) {
 // Re-run local matching so fixtures reviewed after the API log was cached can
