@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.4.4
+// @version      1.4.5
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -61,6 +61,8 @@
     const FOOTBALL_AWAY_ODDS_MAX = 1.7;
     const FOOTBALL_ODDS_HISTORY_KEY = 'tbp_football_odds_history';
     const FOOTBALL_FIXTURE_RECORDS_KEY = 'tbp_football_fixture_records';
+    const MANUAL_BET_LINKS_KEY = 'tbp_manual_bet_fixture_links';
+    const PENDING_MANUAL_CAPTURE_KEY = 'tbp_pending_manual_bet_capture';
     const MAX_ODDS_HISTORY_GAMES = 100;
     const MAX_ODDS_OBSERVATIONS_PER_SELECTION = 20;
     const MAX_GUIDED_FOOTBALL_GAMES = 20;
@@ -68,6 +70,7 @@
     const FOOTBALL_FIXTURE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
     const FOOTBALL_BET_LINK_WINDOW_MS = 10 * 60 * 1000;
     const FOOTBALL_PENDING_BET_VISIBLE_MS = 30 * 60 * 1000;
+    const MANUAL_CAPTURE_TTL_MS = 30 * 60 * 1000;
 
     const styles = `
         #tbp-container { position:fixed; top:20px; right:20px; width:390px; background:#1a1a1a; color:#eee; border:1px solid #444; z-index:999999!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
@@ -127,6 +130,7 @@
         .tbp-odds-delta { display:inline-block; margin-left:5px; padding:1px 4px; border-radius:3px; color:#fff; font-size:10px; font-weight:bold; }
         .tbp-odds-delta-up { background:#28a745; }
         .tbp-odds-delta-down { background:#d9534f; }
+        .tbp-capture-btn { padding:3px 8px; min-width:auto; font-size:10px; }
     `;
 
     const styleSheet = document.createElement('style');
@@ -962,7 +966,113 @@
         return saveFootballFixtureRecord({ ...fixture, betClicks });
     }
 
+    function loadManualBetLinks() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(MANUAL_BET_LINKS_KEY) || '{}');
+            return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch {
+            return {};
+        }
+    }
+
+    function saveManualBetLink(betId, fixture) {
+        const links = loadManualBetLinks();
+        links[String(betId)] = { ...fixture, capturedAt: Date.now(), linkedBy: 'manual-my-bets' };
+        const limited = Object.entries(links)
+            .sort((a, b) => Number(b[1]?.capturedAt || 0) - Number(a[1]?.capturedAt || 0))
+            .slice(0, 200);
+        localStorage.setItem(MANUAL_BET_LINKS_KEY, JSON.stringify(Object.fromEntries(limited)));
+    }
+
+    function getPendingManualCapture() {
+        try {
+            const pending = JSON.parse(localStorage.getItem(PENDING_MANUAL_CAPTURE_KEY) || 'null');
+            if (!pending?.betId || Date.now() - Number(pending.armedAt || 0) > MANUAL_CAPTURE_TTL_MS) {
+                localStorage.removeItem(PENDING_MANUAL_CAPTURE_KEY);
+                return null;
+            }
+            return pending;
+        } catch {
+            localStorage.removeItem(PENDING_MANUAL_CAPTURE_KEY);
+            return null;
+        }
+    }
+
+    function setPendingManualCapture(bet) {
+        const current = getPendingManualCapture();
+        if (current?.betId === String(bet.id)) {
+            localStorage.removeItem(PENDING_MANUAL_CAPTURE_KEY);
+            return false;
+        }
+        localStorage.setItem(PENDING_MANUAL_CAPTURE_KEY, JSON.stringify({
+            betId: String(bet.id),
+            stake: Number(bet.stake || 0),
+            odds: Number(bet.odds || 0),
+            armedAt: Date.now()
+        }));
+        return true;
+    }
+
+    function parsePendingMyBetTitle(value) {
+        const title = String(value || '').replace(/\s+/g, ' ').trim();
+        const match = title.match(/^Pending\s+\$([\d,]+).*?\(x([\d.]+)\)\s+bet on\s+(.+?)\s+\((.+)\)$/i);
+        if (!match) return null;
+        return {
+            stake: Number(match[1].replace(/,/g, '')),
+            odds: Number(match[2]),
+            selection: match[3].trim(),
+            market: match[4].trim()
+        };
+    }
+
+    function captureArmedBetFromMyBetsLink(link) {
+        const pending = getPendingManualCapture();
+        if (!pending || !link) return { captured: false, inactive: true };
+
+        const href = link.getAttribute('href') || '';
+        const gameId = href.match(/^#\/your-bets\/(\d+)$/i)?.[1] || '';
+        const matchTitle = String(link.querySelector('.matchName p, .pop-game .name p')?.title || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        const details = parseFootballFixtureTitle(matchTitle);
+        const pendingBets = Array.from(link.querySelectorAll('.stick .text[title]'))
+            .map(element => parsePendingMyBetTitle(element.title))
+            .filter(Boolean);
+        const match = pendingBets.find(candidate => {
+            const stakeMatches = Math.abs(candidate.stake - Number(pending.stake || 0)) < 1;
+            const oddsMatch = Math.abs(candidate.odds - Number(pending.odds || 0)) <= 0.011;
+            return stakeMatches && oddsMatch;
+        });
+
+        if (!gameId || !details.homeTeam || !details.awayTeam || !match) {
+            return { captured: false, inactive: false, reason: 'That My Bets game does not match the armed bet’s exact stake and odds.' };
+        }
+
+        saveManualBetLink(pending.betId, {
+            gameId,
+            matchTitle,
+            ...details,
+            placedSelection: match.selection,
+            market: match.market
+        });
+        localStorage.removeItem(PENDING_MANUAL_CAPTURE_KEY);
+        buildBookieData();
+        return { captured: true, fixture: details, selection: match.selection };
+    }
+
+    function showManualCaptureNotice(message, success = false) {
+        document.getElementById('tbp-manual-capture-notice')?.remove();
+        const notice = document.createElement('div');
+        notice.id = 'tbp-manual-capture-notice';
+        notice.style.cssText = `position:fixed; top:72px; right:20px; max-width:340px; padding:9px 12px; border-radius:6px; background:${success ? '#22623a' : '#6b4b18'}; border:1px solid ${success ? '#48ad6c' : '#d69a32'}; color:#fff; z-index:1000000; font:12px Segoe UI,sans-serif; box-shadow:0 5px 18px rgba(0,0,0,.65);`;
+        notice.textContent = message;
+        document.body.appendChild(notice);
+        setTimeout(() => notice.remove(), 6000);
+    }
+
     function findFixtureForOpenBet(log, stake, odds) {
+        const manual = loadManualBetLinks()[String(log.id)];
+        if (manual) return manual;
         const placedAt = Number(log.timestamp || 0) * 1000;
         const fixtures = loadFootballFixtureRecords();
         let best = null;
@@ -1512,6 +1622,16 @@
         const totalProfit = openBets.reduce((s, b) => s + b.potentialProfit, 0);
         const totalReturn = openBets.reduce((s, b) => s + b.potentialReturn, 0);
         const pendingCaptures = getPendingFootballBetCaptures();
+        const pendingManual = getPendingManualCapture();
+        const pendingManualBet = pendingManual
+            ? openBets.find(bet => String(bet.id) === String(pendingManual.betId))
+            : null;
+        const pendingManualDetails = pendingManualBet ? `
+            <div class="tbp-card" style="border-color:#d69a32;">
+                <div style="font-weight:bold; color:#f2bd61;">Manual capture armed</div>
+                <div class="tbp-muted" style="margin-top:5px;">${money(pendingManualBet.stake)} at x${num(pendingManualBet.odds)} — go to My Bets and tap the matching game row. Tap Armed below to cancel.</div>
+            </div>
+        ` : '';
         const pendingCaptureDetails = pendingCaptures.length ? `
             <div class="tbp-card" style="border-color:#3b82a8;">
                 <div style="font-weight:bold; color:#7fc8f1; margin-bottom:6px;">Captured — awaiting API refresh</div>
@@ -1536,6 +1656,7 @@
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Return</div><div class="tbp-summary-value tbp-blue">${money(totalReturn)}</div></div>
             </div>
             ${pendingCaptureDetails}
+            ${pendingManualDetails}
             <div id="tbp-open-list"></div>
         `;
 
@@ -1550,6 +1671,7 @@
             const row = document.createElement('div');
             row.className = 'tbp-card';
             const fixture = b.fixture;
+            const isCaptureArmed = pendingManual?.betId === String(b.id);
             const fixtureDetails = fixture ? `
                 <div style="font-weight:bold; font-size:13px; margin-bottom:2px;">${escapeHtml(fixture.homeTeam)} v ${escapeHtml(fixture.awayTeam)}</div>
                 ${fixture.competition ? `<div class="tbp-muted" style="margin-bottom:7px;">${escapeHtml(fixture.competition)}</div>` : ''}
@@ -1567,6 +1689,7 @@
                 <div class="tbp-row"><span>Odds</span><span>x${num(b.odds)}</span></div>
                 <div class="tbp-row"><span>Potential Profit</span><span class="tbp-win">${money(b.potentialProfit)}</span></div>
                 <div class="tbp-row"><span>Potential Return</span><span class="tbp-blue">${money(b.potentialReturn)}</span></div>
+                <div class="tbp-row"><span>Bet names</span><button class="tbp-btn ${isCaptureArmed ? 'tbp-btn-danger' : ''} tbp-capture-btn" data-tbp-capture-bet-id="${escapeHtml(String(b.id))}">${isCaptureArmed ? 'Armed' : fixture ? 'Recapture' : 'Capture'}</button></div>
             `;
             list.appendChild(row);
         });
@@ -1737,7 +1860,7 @@ ${safeJson(log.raw)}
             <div class="tbp-card">
                 <div style="font-weight:bold; margin-bottom:6px;">API usage and privacy</div>
                 <div class="tbp-muted">
-                    <strong>Data storage:</strong> Bookie logs in this browser's IndexedDB; viewed Football fixture and manual bet-click details in local storage.<br>
+                    <strong>Data storage:</strong> Bookie logs in this browser's IndexedDB; viewed Football fixtures, manual bet clicks, and My Bets name links in local storage.<br>
                     <strong>Data sharing:</strong> Nobody. No records or API keys are sent to Supabase or another third party.<br>
                     <strong>Purpose:</strong> Personal bookie history, totals, named open-bet estimates, Football review, and incremental refreshes.<br>
                     <strong>Key handling:</strong> Stored locally and sent only to api.torn.com.<br>
@@ -1839,6 +1962,19 @@ ${safeJson(log.raw)}
             btn.innerText = 'Check for New Data';
             render();
         };
+
+        document.querySelectorAll('[data-tbp-capture-bet-id]').forEach(button => {
+            button.onclick = event => {
+                event.stopPropagation();
+                const bet = openBets.find(candidate => String(candidate.id) === button.dataset.tbpCaptureBetId);
+                if (!bet) return;
+                const armed = setPendingManualCapture(bet);
+                lastLoadStatus = armed
+                    ? `Manual name capture armed for ${money(bet.stake)} at x${num(bet.odds)}. Open My Bets and tap the matching game.`
+                    : 'Manual name capture cancelled.';
+                render();
+            };
+        });
 
         const footballScanBtn = document.getElementById('tbp-football-scan-btn');
         if (footballScanBtn) {
@@ -2030,6 +2166,24 @@ document.addEventListener('click', async e => {
         }, 1500);
     }
 }, true);
+
+    document.addEventListener('click', event => {
+        if (document.visibilityState !== 'visible' || !getPendingManualCapture()) return;
+        const target = event.target instanceof Element ? event.target : null;
+        const link = target?.closest('a[href*="#/your-bets/"]');
+        if (!link) return;
+
+        const result = captureArmedBetFromMyBetsLink(link);
+        if (result.inactive) return;
+        if (!result.captured) {
+            showManualCaptureNotice(result.reason || 'That game does not match the armed bet.');
+            return;
+        }
+
+        lastLoadStatus = `Captured ${result.fixture.homeTeam} v ${result.fixture.awayTeam} for the armed bet.`;
+        showManualCaptureNotice(`${lastLoadStatus} Pick: ${result.selection}.`, true);
+        setTimeout(render, 0);
+    }, true);
 
     document.addEventListener('click', event => {
         if (!guidedFootballSession.active || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
