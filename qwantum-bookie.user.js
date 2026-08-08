@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.3.1
+// @version      1.3.2
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -54,8 +54,11 @@
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
     const API_PAGE_DELAY_MS = 1100;
-    const FOOTBALL_HOME_ODDS_MIN = 1.3;
+    const FOOTBALL_HOME_YELLOW_MIN = 1.2;
+    const FOOTBALL_HOME_GREEN_MIN = 1.3;
     const FOOTBALL_HOME_ODDS_MAX = 1.7;
+    const FOOTBALL_AWAY_ODDS_MIN = 1.2;
+    const FOOTBALL_AWAY_ODDS_MAX = 1.7;
     const FOOTBALL_ODDS_HISTORY_KEY = 'tbp_football_odds_history';
     const MAX_ODDS_HISTORY_GAMES = 100;
     const MAX_ODDS_OBSERVATIONS_PER_SELECTION = 20;
@@ -94,14 +97,28 @@
         .tbp-btn-row .tbp-btn { flex:1; }
         li.tbp-football-match > a > ul.pop-game {
             position:relative;
+            outline-offset:-2px;
+        }
+        li.tbp-football-home-green > a > ul.pop-game {
             background:linear-gradient(90deg, rgba(40,167,69,.48), rgba(40,167,69,.2))!important;
             outline:2px solid #39d353;
-            outline-offset:-2px;
             box-shadow:inset 7px 0 0 #28a745, 0 0 9px rgba(57,211,83,.75)!important;
+        }
+        li.tbp-football-home-yellow > a > ul.pop-game {
+            background:linear-gradient(90deg, rgba(255,215,0,.56), rgba(255,215,0,.22))!important;
+            outline:2px solid #ffd700;
+            box-shadow:inset 7px 0 0 #d4ad00, 0 0 9px rgba(255,215,0,.72)!important;
+        }
+        li.tbp-football-away-orange > a > ul.pop-game {
+            background:linear-gradient(90deg, rgba(255,140,0,.58), rgba(255,140,0,.22))!important;
+            outline:2px solid #ff9800;
+            box-shadow:inset 7px 0 0 #e87800, 0 0 9px rgba(255,152,0,.72)!important;
         }
         li.tbp-football-match > a > ul.pop-game .matchName,
         li.tbp-football-match > a > ul.pop-game .team-names { font-weight:700!important; }
         .tbp-football-badge { display:inline-block; margin-left:7px; padding:2px 5px; border-radius:3px; background:#28a745; color:#fff; font-size:10px; font-weight:bold; vertical-align:middle; }
+        .tbp-football-badge-home-yellow { background:#d4ad00; color:#171300; }
+        .tbp-football-badge-away-orange { background:#e87800; color:#fff; }
         .tbp-odds-delta { display:inline-block; margin-left:5px; padding:1px 4px; border-radius:3px; color:#fff; font-size:10px; font-weight:bold; }
         .tbp-odds-delta-up { background:#28a745; }
         .tbp-odds-delta-down { background:#d9534f; }
@@ -672,7 +689,12 @@
 
     function clearFootballHighlights() {
         document.querySelectorAll('li.tbp-football-match').forEach(item => {
-            item.classList.remove('tbp-football-match');
+            item.classList.remove(
+                'tbp-football-match',
+                'tbp-football-home-green',
+                'tbp-football-home-yellow',
+                'tbp-football-away-orange'
+            );
         });
         document.querySelectorAll('.tbp-football-badge').forEach(badge => badge.remove());
     }
@@ -924,31 +946,71 @@
             return result.toLowerCase() === homeName.toLowerCase();
         }) || rows[0];
 
-        const suspended = homeRow.querySelector('.input-money-group')?.classList.contains('disabled')
-            || homeRow.querySelector('input.amount')?.value === 'Suspended';
-        const odds = parseDecimalMultiplier(homeRow.querySelector('.bet-cell.odds.decimal')?.textContent);
-        if (!odds || suspended) return { scanned: 0, matched: 0 };
+        const awayName = String(matchTitle.split(/\s+v\s+/i)[1] || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        const awayRow = rows.find(row => {
+            const result = String(row.querySelector('.bet-cell.result')?.textContent || '')
+                .replace(/\s+/g, ' ')
+                .trim();
+            return awayName && result.toLowerCase() === awayName.toLowerCase();
+        }) || rows.find(row => {
+            if (row === homeRow) return false;
+            const result = String(row.querySelector('.bet-cell.result')?.textContent || '')
+                .replace(/\s+/g, ' ')
+                .trim();
+            return !/^(draw|tie)$/i.test(result);
+        }) || rows[2];
 
-        item.classList.remove('tbp-football-match');
+        const rowIsSuspended = row => row.querySelector('.input-money-group')?.classList.contains('disabled')
+            || row.querySelector('input.amount')?.value === 'Suspended';
+        const homeOdds = parseDecimalMultiplier(homeRow.querySelector('.bet-cell.odds.decimal')?.textContent);
+        const awayOdds = parseDecimalMultiplier(awayRow.querySelector('.bet-cell.odds.decimal')?.textContent);
+        const homeAvailable = Boolean(homeOdds) && !rowIsSuspended(homeRow);
+        const awayAvailable = Boolean(awayOdds) && !rowIsSuspended(awayRow);
+        if (!homeAvailable && !awayAvailable) return { scanned: 0, matched: 0, matchType: null };
+
+        item.classList.remove(
+            'tbp-football-match',
+            'tbp-football-home-green',
+            'tbp-football-home-yellow',
+            'tbp-football-away-orange'
+        );
         matchElement.querySelector('.tbp-football-badge')?.remove();
-        if (odds < FOOTBALL_HOME_ODDS_MIN || odds > FOOTBALL_HOME_ODDS_MAX) {
-            return { scanned: 1, matched: 0 };
+
+        let matchType = null;
+        let badgeText = '';
+        let badgeTitle = '';
+        if (homeAvailable && homeOdds >= FOOTBALL_HOME_GREEN_MIN && homeOdds <= FOOTBALL_HOME_ODDS_MAX) {
+            matchType = 'home-green';
+            badgeText = `HOME x${homeOdds.toFixed(2)}`;
+            badgeTitle = `${homeName} — 3-Way Ordinary time`;
+        } else if (homeAvailable && homeOdds >= FOOTBALL_HOME_YELLOW_MIN && homeOdds < FOOTBALL_HOME_GREEN_MIN) {
+            matchType = 'home-yellow';
+            badgeText = `HOME x${homeOdds.toFixed(2)}`;
+            badgeTitle = `${homeName} — 3-Way Ordinary time`;
+        } else if (awayAvailable && awayOdds >= FOOTBALL_AWAY_ODDS_MIN && awayOdds <= FOOTBALL_AWAY_ODDS_MAX) {
+            matchType = 'away-orange';
+            badgeText = `AWAY x${awayOdds.toFixed(2)}`;
+            badgeTitle = `${awayName || 'Away team'} — 3-Way Ordinary time`;
         }
 
-        item.classList.add('tbp-football-match');
+        if (!matchType) return { scanned: 1, matched: 0, matchType: null };
+
+        item.classList.add('tbp-football-match', `tbp-football-${matchType}`);
         const badge = document.createElement('span');
-        badge.className = 'tbp-football-badge';
-        badge.textContent = `HOME x${odds.toFixed(2)}`;
-        badge.title = `${homeName} — 3-Way Ordinary time`;
+        badge.className = `tbp-football-badge tbp-football-badge-${matchType}`;
+        badge.textContent = badgeText;
+        badge.title = badgeTitle;
         matchElement.appendChild(badge);
-        return { scanned: 1, matched: 1 };
+        return { scanned: 1, matched: 1, matchType };
     }
 
     function scanLoadedFootballGames() {
         if (!guidedFootballSession.active) clearFootballHighlights();
 
         if (!footballScanEnabled) {
-            return { error: 'Enable Football home-odds scanning in Settings first.' };
+            return { error: 'Enable Football win-odds scanning in Settings first.' };
         }
         if (!isFootballBookiePage()) {
             return { error: 'Open the Football section of Torn Bookie before scanning.' };
@@ -1006,11 +1068,11 @@
 
     function restoreGuidedFootballHighlights() {
         if (!guidedFootballSession.active) return;
-        Object.entries(guidedFootballSession.results).forEach(([href, matched]) => {
-            if (!matched) return;
+        Object.entries(guidedFootballSession.results).forEach(([href, matchType]) => {
+            if (!matchType) return;
             const link = Array.from(document.querySelectorAll('a[href*="#/football/"]'))
                 .find(candidate => candidate.getAttribute('href') === href);
-            link?.parentElement?.classList.add('tbp-football-match');
+            link?.parentElement?.classList.add('tbp-football-match', `tbp-football-${matchType}`);
         });
     }
 
@@ -1019,7 +1081,7 @@
             || !guidedFootballSession.hrefs.includes(href)
             || Object.prototype.hasOwnProperty.call(guidedFootballSession.results, href)) return;
 
-        guidedFootballSession.results[href] = Boolean(result.matched);
+        guidedFootballSession.results[href] = result.matchType || false;
         restoreGuidedFootballHighlights();
         updateGuidedFootballControls();
     }
@@ -1370,11 +1432,11 @@ ${safeJson(log.raw)}
 
             <div class="tbp-card">
                 <div class="tbp-row">
-                    <span>Enable Football home-odds scan</span>
+                    <span>Enable Football win-odds scan</span>
                     <input type="checkbox" id="tbp-football-scan-enabled" ${footballScanEnabled ? 'checked' : ''}>
                 </div>
                 <div class="tbp-muted" style="margin-top:7px;">
-                    Adds a manual Scan Games button to the panel header. It highlights loaded Football fixtures whose home selection is x${FOOTBALL_HOME_ODDS_MIN.toFixed(2)}–x${FOOTBALL_HOME_ODDS_MAX.toFixed(2)} in the 3-Way Ordinary time market. Games are never opened automatically.
+                    Highlights 3-Way Ordinary time fixtures by straight-win odds: yellow for home x${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}–x${(FOOTBALL_HOME_GREEN_MIN - 0.01).toFixed(2)}, green for home x${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}–x${FOOTBALL_HOME_ODDS_MAX.toFixed(2)}, and orange for away x${FOOTBALL_AWAY_ODDS_MIN.toFixed(2)}–x${FOOTBALL_AWAY_ODDS_MAX.toFixed(2)}.
                 </div>
             </div>
 
@@ -1394,7 +1456,7 @@ ${safeJson(log.raw)}
                     <input type="checkbox" id="tbp-guided-football-review-enabled" ${guidedFootballReviewEnabled ? 'checked' : ''}>
                 </div>
                 <div class="tbp-muted" style="margin-top:7px;">
-                    Game Review opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. It automatically counts qualifying home odds and keeps matching fixture bars green until you press End or leave Football.
+                    Game Review opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. It automatically counts qualifying straight-win odds and keeps each matching fixture bar color until you press End or leave Football.
                 </div>
             </div>
 
@@ -1492,7 +1554,7 @@ ${safeJson(log.raw)}
 
                 if (result.complete) {
                     updateGuidedFootballControls();
-                    footballGuideBtn.title = `Reviewed ${result.total} games and found ${result.matched} qualifying home odds. Press End to clear the review.`;
+                    footballGuideBtn.title = `Reviewed ${result.total} games and found ${result.matched} qualifying straight-win odds. Press End to clear the review.`;
                     return;
                 }
 
