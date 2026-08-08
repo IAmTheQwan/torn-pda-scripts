@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.5.0
+// @version      1.5.1
 // @description  Foreground-only Auction House history, filters, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -28,6 +28,7 @@
   const FILTER_COLLAPSED_KEY = "cafCleanFilterCollapsed";
   const WATCHLIST_KEY = "cafCleanWatchList";
   const WATCH_COLLAPSED_KEY = "cafCleanWatchCollapsed";
+  const WATCH_SUPER_COLLAPSED_KEY = "cafCleanWatchSuperCollapsed";
   const WATCH_REMOVE_MODE_KEY = "cafCleanWatchRemoveMode";
   const WATCH_TARGET_KEY = "cafCleanPendingWatchTarget";
   const SUPABASE_URL = "https://btrmmuuoofbonmuwrkzg.supabase.co";
@@ -337,6 +338,20 @@
       color: #ddd;
       background: #151515;
       font: inherit;
+    }
+    #${WATCH_BAR_ID}.is-super-collapsed {
+      right: auto;
+      width: 64px;
+      border-radius: 9px;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-super {
+      width: 100%;
+      min-height: 30px;
+      padding: 5px 7px;
+      color: #fff;
+      background: #252525;
+      font-weight: 700;
+      text-align: center;
     }
     #${WATCH_BAR_ID} .caf-clean-watch-header {
       display: flex;
@@ -696,7 +711,22 @@
     const list = sortedWatchList(loadWatchList());
     const closest = list.find(item => Number(item.endsAtMs || 0) > Date.now()) || list[0] || null;
     const collapsed = localStorage.getItem(WATCH_COLLAPSED_KEY) === "true";
+    const superCollapsed = localStorage.getItem(WATCH_SUPER_COLLAPSED_KEY) === "true";
     const removeMode = localStorage.getItem(WATCH_REMOVE_MODE_KEY) === "true";
+
+    bar.classList.toggle("is-super-collapsed", superCollapsed);
+    if (superCollapsed) {
+      bar.innerHTML = `<button class="caf-clean-watch-super" title="Restore CAF watch header">CAF ▶</button>`;
+      bar.querySelector(".caf-clean-watch-super")?.addEventListener("click", event => {
+        event.preventDefault();
+        localStorage.setItem(WATCH_SUPER_COLLAPSED_KEY, "false");
+        localStorage.setItem(WATCH_COLLAPSED_KEY, "true");
+        localStorage.setItem(WATCH_REMOVE_MODE_KEY, "false");
+        renderWatchBar();
+      });
+      return;
+    }
+
     const closestHtml = closest
       ? `${escapeHtml(closest.name)} | ${closest.endsAtMs
         ? `<span class="caf-clean-countdown" data-prefix="Est. " data-ends-at="${Number(closest.endsAtMs)}">Est. ${escapeHtml(countdownText(closest.endsAtMs))}</span>`
@@ -705,8 +735,8 @@
 
     bar.innerHTML = `
       <div class="caf-clean-watch-header">
-        <button class="caf-clean-watch-title">CAF ${collapsed ? "▶" : "▼"} ${list.length}</button>
-        <button class="caf-clean-watch-nearest" ${closest ? "" : "disabled"}>${closestHtml}</button>
+        <button class="caf-clean-watch-title" title="${collapsed ? "Minimize to the corner button" : "Collapse watched items"}">CAF ${collapsed ? "▶" : "▼"} ${list.length}</button>
+        <button class="caf-clean-watch-nearest" title="${collapsed ? "Expand watched items" : "Open the nearest watched item"}" ${closest ? "" : "disabled"}>${closestHtml}</button>
         <button class="caf-clean-watch-remove${removeMode ? " is-active" : ""}" ${list.length ? "" : "disabled"}>${removeMode ? "Cancel" : "Remove"}</button>
       </div>
       <div class="caf-clean-watch-items" style="display:${collapsed ? "none" : "flex"}">
@@ -716,13 +746,22 @@
 
     bar.querySelector(".caf-clean-watch-title")?.addEventListener("click", event => {
       event.preventDefault();
-      localStorage.setItem(WATCH_COLLAPSED_KEY, collapsed ? "false" : "true");
+      if (collapsed) {
+        localStorage.setItem(WATCH_SUPER_COLLAPSED_KEY, "true");
+      } else {
+        localStorage.setItem(WATCH_COLLAPSED_KEY, "true");
+      }
       localStorage.setItem(WATCH_REMOVE_MODE_KEY, "false");
       renderWatchBar();
     });
 
     bar.querySelector(".caf-clean-watch-nearest")?.addEventListener("click", event => {
       event.preventDefault();
+      if (collapsed) {
+        localStorage.setItem(WATCH_COLLAPSED_KEY, "false");
+        renderWatchBar();
+        return;
+      }
       if (closest) navigateToWatchedItem(closest);
     });
 
