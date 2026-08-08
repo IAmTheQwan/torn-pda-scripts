@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.4.5
+// @version      1.4.6
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -140,6 +140,16 @@
     const container = document.createElement('div');
     container.id = 'tbp-container';
     document.body.appendChild(container);
+
+    function ensurePanelMounted() {
+        if (!styleSheet.isConnected && document.head) document.head.appendChild(styleSheet);
+        if (!container.isConnected && document.body) document.body.appendChild(container);
+    }
+
+    const panelMountObserver = new MutationObserver(() => {
+        if (!styleSheet.isConnected || !container.isConnected) ensurePanelMounted();
+    });
+    panelMountObserver.observe(document.documentElement, { childList: true, subtree: true });
 
     function saveData() {
         localStorage.setItem('tbp_api_key', apiKey);
@@ -1558,6 +1568,7 @@
     }
 
     function render() {
+        ensurePanelMounted();
         if (isMinimized) {
             container.className = 'minimized';
             container.innerHTML = 'B';
