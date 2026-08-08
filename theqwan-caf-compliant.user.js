@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.21.0
+// @version      1.22.0
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -2247,76 +2247,43 @@
     }
   }
 
-  function nativeNextPageControl() {
+  function nextAuctionPageUrl() {
     const currentStart = auctionStartFromUrl(location.href) || 0;
-    const nextPageNumber = Math.floor(currentStart / TORN_AUCTION_PAGE_SIZE) + 2;
-    const candidates = [...document.querySelectorAll("a[href], button, [role='button']")]
-      .filter(control =>
-        !control.closest(`#${PANEL_ID}, .caf-clean-results`)
-        && !control.disabled
-        && control.getAttribute("aria-disabled") !== "true"
-      )
-      .map(control => {
-        const href = control.getAttribute("href") || "";
-        const start = auctionStartFromUrl(href);
-        const text = String(
-          control.getAttribute("aria-label")
-          || control.getAttribute("title")
-          || control.textContent
-          || ""
-        ).replace(/\s+/g, " ").trim();
-        const ancestry = [control, control.parentElement, control.parentElement?.parentElement]
-          .map(element => `${element?.id || ""} ${element?.className || ""}`)
-          .join(" ");
-        const paginationContext = /pag(?:e|er|ination)|pagination|page-nav/i.test(ancestry);
-        const explicitNext = /^(?:next(?:\s+page)?|[›»]|next\s*[›»→])$/i.test(text)
-          || /\bnext\b/i.test(control.getAttribute("aria-label") || control.getAttribute("title") || "")
-          || /\bnext\b/i.test(`${control.id || ""} ${control.className || ""}`);
-        const forwardStart = Number.isFinite(start) && start > currentStart;
-        const nextNumber = paginationContext && text === String(nextPageNumber);
-        let score = 0;
-        if (explicitNext) score += 100;
-        if (paginationContext) score += 50;
-        if (forwardStart) score += 25;
-        if (start === currentStart + TORN_AUCTION_PAGE_SIZE) score += 25;
-        if (nextNumber) score += 20;
-        return { control, score, start: Number.isFinite(start) ? start : Infinity };
-      })
-      .filter(candidate => candidate.score >= 70)
-      .sort((left, right) => right.score - left.score || left.start - right.start);
-
-    return candidates[0]?.control || null;
+    const url = new URL(location.href);
+    const hash = new URLSearchParams(url.hash.replace(/^#/, ""));
+    if (!hash.has("itemtab")) hash.set("itemtab", "weapons");
+    hash.set("start", String(currentStart + TORN_AUCTION_PAGE_SIZE));
+    // A hash-only change can leave Torn PDA showing the old React cards. Torn
+    // already uses rfcv cache-busters on amarket.php; changing it makes this
+    // user tap perform a real document load for the requested start value.
+    url.searchParams.set("rfcv", String(Date.now()));
+    url.hash = hash.toString();
+    return url.href;
   }
 
   function prepareTopNextPage(event) {
-    event.preventDefault();
     event.stopPropagation();
     if (!isActiveView()) {
+      event.preventDefault();
       setStatus("Keep the Auction House visible, then tap Next Torn Page again.", true);
       return;
     }
 
-    const nativeNext = nativeNextPageControl();
-    if (!nativeNext) {
-      setStatus("CAF cannot find Torn's Next-page control yet. Wait for the auction list and its pagination to finish loading, then tap again.", true);
-      return;
-    }
-
+    const targetUrl = nextAuctionPageUrl();
+    event.currentTarget.href = targetUrl;
     const armed = armCollectionForManualNavigation();
     setStatus(armed
-      ? "Torn's Next control was pressed from your tap. CAF will collect the new page after it finishes rendering."
-      : "Torn's Next control was pressed from your tap. Start Guided Collection first if you want it logged."
+      ? "Loading the next Torn page from your tap. CAF will collect it after Torn renders the new cards."
+      : "Opening the next Torn page from your tap. Start Guided Collection first if you want it logged."
     );
-    nativeNext.click();
-    if (armed) schedulePendingCollectionCapture();
   }
 
   function updateTopNextPageControl() {
-    const button = document.getElementById("caf-clean-next-page");
-    if (!button) return;
-    button.title = nativeNextPageControl()
-      ? "Press Torn's currently loaded Next-page control"
-      : "Waiting for Torn's pagination controls";
+    const link = document.getElementById("caf-clean-next-page");
+    if (!link) return;
+    const nextStart = (auctionStartFromUrl(location.href) || 0) + TORN_AUCTION_PAGE_SIZE;
+    link.href = nextAuctionPageUrl();
+    link.title = `Open Torn's next auction page (start=${nextStart})`;
   }
 
   function handleAuctionPageChange() {
@@ -4233,7 +4200,7 @@
             </select>
           </label>
           <button id="caf-clean-collector-toggle">Start Guided Collection</button>
-          <button id="caf-clean-next-page" type="button">Next Torn Page →</button>
+          <a id="caf-clean-next-page" class="caf-clean-button" href="#">Next Torn Page →</a>
           <button id="caf-clean-capture-page" disabled>Fallback Capture (after Next)</button>
           <div id="caf-clean-collection-progress"></div>
         </div>
@@ -4313,7 +4280,6 @@
     });
 
     const observer = new MutationObserver(() => {
-      updateTopNextPageControl();
       schedulePendingCollectionCapture();
       schedulePendingWatchLocate();
     });
