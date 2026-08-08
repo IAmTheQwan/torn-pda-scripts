@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.6.0
+// @version      1.6.1
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -548,6 +548,29 @@
     }
     .caf-clean-market-row.caf-clean-market-high {
       box-shadow: inset 3px 0 #ff7b89;
+    }
+    .caf-clean-market-thumb {
+      position: relative !important;
+    }
+    .caf-clean-market-bonus-percent {
+      position: absolute;
+      top: 2px;
+      right: 2px;
+      z-index: 5;
+      max-width: calc(100% - 4px);
+      padding: 2px 4px;
+      color: #fff;
+      background: rgba(91,33,182,.94);
+      border: 1px solid #d8b4fe;
+      border-radius: 4px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.75);
+      box-sizing: border-box;
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.15;
+      text-align: center;
+      white-space: nowrap;
+      pointer-events: none;
     }
     .caf-clean-market-tools {
       display: block !important;
@@ -2203,6 +2226,37 @@
     row.querySelector(".caf-clean-market-deal-badge")?.remove();
   }
 
+  function ensureMarketBonusBadge(row, item) {
+    const image = row.querySelector(MARKET_SELECTORS.thumbnail);
+    const holder = image?.parentElement;
+    row.querySelectorAll(".caf-clean-market-bonus-percent").forEach(badge => {
+      if (!holder || badge.parentElement !== holder) badge.remove();
+    });
+    if (!holder) return;
+
+    const bonuses = (item.bonuses || []).filter(bonus =>
+      bonus.value !== null
+      && bonus.value !== undefined
+      && Number.isFinite(Number(bonus.value))
+    );
+    let badge = holder.querySelector(":scope > .caf-clean-market-bonus-percent");
+    if (!bonuses.length) {
+      badge?.remove();
+      holder.classList.remove("caf-clean-market-thumb");
+      return;
+    }
+
+    holder.classList.add("caf-clean-market-thumb");
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = "caf-clean-market-bonus-percent";
+      holder.appendChild(badge);
+    }
+    badge.textContent = bonuses.map(bonus => `${bonus.value}%`).join(" · ");
+    badge.title = itemBonusText(item);
+    badge.setAttribute("aria-label", `Bonus percentages: ${bonuses.map(bonus => `${bonus.name} ${bonus.value}%`).join(", ")}`);
+  }
+
   function applyMarketDeal(row, summary) {
     clearMarketDeal(row);
     const head = row.querySelector(".caf-clean-market-tool-head");
@@ -2265,6 +2319,8 @@
     const parsedRows = rows.map((row, index) => ({ row, item: parseMarketListing(row, index) }));
     const bonusCount = parsedRows.filter(entry => entry.item.bonuses.length).length;
     let matchCount = 0;
+
+    parsedRows.forEach(({ row, item }) => ensureMarketBonusBadge(row, item));
 
     if (rows.length && !bonusCount) {
       rows.forEach(row => row.classList.remove("caf-clean-market-hidden"));
@@ -2393,6 +2449,8 @@
           "caf-clean-market-high"
         );
         row.querySelector(":scope > .caf-clean-market-tools")?.remove();
+        row.querySelectorAll(".caf-clean-market-bonus-percent").forEach(badge => badge.remove());
+        row.querySelectorAll(".caf-clean-market-thumb").forEach(holder => holder.classList.remove("caf-clean-market-thumb"));
       });
       return;
     }
