@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.0.0
+// @version      1.1.0
 // @description  Foreground-only Auction House history and price guidance for the actively viewed page
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
@@ -16,6 +16,7 @@
   "use strict";
 
   const PANEL_ID = "theqwan-caf-clean";
+  const RESULTS_ID = "theqwan-caf-clean-results";
   const ANALYSIS_CLASS = "caf-clean-analysis";
   const SETTINGS_KEY = "cafCleanHistorySettings";
   const CACHE_KEY = "cafCleanHistoryCache";
@@ -46,6 +47,7 @@
   });
 
   const itemById = new Map();
+  const cardById = new Map();
 
   const style = document.createElement("style");
   style.textContent = `
@@ -72,6 +74,7 @@
     }
     #${PANEL_ID} button,
     #${PANEL_ID} select,
+    #${RESULTS_ID} button,
     .${ANALYSIS_CLASS} button {
       min-height: 34px;
       border: 1px solid #555;
@@ -82,6 +85,7 @@
       box-sizing: border-box;
     }
     #${PANEL_ID} button:disabled,
+    #${RESULTS_ID} button:disabled,
     .${ANALYSIS_CLASS} button:disabled {
       color: #777;
       opacity: .75;
@@ -103,6 +107,67 @@
       margin-top: 7px;
       color: #aaa;
     }
+    #${RESULTS_ID} {
+      margin: 10px 0;
+      color: #eee;
+      background: #242424;
+      border: 1px solid #555;
+      border-radius: 8px;
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    #${RESULTS_ID} .caf-clean-results-header {
+      padding: 8px 10px;
+      background: #303030;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    #${RESULTS_ID} .caf-clean-result {
+      display: grid;
+      grid-template-columns: 78px minmax(0, 1fr);
+      gap: 9px;
+      padding: 10px;
+      border-top: 1px solid #444;
+      box-sizing: border-box;
+    }
+    #${RESULTS_ID} .caf-clean-image {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 78px;
+      min-width: 78px;
+      height: 58px;
+      background: #111;
+      border: 3px solid #777;
+      border-radius: 6px;
+      box-sizing: border-box;
+      overflow: hidden;
+    }
+    #${RESULTS_ID} .caf-clean-image.yellow { border-color: #d8d800; box-shadow: 0 0 8px rgba(216,216,0,.7); }
+    #${RESULTS_ID} .caf-clean-image.orange { border-color: #ff8c00; box-shadow: 0 0 8px rgba(255,140,0,.7); }
+    #${RESULTS_ID} .caf-clean-image.red { border-color: #d94444; box-shadow: 0 0 8px rgba(217,68,68,.7); }
+    #${RESULTS_ID} .caf-clean-image img,
+    #${RESULTS_ID} .caf-clean-image canvas {
+      max-width: 70px;
+      max-height: 50px;
+      object-fit: contain;
+    }
+    #${RESULTS_ID} .caf-clean-item-name {
+      color: #6eb6ff;
+      font-size: 15px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    #${RESULTS_ID} .caf-clean-quality { color: #c967ff; font-weight: 700; }
+    #${RESULTS_ID} .caf-clean-item-line { color: #bbb; line-height: 1.3; }
+    #${RESULTS_ID} .caf-clean-item-bid { color: #fff; line-height: 1.4; }
+    #${RESULTS_ID} .caf-clean-item-actions {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 6px;
+      margin-top: 7px;
+    }
+    #${RESULTS_ID} .caf-clean-item-actions button { width: 100%; }
     .${ANALYSIS_CLASS} {
       flex-basis: 100%;
       grid-column: 1 / -1;
@@ -322,11 +387,21 @@
       accuracy,
       quality,
       bid,
-      bonuses
+      bonuses,
+      color: cardColor(card),
+      timeText: (source.match(/(?:time\s+left|ends?\s+in)\s*[:\-]?\s*([^\n]+)/i) || [])[1]?.trim() || ""
     };
 
     item.id = cardIdentifier(card, item, index);
     return item;
+  }
+
+  function cardColor(card) {
+    const source = `${card.className || ""} ${card.outerHTML || ""}`.toLowerCase();
+    if (source.includes("red")) return "red";
+    if (source.includes("orange") || source.includes("ff9f00")) return "orange";
+    if (source.includes("yellow") || source.includes("ffff00")) return "yellow";
+    return "";
   }
 
   function itemBonusText(item) {
@@ -336,24 +411,80 @@
     ).join(" / ") || "No bonus";
   }
 
-  function attachAnalysis(card, item) {
-    card.querySelector(`.${ANALYSIS_CLASS}`)?.remove();
-    itemById.set(item.id, item);
+  function renderCompiledResults(items) {
+    document.getElementById(RESULTS_ID)?.remove();
+    if (!items.length) return;
 
-    const container = document.createElement("div");
-    container.className = ANALYSIS_CLASS;
-    container.innerHTML = `
-      <button class="caf-clean-history" data-caf-clean-id="${escapeAttr(item.id)}">History + Price Check</button>
-      <div class="caf-clean-history-box" data-caf-clean-id="${escapeAttr(item.id)}"></div>
+    const results = document.createElement("section");
+    results.id = RESULTS_ID;
+    results.innerHTML = `
+      <div class="caf-clean-results-header">Compiled Results | ${items.length} item(s) from this loaded page</div>
+      <div class="caf-clean-results-body"></div>
     `;
-    card.appendChild(container);
+    document.getElementById(PANEL_ID).after(results);
+    const body = results.querySelector(".caf-clean-results-body");
 
-    container.querySelector(".caf-clean-history").addEventListener("click", async event => {
-      event.preventDefault();
-      event.stopPropagation();
-      const box = container.querySelector(".caf-clean-history-box");
-      box.style.display = "block";
-      await runHistory(item, container);
+    items.forEach(item => {
+      const sourceCard = cardById.get(item.id);
+      const result = document.createElement("article");
+      result.className = "caf-clean-result";
+      result.dataset.cafCleanId = item.id;
+      result.innerHTML = `
+        <div class="caf-clean-image ${escapeAttr(item.color)}"></div>
+        <div>
+          <div class="caf-clean-item-name">${escapeHtml(item.name)}</div>
+          ${item.quality === null ? "" : `<div class="caf-clean-quality">Quality: ${item.quality.toFixed(2)}%</div>`}
+          <div class="caf-clean-item-line">Damage: ${item.damage.toFixed(2)} | Accuracy: ${item.accuracy.toFixed(2)}</div>
+          <div class="caf-clean-item-line">Bonus: ${escapeHtml(itemBonusText(item))}</div>
+          <div class="caf-clean-item-line">Color: ${item.color ? item.color.toUpperCase() : "None"}</div>
+          <div class="caf-clean-item-bid">Bid: ${money(item.bid)}</div>
+          ${item.timeText ? `<div class="caf-clean-item-line">Time left: ${escapeHtml(item.timeText)}</div>` : ""}
+          <div class="caf-clean-item-actions">
+            <button class="caf-clean-history">History + Price Check</button>
+            <button class="caf-clean-locate">Show Original</button>
+          </div>
+        </div>
+        <div class="${ANALYSIS_CLASS}">
+          <div class="caf-clean-history-box"></div>
+        </div>
+      `;
+
+      const sourceImage = sourceCard?.querySelector("img");
+      if (sourceImage?.complete && sourceImage.naturalWidth) {
+        const canvas = document.createElement("canvas");
+        canvas.width = sourceImage.naturalWidth;
+        canvas.height = sourceImage.naturalHeight;
+        canvas.getContext("2d")?.drawImage(sourceImage, 0, 0);
+        result.querySelector(".caf-clean-image").appendChild(canvas);
+      }
+
+      result.querySelector(".caf-clean-history").addEventListener("click", async event => {
+        event.preventDefault();
+        event.stopPropagation();
+        await runHistory(item, result);
+      });
+
+      result.querySelector(".caf-clean-locate").addEventListener("click", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!isActiveView() || !sourceCard?.isConnected) {
+          setStatus("The original item is no longer on this loaded page. Compile the page again.", true);
+          return;
+        }
+
+        sourceCard.scrollIntoView({ behavior: "smooth", block: "center" });
+        const oldOutline = sourceCard.style.outline;
+        const oldShadow = sourceCard.style.boxShadow;
+        sourceCard.style.outline = "4px solid #00ff6a";
+        sourceCard.style.boxShadow = "0 0 18px #00ff6a";
+        setTimeout(() => {
+          if (!sourceCard.isConnected) return;
+          sourceCard.style.outline = oldOutline;
+          sourceCard.style.boxShadow = oldShadow;
+        }, 2500);
+      });
+
+      body.appendChild(result);
     });
   }
 
@@ -364,15 +495,22 @@
     }
 
     itemById.clear();
+    cardById.clear();
     const cards = auctionCards();
-    cards.forEach((card, index) => attachAnalysis(card, parseCard(card, index)));
+    const items = cards.map((card, index) => {
+      const item = parseCard(card, index);
+      itemById.set(item.id, item);
+      cardById.set(item.id, card);
+      return item;
+    });
+    renderCompiledResults(items);
 
     setStatus(cards.length
       ? `Ready: ${cards.length} currently loaded auction item(s). No additional Torn requests were made.`
       : "No weapon or armor cards are currently rendered. Open an Auction House category or page, then try again.",
       !cards.length
     );
-    return cards;
+    return items;
   }
 
   function money(value) {
@@ -675,30 +813,31 @@
   }
 
   async function analyzeAllVisibleHistory() {
-    const cards = analyzeCurrentPage();
-    if (!cards.length) return;
+    const items = analyzeCurrentPage();
+    if (!items.length) return;
 
     const analyzeAllButton = document.getElementById("caf-clean-all-history");
+    const resultCards = [...document.querySelectorAll(`#${RESULTS_ID} .caf-clean-result`)];
     analyzeAllButton.disabled = true;
 
     try {
-      for (let index = 0; index < cards.length; index++) {
+      for (let index = 0; index < resultCards.length; index++) {
         if (!isActiveView()) {
           setStatus("Stopped because the Auction House page lost focus. Existing results were kept.", true);
           return;
         }
 
-        const scope = cards[index].querySelector(`.${ANALYSIS_CLASS}`);
-        const id = scope?.querySelector("[data-caf-clean-id]")?.getAttribute("data-caf-clean-id");
+        const scope = resultCards[index];
+        const id = scope.dataset.cafCleanId;
         const item = itemById.get(id);
         if (!scope || !item) continue;
 
-        setStatus(`Checking history ${index + 1} of ${cards.length}: ${item.name}`);
+        setStatus(`Checking history ${index + 1} of ${resultCards.length}: ${item.name}`);
         await runHistory(item, scope);
         await delay(150);
       }
 
-      setStatus(`History ready for ${cards.length} currently loaded auction item(s).`);
+      setStatus(`History ready for ${resultCards.length} compiled auction item(s).`);
     } finally {
       analyzeAllButton.disabled = false;
     }
@@ -706,7 +845,9 @@
 
   function clearAnalysis() {
     document.querySelectorAll(`.${ANALYSIS_CLASS}`).forEach(element => element.remove());
+    document.getElementById(RESULTS_ID)?.remove();
     itemById.clear();
+    cardById.clear();
     setStatus("Analysis cleared. Torn's original Auction House page was not changed or reloaded.");
   }
 
@@ -717,7 +858,7 @@
     panel.id = PANEL_ID;
     panel.innerHTML = `
       <div class="caf-clean-title">CAF Clean — Active Page History</div>
-      <div>Analyze only the auction items Torn has already loaded on the page you are viewing.</div>
+      <div>Compile and analyze only the auction items Torn has already loaded on the page you are viewing.</div>
       <div class="caf-clean-settings">
         <label>Sales
           <select id="caf-clean-count">
@@ -730,9 +871,9 @@
         <label><input id="caf-clean-double" type="checkbox" ${current.doubleOnly ? "checked" : ""}> Double-bonus sales only</label>
       </div>
       <div class="caf-clean-controls">
-        <button id="caf-clean-analyze">Add History Buttons</button>
-        <button id="caf-clean-all-history">History for Loaded Items</button>
-        <button id="caf-clean-clear">Clear Analysis</button>
+        <button id="caf-clean-analyze">Compile Loaded Items</button>
+        <button id="caf-clean-all-history">Compile + Load History</button>
+        <button id="caf-clean-clear">Clear Results</button>
         <button id="caf-clean-cache">Clear History Cache</button>
       </div>
       <div class="caf-clean-disclosure">
