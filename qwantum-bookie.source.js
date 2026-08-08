@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.10.0
+// @version      1.10.1
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -2824,32 +2824,6 @@
         const pendingCaptures = getPendingFootballBetCaptures();
         const pendingManual = getPendingManualCapture();
         const footballScores = loadFootballScoreMatches();
-        const namedScoreBets = openBets.filter(bet => bet.fixture?.homeTeam && bet.fixture?.awayTeam);
-        const matchedScoreCount = namedScoreBets.filter(bet => {
-            const score = footballScores[String(bet.id)];
-            return score && !score.unmatched;
-        }).length;
-        const footballScoreboard = footballScoreEnabled ? `
-            <div class="tbp-card" style="border-color:#3b82a8;">
-                <div class="tbp-row" style="margin-top:0;">
-                    <span style="font-weight:bold; color:#7fc8f1;">Football Scores</span>
-                    <span>${matchedScoreCount}/${namedScoreBets.length} matched</span>
-                </div>
-                ${namedScoreBets.length ? namedScoreBets.map(bet => {
-                    const score = footballScores[String(bet.id)];
-                    const scoreText = score ? formatFootballScore(score) : 'Not checked yet';
-                    const scoreClass = score?.unmatched
-                        ? 'tbp-loss'
-                        : score && isFinalFootballStatus(score.statusShort) ? 'tbp-win' : 'tbp-blue';
-                    return `
-                        <div style="margin-top:7px; padding-top:7px; border-top:1px solid #3a3a3a;">
-                            <div style="font-size:11px; font-weight:bold;">${escapeHtml(bet.fixture.homeTeam)} v ${escapeHtml(bet.fixture.awayTeam)}</div>
-                            <div class="tbp-row"><span>${escapeHtml((score?.provider || footballScoreProvider) === 'api-football' ? 'API-Football' : 'TheSportsDB')}</span><span class="${scoreClass}">${escapeHtml(scoreText)}</span></div>
-                        </div>
-                    `;
-                }).join('') : '<div class="tbp-muted" style="margin-top:7px;">No named open Football fixtures yet. Visit My Bets to capture their team names.</div>'}
-            </div>
-        ` : '';
         const pendingManualBet = pendingManual
             ? openBets.find(bet => String(bet.id) === String(pendingManual.betId))
             : null;
@@ -2885,7 +2859,6 @@
             ${footballScoreEnabled ? `
                 <button class="tbp-btn tbp-btn-primary" id="tbp-check-scores-btn" style="width:100%; margin-bottom:8px;">Check Scores (${footballScoreProvider === 'sportsdb' ? 'TheSportsDB' : 'API-Football'})</button>
             ` : ''}
-            ${footballScoreboard}
             ${pendingCaptureDetails}
             ${pendingManualDetails}
             <div id="tbp-open-list"></div>
@@ -2903,6 +2876,10 @@
             row.className = 'tbp-card';
             const fixture = b.fixture;
             const footballScore = footballScores[String(b.id)];
+            const footballScoreText = footballScore ? formatFootballScore(footballScore) : 'Not checked yet';
+            const footballScoreClass = footballScore?.unmatched
+                ? 'tbp-loss'
+                : footballScore && isFinalFootballStatus(footballScore.statusShort) ? 'tbp-win' : 'tbp-blue';
             const isCaptureArmed = pendingManual?.betId === String(b.id);
             const reviewedOdds = getReviewedOddsForFixtureSelection(fixture);
             const reviewedOddsDelta = reviewedOdds ? reviewedOdds - Number(b.odds || 0) : 0;
@@ -2919,7 +2896,7 @@
                 <div class="tbp-row"><span>Pick</span><span>${escapeHtml(fixture.placedSelection || fixture.recommendedSelection || 'Names captured manually')}</span></div>
                 ${fixture.linkedBy === 'unique-reviewed-odds' ? '<div class="tbp-muted" style="margin-bottom:5px;">Auto-matched from uniquely matching reviewed odds</div>' : ''}
                 ${fixture.startTimestamp ? `<div class="tbp-row"><span>Kickoff</span><span>${escapeHtml(formatDate(Math.floor(fixture.startTimestamp / 1000)))}</span></div>` : ''}
-                ${footballScore ? `<div class="tbp-row"><span>Score</span><span class="${['FT', 'AET', 'PEN'].includes(footballScore.statusShort) ? 'tbp-win' : 'tbp-blue'}">${escapeHtml(formatFootballScore(footballScore))}</span></div>` : ''}
+                ${footballScoreEnabled ? `<div style="margin:8px 0 3px; padding:7px 8px; background:#172633; border:1px solid #3b82a8; border-radius:4px;"><div class="tbp-row" style="margin-top:0;"><span style="font-weight:bold; color:#7fc8f1;">Score</span><span class="${footballScoreClass}" style="font-size:13px;">${escapeHtml(footballScoreText)}</span></div></div>` : ''}
             ` : `
                 <div style="font-weight:bold; font-size:12px;">Selection</div>
                 <div class="tbp-muted">${escapeHtml(b.selection)}</div>
