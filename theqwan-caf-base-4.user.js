@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Base 4.4
 // @namespace    theqwan.torn.auction-filter.caf4
-// @version      4.4.0.5
+// @version      4.4.0.6
 // @description  Global CAF watch banner with auction filter/history/watch system
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -119,6 +119,46 @@ const RESULTS_COLLAPSED_KEY = "joshAuctionResultsCollapsed";
     .caf-quality {
       color:#c967ff;
       font-weight:bold;
+    }
+    .caf-result-item {
+      display:grid;
+      grid-template-columns:78px minmax(0, 1fr);
+      gap:10px;
+      padding:10px;
+      border-top:1px solid #444;
+      color:#fff;
+    }
+    .caf-result-full-width {
+      grid-column:1 / -1;
+      min-width:0;
+    }
+    .caf-history-grid {
+      display:grid;
+      grid-template-columns:minmax(62px, 1.15fr) minmax(34px, .65fr) minmax(34px, .65fr) minmax(38px, .7fr) minmax(82px, 1.7fr) minmax(32px, .55fr);
+      gap:5px;
+      align-items:center;
+      min-width:0;
+    }
+    .caf-history-grid-header {
+      color:#888;
+      font-size:10px;
+      padding-bottom:3px;
+    }
+    .caf-history-grid-row {
+      border-bottom:1px solid #292929;
+      padding:3px 0;
+    }
+    .caf-history-bonus {
+      min-width:0;
+      white-space:normal;
+      overflow-wrap:anywhere;
+      line-height:1.15;
+    }
+    @media (max-width:430px) {
+      .caf-history-grid {
+        grid-template-columns:minmax(58px, 1.1fr) minmax(31px, .6fr) minmax(31px, .6fr) minmax(35px, .65fr) minmax(76px, 1.6fr) minmax(29px, .5fr);
+        gap:3px;
+      }
     }
     .caf3-slider-row {
       display:grid;
@@ -1805,7 +1845,7 @@ function renderItem(item) {
   const id = watchId(item);
 
   return `
-    <div style="display:flex;gap:10px;padding:10px;border-top:1px solid #444;color:#fff;">
+    <div class="caf-result-item">
       <div class="caf-img-wrap ${glow}">
         <img src="${item.image || item.itemImg || item.itemSrc || ""}">
       </div>
@@ -1836,25 +1876,26 @@ function renderItem(item) {
           Open Original Page
         </button>
 
-        <button class="caf-history"
-          data-watch-id="${id}"
-          style="margin-top:6px;padding:6px 10px;width:100%;background:#202020;color:#8ecbff;border:1px solid #444;border-radius:4px;">
-          History
-        </button>
-
-        <div class="caf-history-box caf35-line"
-          data-watch-id="${id}"
-          style="display:none;margin-top:6px;font-size:12px;background:#181818;border:1px solid #444;border-radius:5px;padding:6px;color:#ddd;">
-        </div>
-
-        <button class="caf-watch"
-          data-watch-id="${id}"
-          style="margin-top:6px;padding:6px 10px;width:100%;
-          background:${isWatched(item) ? "#1f4d2e" : "#222"};
-          color:${isWatched(item) ? "#8cffb0" : "#fff"};">
-          ${isWatched(item) ? "Watching ✓" : "Watch"}
-        </button>
       </div>
+
+      <button class="caf-history caf-result-full-width"
+        data-watch-id="${id}"
+        style="padding:6px 10px;width:100%;background:#202020;color:#8ecbff;border:1px solid #444;border-radius:4px;">
+        History
+      </button>
+
+      <div class="caf-history-box caf35-line caf-result-full-width"
+        data-watch-id="${id}"
+        style="display:none;font-size:12px;background:#181818;border:1px solid #444;border-radius:5px;padding:6px;color:#ddd;">
+      </div>
+
+      <button class="caf-watch caf-result-full-width"
+        data-watch-id="${id}"
+        style="padding:6px 10px;width:100%;
+        background:${isWatched(item) ? "#1f4d2e" : "#222"};
+        color:${isWatched(item) ? "#8cffb0" : "#fff"};">
+        ${isWatched(item) ? "Watching ✓" : "Watch"}
+      </button>
     </div>
   `;
 }
@@ -2678,7 +2719,7 @@ function cafHistoryRenderResult(item, auctions, targetBox = null) {
     </button>
 
     <div class="caf-history-sales" style="display:none;margin-top:5px;padding-top:5px;border-top:1px solid #333;">
-      <div style="display:grid;grid-template-columns:68px 44px 44px 44px 1fr 38px;gap:5px;color:#888;font-size:10px;padding-bottom:3px;">
+      <div class="caf-history-grid caf-history-grid-header">
         <span>Sold</span>
         <span>Dmg</span>
         <span>Acc</span>
@@ -2701,12 +2742,12 @@ function cafHistoryRenderResult(item, auctions, targetBox = null) {
         const b = cafHistoryColoredBonuses(a, item, bonusMinMax);
 
         return `
-          <div style="display:grid;grid-template-columns:68px 44px 44px 44px 1fr 38px;gap:5px;border-bottom:1px solid #292929;padding:3px 0;align-items:center;">
+          <div class="caf-history-grid caf-history-grid-row">
             <span style="color:${priceColor};font-weight:bold;">${cafHistoryMoney(price)}</span>
             <span style="color:${dmgColor};font-weight:bold;">${dmg !== null ? dmg.toFixed(1) : "?"}</span>
             <span style="color:${accColor};font-weight:bold;">${acc !== null ? acc.toFixed(1) : "?"}</span>
             <span style="color:${qColor};font-weight:bold;">${q !== null ? q.toFixed(1) : "?"}</span>
-            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(cafHistorySaleBonuses(a))}">${b}</span>
+            <span class="caf-history-bonus" title="${escapeAttr(cafHistorySaleBonuses(a))}">${b}</span>
             <span>${cafHistoryDaysAgo(a.timestamp)}</span>
           </div>
         `;
