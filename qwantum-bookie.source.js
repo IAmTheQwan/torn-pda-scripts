@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.9.9
+// @version      1.10.0
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -469,7 +469,7 @@
     }
 
     function isFinalFootballStatus(status) {
-        return ['FT', 'AET', 'AP', 'PEN', 'AW'].includes(String(status || '').toUpperCase());
+        return ['FT', 'AET', 'AP', 'PEN', 'AW', 'FINISHED', 'MATCH FINISHED'].includes(String(status || '').toUpperCase());
     }
 
     async function getSportsDbEventForFixture(fixture, dateKey) {
@@ -495,6 +495,7 @@
         const today = utcDateKey();
         const scoreMatches = loadFootballScoreMatches();
         let matched = 0;
+        let unmatched = 0;
         let requests = 0;
         let cacheHits = 0;
         let firstError = '';
@@ -510,7 +511,21 @@
             }
             if (result.cached) cacheHits++;
             else requests++;
-            if (!result.event) continue;
+            if (!result.event) {
+                scoreMatches[String(bet.id)] = {
+                    provider: 'sportsdb',
+                    homeTeam: fixture.homeTeam,
+                    awayTeam: fixture.awayTeam,
+                    homeGoals: null,
+                    awayGoals: null,
+                    statusShort: 'No API match',
+                    statusLong: 'No API match',
+                    unmatched: true,
+                    checkedAt: Date.now()
+                };
+                unmatched++;
+                continue;
+            }
             const event = result.event;
             scoreMatches[String(bet.id)] = {
                 provider: 'sportsdb',
@@ -531,7 +546,7 @@
         }
         saveFootballScoreMatches(scoreMatches);
         const usage = getSportsDbUsage();
-        lastLoadStatus = `TheSportsDB: matched ${matched} of ${namedBets.length}; ${requests} request${requests === 1 ? '' : 's'}, ${cacheHits} cached. ${usage.remaining}/${usage.limit} calls remain this minute.`;
+        lastLoadStatus = `TheSportsDB: ${matched} matched, ${unmatched} unmatched of ${namedBets.length}; ${requests} request${requests === 1 ? '' : 's'}, ${cacheHits} cached. ${usage.remaining}/${usage.limit} calls remain this minute.`;
         if (firstError) alert(firstError);
     }
 
@@ -626,12 +641,28 @@
         }
         const scoreMatches = loadFootballScoreMatches();
         let matched = 0;
+        let unmatched = 0;
         fixtures.forEach(({ bet, fixture }) => {
             const dateKey = fixture.startTimestamp ? utcDateKey(fixture.startTimestamp) : today;
             const candidate = findProviderFixture(fixture, fixturesByDate[dateKey] || []);
-            if (!candidate) return;
+            if (!candidate) {
+                scoreMatches[String(bet.id)] = {
+                    provider: 'api-football',
+                    homeTeam: fixture.homeTeam,
+                    awayTeam: fixture.awayTeam,
+                    homeGoals: null,
+                    awayGoals: null,
+                    statusShort: 'No API match',
+                    statusLong: 'No API match',
+                    unmatched: true,
+                    checkedAt: Date.now()
+                };
+                unmatched++;
+                return;
+            }
             const provider = candidate.provider;
             scoreMatches[String(bet.id)] = {
+                provider: 'api-football',
                 providerFixtureId: provider.fixture?.id,
                 homeTeam: provider.teams?.home?.name || fixture.homeTeam,
                 awayTeam: provider.teams?.away?.name || fixture.awayTeam,
@@ -647,7 +678,7 @@
             matched++;
         });
         saveFootballScoreMatches(scoreMatches);
-        lastLoadStatus = `Scores: matched ${matched} of ${namedBets.length} named open bets; ${requests} request${requests === 1 ? '' : 's'}, ${cacheHits} cached date${cacheHits === 1 ? '' : 's'}.`;
+        lastLoadStatus = `API-Football: ${matched} matched, ${unmatched} unmatched of ${namedBets.length}; ${requests} request${requests === 1 ? '' : 's'}, ${cacheHits} cached date${cacheHits === 1 ? '' : 's'}.`;
     }
 
     async function checkOpenBetScores() {
@@ -669,6 +700,7 @@
 
     function formatFootballScore(score) {
         if (!score) return '';
+        if (score.unmatched) return 'No API match';
         const status = score.statusShort || score.statusLong || 'Scheduled';
         const hasScore = score.homeGoals !== null && score.homeGoals !== undefined
             && score.awayGoals !== null && score.awayGoals !== undefined;
@@ -2792,6 +2824,32 @@
         const pendingCaptures = getPendingFootballBetCaptures();
         const pendingManual = getPendingManualCapture();
         const footballScores = loadFootballScoreMatches();
+        const namedScoreBets = openBets.filter(bet => bet.fixture?.homeTeam && bet.fixture?.awayTeam);
+        const matchedScoreCount = namedScoreBets.filter(bet => {
+            const score = footballScores[String(bet.id)];
+            return score && !score.unmatched;
+        }).length;
+        const footballScoreboard = footballScoreEnabled ? `
+            <div class="tbp-card" style="border-color:#3b82a8;">
+                <div class="tbp-row" style="margin-top:0;">
+                    <span style="font-weight:bold; color:#7fc8f1;">Football Scores</span>
+                    <span>${matchedScoreCount}/${namedScoreBets.length} matched</span>
+                </div>
+                ${namedScoreBets.length ? namedScoreBets.map(bet => {
+                    const score = footballScores[String(bet.id)];
+                    const scoreText = score ? formatFootballScore(score) : 'Not checked yet';
+                    const scoreClass = score?.unmatched
+                        ? 'tbp-loss'
+                        : score && isFinalFootballStatus(score.statusShort) ? 'tbp-win' : 'tbp-blue';
+                    return `
+                        <div style="margin-top:7px; padding-top:7px; border-top:1px solid #3a3a3a;">
+                            <div style="font-size:11px; font-weight:bold;">${escapeHtml(bet.fixture.homeTeam)} v ${escapeHtml(bet.fixture.awayTeam)}</div>
+                            <div class="tbp-row"><span>${escapeHtml((score?.provider || footballScoreProvider) === 'api-football' ? 'API-Football' : 'TheSportsDB')}</span><span class="${scoreClass}">${escapeHtml(scoreText)}</span></div>
+                        </div>
+                    `;
+                }).join('') : '<div class="tbp-muted" style="margin-top:7px;">No named open Football fixtures yet. Visit My Bets to capture their team names.</div>'}
+            </div>
+        ` : '';
         const pendingManualBet = pendingManual
             ? openBets.find(bet => String(bet.id) === String(pendingManual.betId))
             : null;
@@ -2827,6 +2885,7 @@
             ${footballScoreEnabled ? `
                 <button class="tbp-btn tbp-btn-primary" id="tbp-check-scores-btn" style="width:100%; margin-bottom:8px;">Check Scores (${footballScoreProvider === 'sportsdb' ? 'TheSportsDB' : 'API-Football'})</button>
             ` : ''}
+            ${footballScoreboard}
             ${pendingCaptureDetails}
             ${pendingManualDetails}
             <div id="tbp-open-list"></div>
