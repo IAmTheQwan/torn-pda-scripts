@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.9.5
+// @version      1.9.6
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -1155,7 +1155,7 @@
         const newest = rawLogs.length ? Math.max(...rawLogs.map(l => l.timestamp)) : 0;
         const newCount = fetched.filter(log => !previousIds.has(String(log.id))).length;
 
-        lastLoadStatus = `${rawLogs.length} cached logs (${newCount} new). Range: ${formatDate(oldest)} to ${formatDate(newest)}.`;
+        lastLoadStatus = `${rawLogs.length} cached Bookie log entries, not bets (${newCount} new). Range: ${formatDate(oldest)} to ${formatDate(newest)}.`;
         if (stopReason) lastLoadStatus += ` ${stopReason}`;
 
         return true;
@@ -1178,7 +1178,7 @@
             if (rawLogs.length) {
                 const oldest = Math.min(...rawLogs.map(log => log.timestamp));
                 const newest = Math.max(...rawLogs.map(log => log.timestamp));
-                lastLoadStatus = `${rawLogs.length} cached logs. Range: ${formatDate(oldest)} to ${formatDate(newest)}.`;
+                lastLoadStatus = `${rawLogs.length} cached Bookie log entries, not bets. Range: ${formatDate(oldest)} to ${formatDate(newest)}.`;
             } else {
                 lastLoadStatus = 'No local history yet. Use Full Rescan once to build it.';
             }
@@ -1695,7 +1695,7 @@
         }
 
         const usage = getSportsDbUsage();
-        lastLoadStatus = `Stats audit: ${alreadySettled} outcomes settled by Torn logs, ${measured} resolved by TheSportsDB, ${unresolved} open or missing provider-ready fixture details. ${requests} requests, ${cacheHits} cached; ${usage.remaining}/${usage.limit} calls remain this minute.`;
+        lastLoadStatus = `All-Bookie outcome audit: ${alreadySettled} bets settled by Torn logs, ${measured} resolved by TheSportsDB, ${unresolved} open or missing provider-ready fixture details. ${requests} requests, ${cacheHits} cached; ${usage.remaining}/${usage.limit} calls remain this minute.`;
     }
 
     function getFootballFixtureDetails(item, href = '') {
@@ -3070,11 +3070,12 @@ ${safeJson(log.raw)}
         };
         body.innerHTML = `
             <div class="tbp-muted" style="margin-bottom:8px;">${lastLoadStatus}</div>
-            <div class="tbp-muted" style="margin-bottom:8px;">Tracked Football bets from ${escapeHtml(stats.fromDate)} through today. Color is determined from the captured home/away side and original odds. Legacy bets without captured fixture evidence are excluded.</div>
-            <button class="tbp-btn tbp-btn-primary" id="tbp-measure-stats-btn" style="width:100%; margin-bottom:8px;">Measure Tracked Database</button>
-            <div class="tbp-row" style="margin:0 2px 4px;"><span>Color-classified / Missing team data</span><span>${stats.trackedPlaced} / ${stats.excludedUntracked}</span></div>
-            <div class="tbp-row" style="margin:0 2px 9px;"><span>Classified: settled / open / refunded</span><span>${stats.total.settled} / ${stats.total.open} / ${stats.total.refunds}</span></div>
-            ${stats.excludedUntracked ? '<div class="tbp-muted" style="margin-bottom:9px;">Missing team data means the Torn bet and its outcome still count in Daily, but it cannot safely be assigned Green, Yellow, Orange, or All Others yet. Open My Bets and scroll through completed rows to recover the home team, away team, selection, and original odds.</div>' : ''}
+            <div class="tbp-muted" style="margin-bottom:8px;">Color Stats include classified 3-Way Football bets placed from ${escapeHtml(stats.fromDate)} through today. Other Bookie activity remains in Daily and is counted separately here.</div>
+            <button class="tbp-btn tbp-btn-primary" id="tbp-measure-stats-btn" style="width:100%; margin-bottom:8px;">Refresh Outcome Audit</button>
+            <div class="tbp-row" style="margin:0 2px 4px;"><span>Classified 3-Way Football</span><span>${stats.trackedPlaced}</span></div>
+            <div class="tbp-row" style="margin:0 2px 4px;"><span>Settled / Open / Refunded</span><span>${stats.total.settled} / ${stats.total.open} / ${stats.total.refunds}</span></div>
+            <div class="tbp-row" style="margin:0 2px 9px;"><span>Other/unclassified Bookie bets</span><span>${stats.excludedUntracked}</span></div>
+            ${stats.excludedUntracked ? '<div class="tbp-muted" style="margin-bottom:9px;">Other/unclassified can include other sports, other markets, and older bets without captured fixture details. Their outcomes and money still count in Daily; they are only excluded from the colored Football records below.</div>' : ''}
             <div class="tbp-summary-grid">
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Total Record</div><div class="tbp-summary-value">${total.wins}-${total.losses}</div></div>
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Win / Loss</div><div class="tbp-summary-value" style="font-size:13px;">${total.winPct.toFixed(1)}% / ${total.lossPct.toFixed(1)}%</div></div>
@@ -3093,7 +3094,8 @@ ${safeJson(log.raw)}
                 <div class="tbp-card" style="border-left:6px solid #4da3ff;">
                     <div style="font-weight:bold; font-size:13px;">Before ${escapeHtml(stats.fromDate)}</div>
                     <div class="tbp-muted" style="margin:2px 0 5px;">Captured history outside the selected Stats date range; kept separate from the totals above.</div>
-                    <div class="tbp-row"><span>Color-classified / Missing team data</span><span>${stats.before.classifiedPlaced} / ${stats.before.missingFixture}</span></div>
+                    <div class="tbp-row"><span>Classified 3-Way Football</span><span>${stats.before.classifiedPlaced}</span></div>
+                    <div class="tbp-row"><span>Other/unclassified Bookie bets</span><span>${stats.before.missingFixture}</span></div>
                     <div class="tbp-row"><span>Record</span><span>${stats.before.total.wins}-${stats.before.total.losses}</span></div>
                     <div class="tbp-row"><span>Open / Refunded</span><span>${stats.before.total.open} / ${stats.before.total.refunds}</span></div>
                     <div class="tbp-row"><span>Net</span><span class="${stats.before.total.net >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(stats.before.total.net)}</span></div>
@@ -3184,7 +3186,7 @@ ${safeJson(log.raw)}
         if (measureStatsBtn) {
             measureStatsBtn.onclick = async () => {
                 measureStatsBtn.disabled = true;
-                measureStatsBtn.textContent = 'Measuring...';
+                measureStatsBtn.textContent = 'Auditing...';
                 await measureTrackedStatsDatabase();
                 render();
             };
