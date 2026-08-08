@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.18.0
+// @version      1.19.0
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -27,6 +27,7 @@
   const FILTER_SETTINGS_KEY = "cafCleanFilterSettings";
   const MARKET_SETTINGS_KEY = "cafCleanMarketSettings";
   const MARKET_PICKS_COLLAPSED_KEY = "cafCleanMarketPicksCollapsed";
+  const MARKET_CATCH_COLLAPSED_KEY = "cafCleanMarketCatchCollapsed";
   const CACHE_KEY = "cafCleanHistoryCache";
   const COLLECTION_KEY = "cafCleanGuidedCollection";
   const COLLECTOR_COLLAPSED_KEY = "cafCleanCollectorCollapsed";
@@ -92,6 +93,8 @@
   const marketItemByRow = new WeakMap();
   const marketResponseCache = new Map();
   const marketPicks = new Map();
+  const marketCatch = new Map();
+  const marketCatchSuppressedKeys = new Set();
   const historyRequestsInFlight = new Map();
   const MARKET_ANALYSIS_CONCURRENCY = 6;
   const BUY_NOW_THRESHOLD = 25_000_000;
@@ -104,6 +107,7 @@
   let marketLoadRunwayTimer = null;
   let marketLoadRunwayFilterKey = "";
   let marketLoadRunwaysExpired = false;
+  let marketCatchFilterKey = "";
 
   const style = document.createElement("style");
   style.textContent = `
@@ -585,6 +589,12 @@
       border-color: #9af0ad;
       font-weight: 800;
     }
+    #${MARKET_PANEL_ID} .caf-clean-market-auto-catch.is-active {
+      color: #091b22;
+      background: #74d7f7;
+      border-color: #b9edff;
+      font-weight: 800;
+    }
     #${MARKET_PANEL_ID} .caf-clean-market-color-filter {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -620,6 +630,80 @@
       color: #999;
       font-size: 10px;
       line-height: 1.3;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-catch {
+      margin-top: 8px;
+      padding: 6px;
+      background: #132027;
+      border: 1px solid #47758a;
+      border-radius: 6px;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-catch-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 5px;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-catch-toggle,
+    #${MARKET_PANEL_ID} .caf-clean-market-catch-clear {
+      min-height: 30px;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-catch-clear {
+      width: auto;
+      color: #ffb1b1;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-catch-body { margin-top: 6px; }
+    #${MARKET_PANEL_ID} .caf-clean-market-catch-empty {
+      padding: 5px;
+      color: #8ca4ae;
+      text-align: center;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-catch-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 6px;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-catch-card {
+      min-width: 0;
+      padding: 6px;
+      background: #1d2b31;
+      border: 1px solid #3f6575;
+      border-radius: 5px;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-catch-main {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr);
+      gap: 6px;
+      align-items: center;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-catch-image {
+      width: 48px;
+      height: 48px;
+      object-fit: contain;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-catch-name {
+      color: #9cddff;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-catch-meta {
+      margin-top: 4px;
+      color: #c4d1d6;
+      font-size: 10px;
+      line-height: 1.3;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-catch-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 4px;
+      margin-top: 5px;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-catch-actions button {
+      min-height: 28px;
+      padding: 3px;
+      font-size: 10px;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-catch-card .caf-clean-history-box {
+      margin-top: 5px;
     }
     #${MARKET_PANEL_ID} .caf-clean-market-picks {
       margin-top: 8px;
@@ -2617,7 +2701,8 @@
       historyCount: 25,
       matchBonuses: true,
       doubleOnly: false,
-      strongDealsOnly: false
+      strongDealsOnly: false,
+      autoCatch: false
     };
   }
 
@@ -2644,7 +2729,8 @@
       historyCount: Number(panel.querySelector("#caf-clean-market-history-count")?.value || 25),
       matchBonuses: !!panel.querySelector("#caf-clean-market-match-bonuses")?.checked,
       doubleOnly: panel.querySelector("#caf-clean-market-double")?.dataset.active === "true",
-      strongDealsOnly: panel.querySelector("#caf-clean-market-strong")?.dataset.active === "true"
+      strongDealsOnly: panel.querySelector("#caf-clean-market-strong")?.dataset.active === "true",
+      autoCatch: panel.querySelector("#caf-clean-market-auto-catch")?.dataset.active === "true"
     };
   }
 
@@ -2670,6 +2756,15 @@
     button.classList.toggle("is-active", isActive);
     button.setAttribute("aria-pressed", String(isActive));
     button.textContent = `Only GOOD/STEAL: ${isActive ? "ON" : "OFF"}`;
+  }
+
+  function setMarketAutoCatchButton(button, active) {
+    if (!button) return;
+    const isActive = !!active;
+    button.dataset.active = isActive ? "true" : "false";
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+    button.textContent = `Auto Catch matches: ${isActive ? "ON" : "OFF"}`;
   }
 
   function setMarketColorFilter(panel, color) {
@@ -2827,6 +2922,7 @@
     const armor = gridStats?.armor || numberFrom((source.match(/Armou?r\s*[:=-]\s*([\d.]+)/i) || [])[1]) || 0;
     const quality = numberFrom(cachedItem?.quality ?? (source.match(/Quality\s*[:=-]\s*([\d.]+)/i) || [])[1]);
     const name = marketItemName(row, source, cachedItem);
+    const imageUrl = row.querySelector(gridCard ? MARKET_SELECTORS.gridImage : MARKET_SELECTORS.thumbnail)?.src || "";
     const identityMatch = (row.outerHTML || "").match(/(?:itemUID|itemUid|uid|listingID|listingId|itemID|itemId)["'=:\s-]+(\d+)/i);
 
     return {
@@ -2840,6 +2936,7 @@
       bid: price,
       bonuses,
       color: cardColor(row),
+      imageUrl,
       marketListing: true,
       marketGridCard: gridCard,
       marketCacheMatched: !!cachedItem,
@@ -2880,7 +2977,8 @@
       bonus1: filter.bonus1 || "",
       bonus2: filter.bonus2 || "",
       bonusMin: filter.bonusMin || "",
-      bonusMax: filter.bonusMax || ""
+      bonusMax: filter.bonusMax || "",
+      autoCatch: !!filter.autoCatch
     });
   }
 
@@ -2895,6 +2993,7 @@
     marketLoadRunwaysExpired = true;
     clearMarketLoadRunways();
     if (!isActiveView() || !isItemMarketPage()) return;
+    if (marketCatch.size) return;
     const firstMatch = marketRows().find(row => !row.classList.contains("caf-clean-market-hidden"));
     firstMatch?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
@@ -2932,6 +3031,144 @@
     if (activeParents.length && marketLoadRunwayTimer === null) {
       marketLoadRunwayTimer = setTimeout(expireMarketLoadRunways, MARKET_LOAD_RUNWAY_LIFETIME_MS);
     }
+  }
+
+  function marketCatchSettingsKey(filter) {
+    return JSON.stringify({
+      doubleOnly: !!filter.doubleOnly,
+      strongDealsOnly: !!filter.strongDealsOnly,
+      color: filter.color || "",
+      bonus1: filter.bonus1 || "",
+      bonus2: filter.bonus2 || "",
+      bonusMin: filter.bonusMin || "",
+      bonusMax: filter.bonusMax || ""
+    });
+  }
+
+  function marketCatchItemKey(item) {
+    const id = String(item.id || "");
+    if (id && !id.startsWith("market|")) return `id:${id}`;
+    return [
+      normalizeItemName(item.name),
+      Number(item.bid || 0),
+      Number(item.damage || 0).toFixed(2),
+      Number(item.accuracy || 0).toFixed(2),
+      Number(item.armor || 0).toFixed(2),
+      itemBonusText(item)
+    ].join("|");
+  }
+
+  function captureMarketCatch(row, item) {
+    const key = marketCatchItemKey(item);
+    if (marketCatchSuppressedKeys.has(key)) return false;
+    const existing = marketCatch.get(key);
+    const sourceChanged = !!existing && existing.sourceRow !== row && !existing.sourceRow?.isConnected;
+    const nextTypeState = marketDealStateFromRow(row);
+    const nextStrengthState = marketComparableDealStateFromRow(row);
+    marketCatch.set(key, {
+      item: {
+        ...item,
+        id: existing?.item.id || item.id,
+        bonuses: (item.bonuses || []).map(bonus => ({ ...bonus })),
+        historySettings: { ...(item.historySettings || {}) }
+      },
+      sourceRow: row,
+      typeDealState: nextTypeState === "unknown" ? existing?.typeDealState || "unknown" : nextTypeState,
+      dealState: nextStrengthState === "unknown" ? existing?.dealState || "unknown" : nextStrengthState,
+      caughtAt: existing?.caughtAt || Date.now()
+    });
+    return !existing || sourceChanged;
+  }
+
+  function clearMarketCatch(render = true, suppressCurrent = true) {
+    if (suppressCurrent) marketCatch.forEach((entry, key) => marketCatchSuppressedKeys.add(key));
+    marketCatch.clear();
+    if (render) renderMarketCatch();
+  }
+
+  function updateMarketCatchDeal(itemId, typeState, strengthState = typeState) {
+    marketCatch.forEach(entry => {
+      if (String(entry.item.id) !== String(itemId)) return;
+      entry.typeDealState = typeState || "unknown";
+      entry.dealState = strengthState || "unknown";
+    });
+    document.querySelectorAll(".caf-clean-market-catch-card").forEach(card => {
+      if (card.dataset.itemId !== String(itemId)) return;
+      const dot = card.querySelector(".caf-clean-market-deal-dot");
+      const label = card.querySelector(".caf-clean-market-catch-deal");
+      if (dot) dot.className = `caf-clean-market-deal-dot is-${strengthState || "unknown"}`;
+      if (label) label.textContent = `RAW ${marketDealLabel(typeState || "unknown")} · ADJ ${marketDealLabel(strengthState || "unknown")}`;
+    });
+  }
+
+  function renderMarketCatch() {
+    const list = document.getElementById("caf-clean-market-catch-list");
+    const empty = document.getElementById("caf-clean-market-catch-empty");
+    const toggle = document.getElementById("caf-clean-market-catch-toggle");
+    const body = document.getElementById("caf-clean-market-catch-body");
+    if (!list || !empty || !toggle || !body) return;
+    const collapsed = localStorage.getItem(MARKET_CATCH_COLLAPSED_KEY) === "true";
+    body.style.display = collapsed ? "none" : "block";
+    toggle.textContent = `Filtered Catch (${marketCatch.size}) ${collapsed ? "▶" : "▼"}`;
+    empty.style.display = marketCatch.size ? "none" : "block";
+    list.innerHTML = "";
+
+    marketCatch.forEach((entry, catchKey) => {
+      const item = entry.item;
+      const card = document.createElement("article");
+      card.className = "caf-clean-market-catch-card";
+      card.dataset.catchKey = catchKey;
+      card.dataset.itemId = String(item.id);
+      const stats = item.armor
+        ? `Armor ${Number(item.armor).toFixed(2)}`
+        : `D ${Number(item.damage || 0).toFixed(2)} · A ${Number(item.accuracy || 0).toFixed(2)}`;
+      card.innerHTML = `
+        <div class="caf-clean-market-catch-main">
+          ${item.imageUrl ? `<img class="caf-clean-market-catch-image" src="${escapeAttr(item.imageUrl)}" alt="">` : `<span class="caf-clean-market-catch-image"></span>`}
+          <div>
+            <div class="caf-clean-market-catch-name">${escapeHtml(item.name)}</div>
+            <div class="caf-clean-market-catch-meta">${escapeHtml(stats)}<br>${escapeHtml(itemBonusText(item))}<br>Ask ${money(item.bid)}${buyNowBadgeHtml(item.bid)}</div>
+          </div>
+        </div>
+        <div class="caf-clean-market-catch-meta"><span class="caf-clean-market-deal-dot is-${escapeAttr(entry.dealState || "unknown")}"></span> <span class="caf-clean-market-catch-deal">RAW ${marketDealLabel(entry.typeDealState || "unknown")} · ADJ ${marketDealLabel(entry.dealState || "unknown")}</span></div>
+        <div class="caf-clean-market-catch-actions">
+          <button type="button" class="caf-clean-market-catch-add" data-item-id="${escapeAttr(String(item.id))}">${marketPicks.has(String(item.id)) ? "Added" : "+ Add"}</button>
+          <button type="button" class="caf-clean-market-catch-view" ${entry.sourceRow?.isConnected ? "" : "disabled"}>View</button>
+          <button type="button" class="caf-clean-market-catch-history" data-idle-label="History + Deal">History + Deal</button>
+        </div>
+        <div class="caf-clean-history-box"></div>
+      `;
+      list.appendChild(card);
+
+      card.querySelector(".caf-clean-market-catch-add").addEventListener("click", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (marketPicks.has(String(item.id))) {
+          marketPicks.delete(String(item.id));
+          renderMarketPicks();
+          syncMarketAddButtons();
+        } else {
+          addMarketPick(entry.sourceRow, item);
+        }
+      });
+      card.querySelector(".caf-clean-market-catch-view").addEventListener("click", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!entry.sourceRow?.isConnected) return;
+        entry.sourceRow.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+      card.querySelector(".caf-clean-market-catch-history").addEventListener("click", async event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const summary = await runHistory(item, card);
+        const typeState = summary?.usedBroadFallback ? "broad" : marketStateFromLabel(summary?.dealLabel);
+        const strengthState = summary?.usedBroadFallback ? "unknown" : marketStateFromLabel(summary?.comparableDealLabel);
+        entry.typeDealState = typeState;
+        entry.dealState = strengthState;
+        if (entry.sourceRow?.isConnected) applyMarketDeal(entry.sourceRow, summary);
+        else updateMarketCatchDeal(item.id, typeState, strengthState);
+      });
+    });
   }
 
   function ensureMarketDealRail(row, item) {
@@ -3177,6 +3414,11 @@
       button.textContent = added ? "Added" : "+ Add";
       if (item) button.setAttribute("aria-label", `${added ? "Remove" : "Add"} ${item.name} ${added ? "from" : "to"} Market Picks`);
     });
+    document.querySelectorAll(".caf-clean-market-catch-add[data-item-id]").forEach(button => {
+      const added = marketPicks.has(button.dataset.itemId);
+      button.classList.toggle("is-added", added);
+      button.textContent = added ? "Added" : "+ Add";
+    });
   }
 
   function updateMarketPickDeal(itemId, typeState, strengthState = typeState) {
@@ -3272,7 +3514,7 @@
   }
 
   function addAllStrongMarketDeals() {
-    const rows = marketRows().filter(row => !row.classList.contains("caf-clean-market-hidden"));
+    const rows = applyMarketFilters({ announce: false });
     let added = 0;
     rows.forEach(row => {
       const item = marketItemByRow.get(row);
@@ -3297,7 +3539,10 @@
       row.dataset.cafMarketDealState = "unknown";
       row.dataset.cafMarketComparableDealState = "unknown";
       setMarketDealRail(row, "unknown", "unknown");
-      if (item) updateMarketPickDeal(item.id, "unknown", "unknown");
+      if (item) {
+        updateMarketPickDeal(item.id, "unknown", "unknown");
+        updateMarketCatchDeal(item.id, "unknown", "unknown");
+      }
       return;
     }
 
@@ -3311,7 +3556,10 @@
       row.dataset.cafMarketComparableDealState = "unknown";
       setMarketBonusDealIndicator(row, summary.dealLabel, true);
       setMarketDealRail(row, "broad", "unknown");
-      if (item) updateMarketPickDeal(item.id, "broad", "unknown");
+      if (item) {
+        updateMarketPickDeal(item.id, "broad", "unknown");
+        updateMarketCatchDeal(item.id, "broad", "unknown");
+      }
     } else {
       badge.textContent = summary.dealLabel;
       setMarketBonusDealIndicator(row, summary.dealLabel);
@@ -3327,7 +3575,10 @@
       row.dataset.cafMarketDealState = dealState;
       row.dataset.cafMarketComparableDealState = comparableDealState;
       setMarketDealRail(row, dealState, comparableDealState);
-      if (item) updateMarketPickDeal(item.id, dealState, comparableDealState);
+      if (item) {
+        updateMarketPickDeal(item.id, dealState, comparableDealState);
+        updateMarketCatchDeal(item.id, dealState, comparableDealState);
+      }
     }
     if (head) head.prepend(badge);
   }
@@ -3367,11 +3618,21 @@
   function applyMarketFilters({ announce = true, ignoreStrongDeals = false } = {}) {
     if (!isItemMarketPage() || !isActiveView()) return [];
     const filter = saveMarketSettings();
+    const autoCatch = !!filter.autoCatch;
+    const catchSettingsKey = marketCatchSettingsKey(filter);
+    let catchChanged = false;
+    if (autoCatch && catchSettingsKey !== marketCatchFilterKey) {
+      marketCatch.clear();
+      marketCatchSuppressedKeys.clear();
+      marketCatchFilterKey = catchSettingsKey;
+      catchChanged = true;
+    }
     const rows = marketRows();
     const parsedRows = rows.map((row, index) => ({ row, item: parseMarketListing(row, index) }));
     const bonusCount = parsedRows.filter(entry => entry.item.bonuses.length).length;
     const gridCount = parsedRows.filter(entry => entry.item.marketGridCard).length;
     const gridCacheMatches = parsedRows.filter(entry => entry.item.marketCacheMatched).length;
+    const matchingRows = [];
     let matchCount = 0;
 
     parsedRows.forEach(({ row, item }) => {
@@ -3391,6 +3652,7 @@
     if (rows.length && !bonusCount) {
       rows.forEach(row => row.classList.remove("caf-clean-market-hidden"));
       updateMarketLoadRunways([], filter);
+      if (catchChanged) renderMarketCatch();
       const message = gridCount && !marketResponseCache.size
         ? `CAF found ${gridCount} loaded market card(s), but their response data was loaded before CAF could capture it. Nothing was hidden. Refresh the Item Market page once after installing this update.`
         : gridCount && !gridCacheMatches
@@ -3403,15 +3665,27 @@
     parsedRows.forEach(({ row, item }) => {
       row.classList.add("caf-clean-market-row");
       row.classList.toggle("caf-clean-market-grid-card", item.marketGridCard);
-      const matches = marketItemMatches(item, filter)
+      const baseMatches = marketItemMatches(item, filter);
+      const matches = baseMatches
         && marketStrongDealMatches(row, filter, ignoreStrongDeals);
-      row.classList.toggle("caf-clean-market-hidden", !matches);
+      const catchMatches = baseMatches && marketStrongDealMatches(row, filter, false);
+      row.classList.toggle("caf-clean-market-hidden", !autoCatch && !matches);
       if (matches) {
         matchCount += 1;
+        matchingRows.push(row);
         ensureMarketTools(row, item);
       }
+      if (autoCatch && catchMatches && captureMarketCatch(row, item)) catchChanged = true;
     });
-    updateMarketLoadRunways(parsedRows, filter);
+    if (autoCatch) {
+      clearTimeout(marketLoadRunwayTimer);
+      marketLoadRunwayTimer = null;
+      marketLoadRunwaysExpired = true;
+      clearMarketLoadRunways();
+    } else {
+      updateMarketLoadRunways(parsedRows, filter);
+    }
+    if (catchChanged) renderMarketCatch();
 
     if (announce) {
       const range = filter.bonusMin || filter.bonusMax
@@ -3422,15 +3696,18 @@
       const deal = filter.strongDealsOnly && !ignoreStrongDeals
         ? " rated strength-adjusted GOOD/STEAL"
         : "";
-      const runway = hasMarketNarrowingFilter(filter) && matchCount < rows.length
+      const runway = !autoCatch && hasMarketNarrowingFilter(filter) && matchCount < rows.length
         ? " Keep scrolling to let Torn render more; CAF will filter new cards automatically."
         : "";
       const analyzeHint = filter.strongDealsOnly && !ignoreStrongDeals
         ? " Tap Analyze Visible Deals to rate every listing matching the other filters."
         : "";
-      setMarketStatus(`Showing ${matchCount} matching${color}${kind} listing(s)${deal}${range}; ${bonusCount} of ${rows.length} loaded listing(s) contain a parsed bonus.${analyzeHint}${runway}`);
+      const autoCatchMessage = autoCatch
+        ? ` Auto Catch has saved ${marketCatch.size} unique match(es). Torn's native cards remain visible so you can keep manually scrolling.`
+        : "";
+      setMarketStatus(`Showing ${matchCount} matching${color}${kind} listing(s)${deal}${range}; ${bonusCount} of ${rows.length} loaded listing(s) contain a parsed bonus.${autoCatchMessage}${analyzeHint}${runway}`);
     }
-    return rows.filter(row => !row.classList.contains("caf-clean-market-hidden"));
+    return matchingRows;
   }
 
   function marketAnalysisLookupKey(item) {
@@ -3541,6 +3818,7 @@
     panel.querySelector("#caf-clean-market-match-bonuses").checked = defaults.matchBonuses;
     setMarketDoubleOnlyButton(panel.querySelector("#caf-clean-market-double"), defaults.doubleOnly);
     setMarketStrongDealsButton(panel.querySelector("#caf-clean-market-strong"), defaults.strongDealsOnly);
+    setMarketAutoCatchButton(panel.querySelector("#caf-clean-market-auto-catch"), defaults.autoCatch);
     localStorage.removeItem(MARKET_SETTINGS_KEY);
     marketRows().forEach(row => {
       clearMarketDeal(row);
@@ -3560,7 +3838,17 @@
     panel.id = MARKET_PANEL_ID;
     panel.innerHTML = `
       <div class="caf-clean-market-title">CAF Clean — Bonus Equipment Market</div>
-      <div class="caf-clean-market-note">Filters only the Item Market cards/listings Torn has already loaded. Non-bonus items are hidden after their visible market data is matched.</div>
+      <div class="caf-clean-market-note">Filters only the Item Market cards/listings Torn has already loaded. Auto Catch keeps Torn's native list intact for scrolling and copies only matching listings into the compact Filtered Catch below.</div>
+      <div class="caf-clean-market-catch">
+        <div class="caf-clean-market-catch-head">
+          <button id="caf-clean-market-catch-toggle" class="caf-clean-market-catch-toggle">Filtered Catch (${marketCatch.size}) ▼</button>
+          <button id="caf-clean-market-catch-clear" class="caf-clean-market-catch-clear" type="button">Clear</button>
+        </div>
+        <div id="caf-clean-market-catch-body" class="caf-clean-market-catch-body">
+          <div id="caf-clean-market-catch-empty" class="caf-clean-market-catch-empty">Set your filters, turn on Auto Catch, then manually scroll. Matching listings will collect here without shortening Torn's list.</div>
+          <div id="caf-clean-market-catch-list" class="caf-clean-market-catch-list"></div>
+        </div>
+      </div>
       <div class="caf-clean-market-picks">
         <button id="caf-clean-market-picks-toggle" class="caf-clean-market-picks-toggle">Market Picks (${marketPicks.size}) ${picksCollapsed ? "▶" : "▼"}</button>
         <div id="caf-clean-market-picks-body" class="caf-clean-market-picks-body" style="display:${picksCollapsed ? "none" : "block"}">
@@ -3580,6 +3868,7 @@
         <label style="justify-content:flex-end"><span><input id="caf-clean-market-match-bonuses" type="checkbox" style="width:auto;min-height:auto" ${current.matchBonuses !== false ? "checked" : ""}> Match listing bonus types</span></label>
         <button id="caf-clean-market-double" class="caf-clean-market-double ${current.doubleOnly ? "is-active" : ""}" data-active="${current.doubleOnly ? "true" : "false"}" aria-pressed="${current.doubleOnly ? "true" : "false"}">Double bonuses only: ${current.doubleOnly ? "ON" : "OFF"}</button>
         <button id="caf-clean-market-strong" class="caf-clean-market-strong ${current.strongDealsOnly ? "is-active" : ""}" data-active="${current.strongDealsOnly ? "true" : "false"}" aria-pressed="${current.strongDealsOnly ? "true" : "false"}">Only GOOD/STEAL: ${current.strongDealsOnly ? "ON" : "OFF"}</button>
+        <button id="caf-clean-market-auto-catch" class="caf-clean-market-auto-catch ${current.autoCatch ? "is-active" : ""}" data-active="${current.autoCatch ? "true" : "false"}" aria-pressed="${current.autoCatch ? "true" : "false"}">Auto Catch matches: ${current.autoCatch ? "ON" : "OFF"}</button>
         <button id="caf-clean-market-apply">Apply to Loaded Listings</button>
         <button id="caf-clean-market-analyze">Analyze Visible Deals</button>
         <button id="caf-clean-market-add-strong">Add All GOOD/STEAL</button>
@@ -3587,7 +3876,7 @@
       </div>
       <details class="caf-clean-market-disclosure">
         <summary>Deal colors and data use</summary>
-        <div>The left rail is split: the top half compares all same-item, same-bonus-type sales; the bottom half uses only sales where every matching bonus percentage is equal to or weaker than the listing. Add All GOOD/STEAL uses the bottom result. STEAL is below the historical low; GOOD is below the median; FAIR is at or below the historical high; HIGH is above it. Gray means no usable comparison is available. This is a price-only signal, not a guarantee. CAF keeps the already-loaded Item Market response and Market Picks only in page memory; it makes no extra Torn request and does not persist that data. History checks send the visible item's name, stats, price, and bonuses to the external Supabase history service. No Torn credentials or API key are sent.</div>
+        <div>The left rail is split: the top half compares all same-item, same-bonus-type sales; the bottom half uses only sales where every matching bonus percentage is equal to or weaker than the listing. Add All GOOD/STEAL uses the bottom result. STEAL is below the historical low; GOOD is below the median; FAIR is at or below the historical high; HIGH is above it. Gray means no usable comparison is available. This is a price-only signal, not a guarantee. Auto Catch reads only listings Torn renders while you manually scroll; it does not load another page or make a Torn request. CAF keeps the already-loaded Item Market response, Filtered Catch, and Market Picks only in page memory and does not persist that data. History checks send the visible item's name, stats, price, and bonuses to the external Supabase history service. No Torn credentials or API key are sent.</div>
       </details>
       <div class="caf-clean-market-status">Waiting for Item Market listings...</div>
     `;
@@ -3615,6 +3904,20 @@
       saveMarketSettings();
       applyMarketFilters();
     });
+    panel.querySelector("#caf-clean-market-auto-catch").addEventListener("click", event => {
+      event.preventDefault();
+      const button = event.currentTarget;
+      const active = button.dataset.active !== "true";
+      setMarketAutoCatchButton(button, active);
+      if (active) {
+        clearMarketCatch(false, false);
+        marketCatchSuppressedKeys.clear();
+        marketCatchFilterKey = "";
+      }
+      saveMarketSettings();
+      applyMarketFilters();
+      if (!active) document.getElementById("caf-clean-market-catch-toggle")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
     panel.querySelectorAll(".caf-clean-market-color-button").forEach(button => button.addEventListener("click", event => {
       event.preventDefault();
       setMarketColorFilter(panel, event.currentTarget.dataset.color || "");
@@ -3629,10 +3932,23 @@
       localStorage.setItem(MARKET_PICKS_COLLAPSED_KEY, collapsed ? "true" : "false");
       renderMarketPicks();
     });
+    panel.querySelector("#caf-clean-market-catch-toggle").addEventListener("click", event => {
+      event.preventDefault();
+      const body = panel.querySelector("#caf-clean-market-catch-body");
+      const collapsed = body.style.display !== "none";
+      localStorage.setItem(MARKET_CATCH_COLLAPSED_KEY, collapsed ? "true" : "false");
+      renderMarketCatch();
+    });
+    panel.querySelector("#caf-clean-market-catch-clear").addEventListener("click", event => {
+      event.preventDefault();
+      clearMarketCatch();
+      setMarketStatus("Filtered Catch cleared. Auto Catch will continue collecting new matches if it is on.");
+    });
     panel.querySelectorAll("select, input").forEach(element => element.addEventListener("change", () => {
       saveMarketSettings();
       applyMarketFilters();
     }));
+    renderMarketCatch();
     renderMarketPicks();
     applyMarketFilters();
   }
