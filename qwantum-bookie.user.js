@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.9.8
+// @version      1.9.9
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -764,6 +764,7 @@ localStorage.setItem(BET_STATS_LINKS_KEY, JSON.stringify(Object.fromEntries(limi
 }
 function buildBookieData() {
 const todayStart = getTodayStartUnix();
+const overallFromTimestamp = getScanFromUnix();
 todaySummary = { bets: 0, wins: 0, losses: 0, refunds: 0, won: 0, lost: 0, net: 0 };
 overallBookieNet = 0;
 const logs = [...rawLogs].sort((a, b) => b.timestamp - a.timestamp);
@@ -775,7 +776,9 @@ const winnings = getWinnings(log);
 let net = 0;
 if (type === 'win') net = (winnings || bet) - bet;
 if (type === 'loss') net = -bet;
+if (!overallFromTimestamp || Number(log.timestamp || 0) >= overallFromTimestamp) {
 overallBookieNet += net;
+}
 if (log.timestamp >= todayStart) {
 if (type === 'placed') todaySummary.bets++;
 if (type === 'win') {
@@ -1224,17 +1227,36 @@ const pendingBySelection = new Map();
 const fromTimestamp = dateToUnixStart(scanStartDate || defaultScanStartDate());
 const logs = [...rawLogs].sort((a, b) => a.timestamp - b.timestamp);
 const scopes = {
-current: { categories: createColorStatCategories(), totalPlaced: 0, classifiedPlaced: 0, missingFixture: 0, refunds: 0 },
-before: { categories: createColorStatCategories(), totalPlaced: 0, classifiedPlaced: 0, missingFixture: 0, refunds: 0 }
+current: { categories: createColorStatCategories(), totalPlaced: 0, classifiedPlaced: 0, missingFixture: 0, refunds: 0, unmatchedResults: 0 },
+before: { categories: createColorStatCategories(), totalPlaced: 0, classifiedPlaced: 0, missingFixture: 0, refunds: 0, unmatchedResults: 0 }
+};
+const addUnmatchedResult = (scope, type, log) => {
+scope.unmatchedResults++;
+if (type === 'refund') {
+scope.refunds++;
+return;
+}
+const bet = getBetAmount(log);
+const row = scope.categories.non3way;
+if (type === 'win') {
+row.wins++;
+row.net += (getWinnings(log) || bet) - bet;
+} else if (type === 'loss') {
+row.losses++;
+row.net -= bet;
+}
 };
 logs.forEach(log => {
 const type = classifyLog(log);
 const key = getSelectionKey(log);
-if (!key) return;
 if (type === 'placed') {
 const scopeKey = Number(log.timestamp || 0) < fromTimestamp ? 'before' : 'current';
 const scope = scopes[scopeKey];
 scope.totalPlaced++;
+if (!key) {
+scope.missingFixture++;
+return;
+}
 const bet = getBetAmount(log);
 const odds = getOdds(log);
 let link = links[String(log.id)] || null;
@@ -1259,8 +1281,16 @@ pendingBySelection.get(key).push({ log, bet, category, scopeKey });
 return;
 }
 if (!['win', 'loss', 'refund'].includes(type)) return;
+const resultScope = Number(log.timestamp || 0) < fromTimestamp ? scopes.before : scopes.current;
+if (!key) {
+addUnmatchedResult(resultScope, type, log);
+return;
+}
 const pending = pendingBySelection.get(key) || [];
-if (!pending.length) return;
+if (!pending.length) {
+addUnmatchedResult(resultScope, type, log);
+return;
+}
 const resultBet = getBetAmount(log);
 let matchIndex = resultBet
 ? pending.findIndex(candidate => Math.abs(Number(candidate.bet || 0) - resultBet) < 1)
@@ -1268,7 +1298,7 @@ let matchIndex = resultBet
 if (matchIndex < 0) matchIndex = 0;
 const [placed] = pending.splice(matchIndex, 1);
 if (!pending.length) pendingBySelection.delete(key);
-const scope = scopes[placed.scopeKey];
+const scope = resultScope;
 if (type === 'refund') {
 scope.refunds++;
 return;
@@ -1295,11 +1325,21 @@ row.net += Number(providerResult.providerNet || 0);
 });
 const current = finishColorStatsScope(scopes.current);
 const before = finishColorStatsScope(scopes.before);
+const directTornNet = logs.reduce((net, log) => {
+if (Number(log.timestamp || 0) < fromTimestamp) return net;
+const type = classifyLog(log);
+const bet = getBetAmount(log);
+if (type === 'win') return net + (getWinnings(log) || bet) - bet;
+if (type === 'loss') return net - bet;
+return net;
+}, 0);
 return {
 ...current,
 fromDate: scanStartDate || defaultScanStartDate(),
 trackedPlaced: current.classifiedPlaced,
 excludedUntracked: current.missingFixture,
+directTornNet,
+reconciliationDelta: current.total.net - directTornNet,
 before
 };
 }
@@ -2752,11 +2792,13 @@ non3way: 'border-left:6px solid #4da3ff;'
 };
 body.innerHTML = `
 <div class="tbp-muted" style="margin-bottom:8px;">${lastLoadStatus}</div>
-<div class="tbp-muted" style="margin-bottom:8px;">Stats group all cached Bookie bets placed from ${escapeHtml(stats.fromDate)} through today. Captured 3-Way Football bets use the colored rules; every other or still-unclassified bet appears in the fifth box.</div>
+<div class="tbp-muted" style="margin-bottom:8px;">Stats group all cached Bookie outcomes logged from ${escapeHtml(stats.fromDate)} through today, matching Daily's date rule. Captured 3-Way Football bets use the colored rules; every other or still-unclassified result appears in the fifth box.</div>
 <button class="tbp-btn tbp-btn-primary" id="tbp-measure-stats-btn" style="width:100%; margin-bottom:8px;">Refresh Outcome Audit</button>
 <div class="tbp-row" style="margin:0 2px 4px;"><span>Captured with market details</span><span>${stats.trackedPlaced}</span></div>
 <div class="tbp-row" style="margin:0 2px 4px;"><span>Settled / Open / Refunded</span><span>${stats.total.settled} / ${stats.total.open} / ${stats.total.refunds}</span></div>
 <div class="tbp-row" style="margin:0 2px 9px;"><span>Other/unclassified Bookie bets</span><span>${stats.excludedUntracked}</span></div>
+${stats.unmatchedResults ? `<div class="tbp-row" style="margin:0 2px 9px;"><span>Torn results without placement match</span><span>${stats.unmatchedResults} · included in fifth box</span></div>` : ''}
+${Math.abs(stats.reconciliationDelta) >= 1 ? `<div class="tbp-row" style="margin:0 2px 9px;"><span>Provisional provider difference vs Daily</span><span class="${stats.reconciliationDelta >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(stats.reconciliationDelta)}</span></div>` : ''}
 ${stats.excludedUntracked ? '<div class="tbp-muted" style="margin-bottom:9px;">Other/unclassified can include other sports, other markets, and older bets without captured fixture details. Their Torn outcomes are included in the fifth box so they are no longer dropped from the Stats record or net.</div>' : ''}
 <div class="tbp-summary-grid">
 <div class="tbp-summary-box"><div class="tbp-summary-label">Total Record</div><div class="tbp-summary-value">${total.wins}-${total.losses}</div></div>
