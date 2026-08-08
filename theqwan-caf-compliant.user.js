@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.22.0
+// @version      1.23.0
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -400,7 +400,8 @@
       font-size: 10px;
       overflow: hidden;
     }
-    #${WATCH_BAR_ID} button {
+    #${WATCH_BAR_ID} button,
+    #${WATCH_BAR_ID} .caf-clean-watch-update {
       border: 1px solid #555;
       border-radius: 5px;
       color: #ddd;
@@ -462,6 +463,12 @@
       padding: 6px;
       overflow-x: auto;
     }
+    #${WATCH_BAR_ID} .caf-clean-watch-entry {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: stretch;
+      gap: 3px;
+    }
     #${WATCH_BAR_ID} .caf-clean-watch-item {
       display: grid;
       grid-template-columns: 34px minmax(66px, 1fr);
@@ -473,6 +480,23 @@
       max-width: 160px;
       padding: 4px 6px;
       text-align: left;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-update {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 42px;
+      padding: 3px;
+      color: #8cffb0;
+      border-color: #3d7650;
+      text-align: center;
+      text-decoration: none;
+      box-sizing: border-box;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-update[aria-disabled="true"] {
+      color: #777;
+      border-color: #444;
+      pointer-events: none;
     }
     #${WATCH_BAR_ID} .caf-clean-watch-item.is-remove-mode {
       border-color: #994444;
@@ -516,6 +540,13 @@
       font-size: 7px;
       vertical-align: middle;
     }
+    #${WATCH_BAR_ID} .caf-clean-watch-meta {
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-bid { color: #8cffb0; font-weight: 700; }
     #${WATCH_BAR_ID} .caf-clean-watch-time { color: #ffcf70; }
     #${WATCH_BAR_ID} .caf-clean-watch-empty {
       padding: 4px;
@@ -1218,13 +1249,17 @@
     const timeHtml = item.endsAtMs
       ? `<span class="caf-clean-watch-time caf-clean-countdown" data-prefix="Est. " data-ends-at="${Number(item.endsAtMs)}">Est. ${escapeHtml(countdownText(item.endsAtMs))}</span>`
       : `<span class="caf-clean-watch-time">Time unknown</span>`;
+    const updateUrl = watchUpdateUrl(item);
 
     return `
-      <button class="caf-clean-watch-item${removeMode ? " is-remove-mode" : ""}" data-watch-id="${escapeAttr(item.id)}" title="${escapeAttr(removeMode ? `Remove ${item.name}` : `Open ${item.name} on its saved auction page`)}">
-        <span class="caf-clean-watch-thumb ${escapeAttr(item.color)}">${safeImage}</span>
-        <span class="caf-clean-watch-name">${escapeHtml(item.name)}${buyNowBadgeHtml(item.bid)}</span>
-        ${timeHtml}
-      </button>
+      <div class="caf-clean-watch-entry">
+        <button class="caf-clean-watch-item${removeMode ? " is-remove-mode" : ""}" data-watch-id="${escapeAttr(item.id)}" title="${escapeAttr(removeMode ? `Remove ${item.name}` : `Open ${item.name} on its saved auction page`)}">
+          <span class="caf-clean-watch-thumb ${escapeAttr(item.color)}">${safeImage}</span>
+          <span class="caf-clean-watch-name">${escapeHtml(item.name)}${buyNowBadgeHtml(item.bid)}</span>
+          <span class="caf-clean-watch-meta"><span class="caf-clean-watch-bid">${escapeHtml(item.bid > 0 ? money(item.bid) : "Bid ?")}</span> · ${timeHtml}</span>
+        </button>
+        <a class="caf-clean-watch-update" data-watch-id="${escapeAttr(item.id)}" href="${escapeAttr(updateUrl)}" aria-disabled="${removeMode ? "true" : "false"}" title="Update ${escapeAttr(item.name)} from its visible Torn auction listing">Update</a>
+      </div>
     `;
   }
 
@@ -1320,15 +1355,56 @@
         navigateToWatchedItem(watched);
       });
     });
+
+    bar.querySelectorAll(".caf-clean-watch-update").forEach(link => {
+      link.addEventListener("click", event => {
+        event.stopPropagation();
+        if (!isActiveView() || localStorage.getItem(WATCH_REMOVE_MODE_KEY) === "true") {
+          event.preventDefault();
+          return;
+        }
+
+        const id = link.dataset.watchId || "";
+        const watched = loadWatchList().find(item => item.id === id);
+        if (!watched) {
+          event.preventDefault();
+          return;
+        }
+
+        queueWatchedItemTarget(watched, true);
+        const targetStart = auctionStartFromUrl(safeAuctionUrl(watched.sourceUrl, watched.sourceStart));
+        const currentStart = auctionStartFromUrl(location.href);
+        if (isAuctionPage() && Number.isFinite(targetStart) && targetStart === currentStart) {
+          event.preventDefault();
+          schedulePendingWatchLocate(0);
+          setStatus(`Checking ${watched.name} against the visible Torn listing now.`);
+          return;
+        }
+
+        link.href = watchUpdateUrl(watched);
+        setStatus(`Opening ${watched.name}'s saved Torn page to refresh its watched bid.`);
+      });
+    });
+  }
+
+  function watchUpdateUrl(item) {
+    const url = new URL(safeAuctionUrl(item?.sourceUrl, item?.sourceStart), location.origin);
+    url.searchParams.set("rfcv", String(Date.now()));
+    return url.href;
+  }
+
+  function queueWatchedItemTarget(item, updateRequested = false) {
+    localStorage.setItem(WATCH_TARGET_KEY, JSON.stringify({
+      ...item,
+      updateRequested: !!updateRequested,
+      requestedAt: Date.now()
+    }));
   }
 
   function navigateToWatchedItem(item) {
     if (!isActiveView()) return;
     const targetUrl = safeAuctionUrl(item.sourceUrl, item.sourceStart);
-    localStorage.setItem(WATCH_TARGET_KEY, JSON.stringify({
-      ...item,
-      requestedAt: Date.now()
-    }));
+    queueWatchedItemTarget(item, false);
 
     if (isAuctionPage() && targetUrl === location.href) {
       schedulePendingWatchLocate(0);
@@ -1376,19 +1452,25 @@
     if (found) {
       const list = loadWatchList();
       const existingIndex = list.findIndex(item => item.id === target.id);
+      const previousBid = existingIndex >= 0 ? Number(list[existingIndex].bid || 0) : 0;
+      const visibleBid = Number(found.item.bid || 0);
+      let refreshedBid = previousBid;
       if (existingIndex >= 0) {
-        cardById.set(target.id, found.card);
-        const refreshed = watchSnapshot({
-          ...found.item,
-          id: target.id,
-          sourceUrl: location.href,
-          sourceStart: auctionStartFromUrl(location.href) || 0,
-          observedAt: Date.now(),
-          imageDataUrl: list[existingIndex].imageDataUrl
-        });
-        refreshed.imageDataUrl = refreshed.imageDataUrl || list[existingIndex].imageDataUrl || "";
-        list[existingIndex] = refreshed;
-        saveWatchList(list);
+        if (visibleBid > 0) {
+          cardById.set(target.id, found.card);
+          const refreshed = watchSnapshot({
+            ...found.item,
+            id: target.id,
+            sourceUrl: location.href,
+            sourceStart: auctionStartFromUrl(location.href) || 0,
+            observedAt: Date.now(),
+            imageDataUrl: list[existingIndex].imageDataUrl
+          });
+          refreshed.imageDataUrl = refreshed.imageDataUrl || list[existingIndex].imageDataUrl || "";
+          list[existingIndex] = refreshed;
+          refreshedBid = Number(refreshed.bid || 0);
+          saveWatchList(list);
+        }
       }
 
       localStorage.removeItem(WATCH_TARGET_KEY);
@@ -1404,7 +1486,17 @@
       }, 3500);
       renderWatchBar();
       syncWatchButtons();
-      setStatus(`Located ${target.name} on its saved Torn page and refreshed its visible snapshot.`);
+      if (target.updateRequested) {
+        if (visibleBid <= 0) {
+          setStatus(`Located ${target.name}, but its live bid was not readable. The saved bid was not changed.`, true);
+        } else if (previousBid > 0 && previousBid === refreshedBid) {
+          setStatus(`Updated ${target.name}: watched bid confirmed at ${money(refreshedBid)}.`);
+        } else {
+          setStatus(`Updated ${target.name}: watched bid ${previousBid > 0 ? money(previousBid) : "unknown"} → ${money(refreshedBid)}.`);
+        }
+      } else {
+        setStatus(`Located ${target.name} on its saved Torn page and refreshed its visible snapshot.`);
+      }
       return;
     }
 
