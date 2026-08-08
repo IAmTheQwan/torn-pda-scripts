@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.19.0
+// @version      1.20.0
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -100,6 +100,7 @@
   const BUY_NOW_THRESHOLD = 25_000_000;
   const COLLECTION_CAPTURE_POLL_MS = 250;
   const COLLECTION_CAPTURE_STABLE_MS = 400;
+  const TORN_AUCTION_PAGE_SIZE = 10;
   const MARKET_LOAD_RUNWAY_LIFETIME_MS = 3000;
   let collectionCaptureTimer = null;
   let watchLocateTimer = null;
@@ -1463,9 +1464,10 @@
   function loadCollection() {
     try {
       const collection = JSON.parse(localStorage.getItem(COLLECTION_KEY) || "null");
-      return collection && Array.isArray(collection.pages) && Array.isArray(collection.items)
-        ? collection
-        : null;
+      if (!collection || !Array.isArray(collection.pages) || !Array.isArray(collection.items)) return null;
+      const normalized = normalizeSavedCollection(collection);
+      if (normalized.changed) localStorage.setItem(COLLECTION_KEY, JSON.stringify(normalized.collection));
+      return normalized.collection;
     } catch {
       return null;
     }
@@ -1500,6 +1502,58 @@
     return `${location.pathname}${location.search}${location.hash}|${collectionContentKey(items)}`;
   }
 
+  function normalizeSavedCollection(collection) {
+    const seenContentKeys = new Set();
+    const pageNumberMap = new Map();
+    const pages = [];
+    let duplicatePages = 0;
+
+    collection.pages.forEach((page, index) => {
+      const contentKey = String(page.contentKey || "");
+      if (contentKey && seenContentKeys.has(contentKey)) {
+        duplicatePages += 1;
+        return;
+      }
+      if (contentKey) seenContentKeys.add(contentKey);
+      const oldNumber = Number(page.number || index + 1);
+      const newNumber = pages.length + 1;
+      pageNumberMap.set(oldNumber, newNumber);
+      pages.push({ ...page, number: newNumber });
+    });
+
+    const items = collection.items.filter(item => {
+      const collectedPage = Number(item.collectedPage || 0);
+      return !collectedPage || pageNumberMap.has(collectedPage);
+    }).map(item => {
+      const collectedPage = Number(item.collectedPage || 0);
+      const mappedCollectedPage = pageNumberMap.get(collectedPage) || collectedPage;
+      const mappedLastSeenPage = pageNumberMap.get(Number(item.lastSeenPage || 0)) || mappedCollectedPage;
+      return {
+        ...item,
+        collectedPage: mappedCollectedPage,
+        lastSeenPage: mappedLastSeenPage
+      };
+    });
+    const invalidStatsCount = items.filter(item =>
+      !(Number(item.damage || 0) > 0 || Number(item.accuracy || 0) > 0)
+    ).length;
+    const changed = duplicatePages > 0
+      || Number(collection.invalidStatsCount || 0) !== invalidStatsCount;
+    if (!changed) return { collection, changed: false };
+
+    return {
+      changed: true,
+      collection: {
+        ...collection,
+        pages,
+        items,
+        lastContentKey: pages[pages.length - 1]?.contentKey || "",
+        repairedDuplicatePages: Number(collection.repairedDuplicatePages || 0) + duplicatePages,
+        invalidStatsCount
+      }
+    };
+  }
+
   function updateCollectionControls() {
     const collection = loadCollection();
     const button = document.getElementById("caf-clean-collector-toggle");
@@ -1523,9 +1577,14 @@
     button.textContent = collection.active ? "Stop & Keep Results" : "Start New Collection";
     captureButton.textContent = collection.pending ? "Capture Loaded Page Now" : "Capture Current Page";
     captureButton.disabled = !collection.active;
-    progress.textContent = collection.active
-      ? `${count}/${collection.target} page(s) collected — ${collection.pending ? "waiting for the manually selected page to finish loading; tap Capture Loaded Page Now if it is already visible" : "tap Torn's native Next or page-number control"}.`
-      : `${count}/${collection.target} page(s) saved — ${collection.items.length} unique item(s).`;
+    const repairNotes = [];
+    if (collection.repairedDuplicatePages) repairNotes.push(`${collection.repairedDuplicatePages} false duplicate page(s) removed`);
+    if (collection.invalidStatsCount) repairNotes.push(`${collection.invalidStatsCount} old item(s) lack stats; start a new collection`);
+    const repairText = repairNotes.length ? ` Warning: ${repairNotes.join("; ")}.` : "";
+    progress.textContent = (collection.active
+      ? `${count}/${collection.target} verified page(s) — ${collection.pending ? "waiting for a new complete ten-card page with stats; manual capture is only a fallback" : "tap Torn's native Next or page-number control"}.`
+      : `${count}/${collection.target} verified page(s) saved — ${collection.items.length} unique item(s).`)
+      + repairText;
   }
 
   function auctionCards() {
@@ -1624,19 +1683,24 @@
   }
 
   function parseCard(card, index) {
-    const ariaElement = card.matches("[aria-label*='Damage:']")
-      ? card
-      : card.querySelector("[aria-label*='Damage:']");
+    const ariaElement = [card, ...card.querySelectorAll("[aria-label]")].find(element => {
+      const label = element?.getAttribute?.("aria-label") || "";
+      return /Damage:\s*[\d.]+/i.test(label) && /Accuracy:\s*[\d.]+/i.test(label);
+    });
     const rawLabel = ariaElement?.getAttribute("aria-label") || "";
     const text = String(card.innerText || "");
-    const source = `${rawLabel}\n${text}`;
+    const html = card.outerHTML || "";
+    const source = `${rawLabel}\n${text}\n${html}`;
+    const labelValues = [...card.querySelectorAll("[class*='label-value']")]
+      .map(element => numberFrom(element.textContent))
+      .filter(value => value !== null);
 
-    const damage = numberFrom((source.match(/Damage:\s*([\d.]+)/i) || [])[1]) || 0;
-    const accuracy = numberFrom((source.match(/Accuracy:\s*([\d.]+)/i) || [])[1]) || 0;
+    const damage = numberFrom((source.match(/Damage:\s*([\d.]+)/i) || [])[1]) ?? labelValues[0] ?? 0;
+    const accuracy = numberFrom((source.match(/Accuracy:\s*([\d.]+)/i) || [])[1]) ?? labelValues[1] ?? 0;
     const quality = numberFrom((source.match(/Quality:\s*([\d.]+)/i) || [])[1]);
     const bidMatch = source.match(/(?:current\s+bid|top\s+bid|bid)\s*[:\-]?\s*\$?([\d,]+)/i) || source.match(/\$([\d,]+)/);
     const bid = bidMatch ? Number(bidMatch[1].replace(/,/g, "")) : 0;
-    const bonuses = bonusDetails(`${source}\n${card.outerHTML || ""}`);
+    const bonuses = bonusDetails(source);
     const timeText = (source.match(/(?:time\s+left|ends?\s+in)\s*[:\-]?\s*([^\n]+)/i) || [])[1]?.trim() || "";
     const item = {
       name: cardName(card, rawLabel),
@@ -1813,13 +1877,39 @@
     setStatus("Filtered list cleared. Compiled results were kept.");
   }
 
-  function readCurrentPageItems() {
+  function auctionCardPageSets(cards, expectedPageSize = 0) {
+    const pageSize = Math.max(1, Number(expectedPageSize || Math.min(TORN_AUCTION_PAGE_SIZE, cards.length)));
+    if (cards.length <= pageSize) return cards.length ? [cards] : [];
+    const pages = [];
+    for (let index = 0; index < cards.length; index += pageSize) {
+      pages.push(cards.slice(index, index + pageSize));
+    }
+    return pages;
+  }
+
+  function readCurrentPageItems({
+    excludeContentKeys = [],
+    expectedPageSize = 0,
+    requireExpectedSize = false
+  } = {}) {
+    const cards = auctionCards();
+    const excluded = new Set(excludeContentKeys || []);
+    const candidates = auctionCardPageSets(cards, expectedPageSize)
+      .map(pageCards => ({
+        cards: pageCards,
+        items: pageCards.map((card, index) => parseCard(card, index))
+      }))
+      .filter(candidate => !requireExpectedSize
+        || !expectedPageSize
+        || candidate.items.length >= Number(expectedPageSize));
+    const selected = [...candidates].reverse().find(candidate =>
+      !excluded.has(collectionContentKey(candidate.items))
+    );
+
     cardById.clear();
-    return auctionCards().map((card, index) => {
-      const item = parseCard(card, index);
-      cardById.set(item.id, card);
-      return item;
-    });
+    if (!selected) return [];
+    selected.items.forEach((item, index) => cardById.set(item.id, selected.cards[index]));
+    return selected.items;
   }
 
   function renderCompiledResults(
@@ -1964,17 +2054,27 @@
   function addPageToCollection(collection, items) {
     const contentKey = collectionContentKey(items);
     const pageKey = collectionPageKey(items);
+    const expectedPageSize = Number(collection.pageSize || 0);
+    const hasCompleteStats = items.length > 0 && items.every(item =>
+      Number(item.damage || 0) > 0 || Number(item.accuracy || 0) > 0
+    );
+    const duplicateContent = collection.pages.some(page => page.contentKey === contentKey);
 
-    if (!items.length || collection.pages.some(page => page.key === pageKey)) {
-      collection.pending = false;
-      collection.pendingAt = 0;
-      collection.pendingFromContentKey = "";
+    if (!items.length || !hasCompleteStats || duplicateContent || collection.pages.some(page => page.key === pageKey)
+      || (expectedPageSize && items.length < expectedPageSize)) {
       collection.pendingCandidateKey = "";
       collection.pendingCandidateAt = 0;
-      clearCollectionCaptureTimer();
       saveCollection(collection);
       updateCollectionControls();
-      setStatus("That page is already in this collection. Manually choose a different Torn page.", true);
+      const message = !items.length
+        ? "CAF cannot see a new complete auction page yet. Wait for Torn to finish rendering it."
+        : !hasCompleteStats
+          ? "CAF can see the cards, but Torn has not exposed their Damage/Accuracy stats yet. The page was not counted."
+          : expectedPageSize && items.length < expectedPageSize
+            ? `CAF can see only ${items.length} of the expected ${expectedPageSize} cards. The incomplete page was not counted.`
+            : "CAF still sees an auction page already in this collection. It was not counted again.";
+      setStatus(message, true);
+      if (collection.pending) schedulePendingCollectionCapture();
       return false;
     }
 
@@ -1996,6 +2096,7 @@
     });
 
     collection.items = [...merged.values()];
+    collection.pageSize = expectedPageSize || items.length;
     collection.pages.push({ key: pageKey, contentKey, number: pageNumber, capturedAt });
     collection.lastContentKey = contentKey;
     collection.pending = false;
@@ -2013,8 +2114,8 @@
     saveCollection(collection);
     renderCollection(collection);
     setStatus(collection.active
-      ? `Collected page ${pageNumber}/${collection.target}. Manually tap Torn's native Next or a page number.`
-      : `Collection complete: ${collection.pages.length} page(s), ${collection.items.length} unique item(s).`
+      ? `Verified page ${pageNumber}/${collection.target}: ${items.length} cards with stats. Manually tap Torn's native Next or a page number.`
+      : `Collection complete: ${collection.pages.length} verified page(s), ${collection.items.length} unique item(s) with stats.`
     );
     return true;
   }
@@ -2054,6 +2155,7 @@
       startedAt: Date.now(),
       pages: [],
       items: [],
+      pageSize: items.length,
       lastContentKey: "",
       pendingFromContentKey: "",
       pendingCandidateKey: "",
@@ -2073,9 +2175,14 @@
       return;
     }
 
-    const items = readCurrentPageItems();
+    const excludedContentKeys = collection.pages.map(page => page.contentKey).filter(Boolean);
+    const items = readCurrentPageItems({
+      excludeContentKeys: excludedContentKeys,
+      expectedPageSize: Number(collection.pageSize || TORN_AUCTION_PAGE_SIZE),
+      requireExpectedSize: true
+    });
     if (!items.length) {
-      setStatus("No visible auction cards are rendered yet. Wait for Torn to finish loading, then tap Capture Loaded Page Now again.", true);
+      setStatus("CAF still sees only an already captured or incomplete page. Wait for the new ten cards and their stats before capturing.", true);
       return;
     }
     addPageToCollection(collection, items);
@@ -2105,7 +2212,9 @@
       return true;
     }
 
-    const currentItems = readCurrentPageItems();
+    const currentItems = readCurrentPageItems({
+      expectedPageSize: Number(collection.pageSize || TORN_AUCTION_PAGE_SIZE)
+    });
     const currentContentKey = collectionContentKey(currentItems);
     const currentLocationPrefix = `${location.pathname}${location.search}${location.hash}|`;
     const lastPageKey = collection.pages[collection.pages.length - 1]?.key || "";
@@ -2204,7 +2313,12 @@
     const collection = loadCollection();
     if (!collection?.active || !collection.pending || !isActiveView()) return;
 
-    const items = readCurrentPageItems();
+    const excludedContentKeys = collection.pages.map(page => page.contentKey).filter(Boolean);
+    const items = readCurrentPageItems({
+      excludeContentKeys: excludedContentKeys,
+      expectedPageSize: Number(collection.pageSize || TORN_AUCTION_PAGE_SIZE),
+      requireExpectedSize: true
+    });
     const contentKey = collectionContentKey(items);
     const previousContentKey = collection.pendingFromContentKey || collection.lastContentKey;
     if (!items.length || contentKey === previousContentKey) {
