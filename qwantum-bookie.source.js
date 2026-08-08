@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.11.0
+// @version      1.12.0
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -88,6 +88,8 @@
     const FOOTBALL_AUTO_SCORE_INTERVAL_MS = 10 * 60 * 1000;
     const FOOTBALL_ACTIVE_FIXTURE_WINDOW_MS = 4 * 60 * 60 * 1000;
     const API_FOOTBALL_MIN_REQUEST_GAP_MS = 6200;
+    const FOOTBALL_AUTO_SCORE_CYCLE_KEY = 'tbp_football_auto_score_cycle';
+    const FOOTBALL_AUTO_SCORE_AUDIT_KEY = 'tbp_football_auto_score_audit';
     const SPORTSDB_REQUEST_TIMES_KEY = 'tbp_sportsdb_request_times';
     const SPORTSDB_MIN_REQUEST_GAP_MS = 2100;
     const SPORTSDB_MINUTE_LIMIT = 30;
@@ -764,6 +766,21 @@
             && Boolean(footballScoreApiKey);
     }
 
+    function loadFootballAutoScoreAudit() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(FOOTBALL_AUTO_SCORE_AUDIT_KEY) || '[]');
+            return Array.isArray(parsed) ? parsed : [];
+        } catch {
+            return [];
+        }
+    }
+
+    function recordFootballAutoScoreAudit(entry) {
+        const audit = loadFootballAutoScoreAudit();
+        audit.push(entry);
+        localStorage.setItem(FOOTBALL_AUTO_SCORE_AUDIT_KEY, JSON.stringify(audit.slice(-20)));
+    }
+
     function scheduleFootballAutoScores(delayMs = 1000) {
         if (footballAutoScoreTimer) clearTimeout(footballAutoScoreTimer);
         footballAutoScoreTimer = null;
@@ -792,8 +809,18 @@
             return;
         }
 
+        const cycleStartedAt = now.getTime();
+        const previousCycleAt = Number(localStorage.getItem(FOOTBALL_AUTO_SCORE_CYCLE_KEY) || 0);
+        const remainingCycleWait = FOOTBALL_AUTO_SCORE_INTERVAL_MS - (cycleStartedAt - previousCycleAt);
+        if (previousCycleAt && remainingCycleWait > 0) {
+            scheduleFootballAutoScores(remainingCycleWait);
+            return;
+        }
+        localStorage.setItem(FOOTBALL_AUTO_SCORE_CYCLE_KEY, String(cycleStartedAt));
+
         const activeFixtures = getActiveApiFootballFixtures(now.getTime());
         if (!activeFixtures.length) {
+            recordFootballAutoScoreAudit({ cycleStartedAt, activeFixtures: 0, requests: 0, requestTimes: [] });
             scheduleFootballAutoScores(FOOTBALL_AUTO_SCORE_INTERVAL_MS);
             return;
         }
@@ -802,6 +829,7 @@
         const scoreMatches = loadFootballScoreMatches();
         let checked = 0;
         let firstError = '';
+        const requestTimes = [];
         try {
             for (let index = 0; index < activeFixtures.length; index++) {
                 if (loadFootballScoreUsage().remaining <= 0) {
@@ -809,6 +837,7 @@
                     break;
                 }
                 const entry = activeFixtures[index];
+                requestTimes.push(Date.now());
                 const result = await requestFootballFixtureById(entry.fixtureId);
                 if (result.error || !result.fixture) {
                     firstError ||= result.error || `API-Football returned no fixture for ${entry.fixtureId}.`;
@@ -822,6 +851,12 @@
             }
             saveFootballScoreMatches(scoreMatches);
             const usage = loadFootballScoreUsage();
+            recordFootballAutoScoreAudit({
+                cycleStartedAt,
+                activeFixtures: activeFixtures.length,
+                requests: requestTimes.length,
+                requestTimes
+            });
             lastLoadStatus = firstError
                 ? `Auto scores checked ${checked}/${activeFixtures.length} active game${activeFixtures.length === 1 ? '' : 's'}. ${firstError}`
                 : `Auto scores checked ${checked} active game${checked === 1 ? '' : 's'}. ${usage.remaining}/${usage.limit} API-Football calls remain today.`;
@@ -838,7 +873,21 @@
         if (!footballScoreApiKey) return 'Add an API-Football key to start automatic checks.';
         const activeCount = getActiveApiFootballFixtures().length;
         const nextText = footballAutoScoreNextAt ? new Date(footballAutoScoreNextAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'pending';
-        return `${activeCount} active mapped game${activeCount === 1 ? '' : 's'} now. Next check: ${nextText}.`;
+        const lastAudit = loadFootballAutoScoreAudit().slice(-1)[0];
+        const lastText = lastAudit?.cycleStartedAt
+            ? new Date(lastAudit.cycleStartedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })
+            : 'none yet';
+        return `${activeCount} active mapped game${activeCount === 1 ? '' : 's'} now. Last cycle: ${lastText}; next: ${nextText}.`;
+    }
+
+    function footballAutoScoreAuditText() {
+        const lastAudit = loadFootballAutoScoreAudit().slice(-1)[0];
+        if (!lastAudit) return 'No automatic cycle has run yet.';
+        const requestTimes = Array.isArray(lastAudit.requestTimes) ? lastAudit.requestTimes : [];
+        const times = requestTimes.map(timestamp => new Date(timestamp).toLocaleTimeString([], {
+            hour: 'numeric', minute: '2-digit', second: '2-digit'
+        }));
+        return `${lastAudit.activeFixtures || 0} active fixture${lastAudit.activeFixtures === 1 ? '' : 's'}; ${lastAudit.requests || 0} request${lastAudit.requests === 1 ? '' : 's'}${times.length ? ` at ${times.join(', ')}` : ''}.`;
     }
 
     async function checkOpenBetScores() {
@@ -995,8 +1044,16 @@
     function getFixtureStatsCategory(fixture, betOdds = 0) {
         if (!fixture) return '';
         const market = String(fixture.market || '').replace(/\s+/g, ' ').trim();
-        if (market && !/^3-Way Ordinary time$/i.test(market)) return 'non3way';
-        const selection = normalizeScoreTeamName(fixture.placedSelection || fixture.recommendedSelection);
+        const isThreeWay = !market || /^3-Way Ordinary time$/i.test(market);
+        const isHalfGoalHandicap = /^Asian Handicap 0(?:[.,]5) Ordinary time(?:\s+due to start.*)?$/i.test(market);
+        if (!isThreeWay && !isHalfGoalHandicap) return 'non3way';
+        const rawSelection = String(fixture.placedSelection || fixture.recommendedSelection || '').trim();
+        const selectionHandicapMatch = rawSelection.match(/\(\s*([+-]?\d+(?:[.,]\d+)?)\s*\)\s*$/);
+        const placedHandicap = fixture.placedHandicap !== null && fixture.placedHandicap !== undefined && Number.isFinite(Number(fixture.placedHandicap))
+            ? Number(fixture.placedHandicap)
+            : selectionHandicapMatch ? Number(selectionHandicapMatch[1].replace(',', '.')) : NaN;
+        if (isHalfGoalHandicap && (!Number.isFinite(placedHandicap) || Math.abs(placedHandicap + 0.5) > 0.001)) return 'non3way';
+        const selection = normalizeScoreTeamName(rawSelection.replace(/\s*\([^)]*\)\s*$/, ''));
         const home = normalizeScoreTeamName(fixture.homeTeam);
         const away = normalizeScoreTeamName(fixture.awayTeam);
         if (fixture.matchType === 'home-green' && selection && selection === home) return 'green';
@@ -1023,6 +1080,7 @@
             homeTeam: fixture.homeTeam || existing.homeTeam || '',
             awayTeam: fixture.awayTeam || existing.awayTeam || '',
             placedSelection: fixture.placedSelection || fixture.recommendedSelection || existing.placedSelection || '',
+            placedHandicap: fixture.placedHandicap !== null && fixture.placedHandicap !== undefined && Number.isFinite(Number(fixture.placedHandicap)) ? Number(fixture.placedHandicap) : existing.placedHandicap,
             market: fixture.market || existing.market || '',
             startTimestamp: Number(fixture.startTimestamp || existing.startTimestamp || 0),
             placedAt: Number(placedAt || existing.placedAt || 0),
@@ -1508,6 +1566,42 @@
         }) || null;
     }
 
+    function getHalfGoalAsianHandicapMarket(item) {
+        return Array.from(item.querySelectorAll('.info-wrap ul.bets-wrap')).find(wrap => {
+            const name = String(wrap.querySelector('.market-name-cell .bold')?.textContent || '')
+                .replace(/\s+/g, ' ')
+                .trim();
+            return /^Asian Handicap 0(?:[.,]5) Ordinary time(?:\s+due to start.*)?$/i.test(name);
+        }) || null;
+    }
+
+    function getMarketName(market) {
+        return String(market?.querySelector('.market-name-cell .bold')?.textContent || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function getHalfGoalHandicapRows(market) {
+        return Array.from(market?.querySelectorAll(':scope > li.bets') || []).map(row => {
+            const rawSelection = String(row.querySelector('.bet-cell.result')?.textContent || '').replace(/\s+/g, ' ').trim();
+            const handicapMatch = rawSelection.match(/\(\s*([+-]?\d+(?:[.,]\d+)?)\s*\)\s*$/);
+            return {
+                row,
+                rawSelection,
+                selection: rawSelection.replace(/\s*\([^)]*\)\s*$/, '').trim(),
+                handicap: handicapMatch ? Number(handicapMatch[1].replace(',', '.')) : NaN,
+                odds: parseDecimalMultiplier(row.querySelector('.bet-cell.odds.decimal')?.textContent)
+            };
+        }).filter(entry => entry.selection && Number.isFinite(entry.handicap) && entry.odds);
+    }
+
+    function getMinusHalfOdds(item, teamName) {
+        const team = normalizeScoreTeamName(teamName);
+        return getHalfGoalHandicapRows(getHalfGoalAsianHandicapMarket(item)).find(entry => {
+            return Math.abs(entry.handicap + 0.5) < 0.001 && normalizeScoreTeamName(entry.selection) === team;
+        }) || null;
+    }
+
     function escapeHtml(value) {
         return String(value ?? '')
             .replace(/&/g, '&amp;')
@@ -1560,11 +1654,11 @@
 
     function createColorStatCategories() {
         return {
-            green: { key: 'green', label: 'Green Home', rule: `Home Win Odds: ${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}-${FOOTBALL_HOME_ODDS_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
-            yellow: { key: 'yellow', label: 'Yellow Home', rule: `Home Win Odds: ${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}-${(FOOTBALL_HOME_GREEN_MIN - 0.01).toFixed(2)}`, wins: 0, losses: 0, net: 0 },
-            orange: { key: 'orange', label: 'Orange Away', rule: `Away Win Odds: ${FOOTBALL_AWAY_ODDS_MIN.toFixed(2)}-${FOOTBALL_AWAY_ODDS_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
-            other: { key: 'other', label: 'All Other 3-Way Bets', rule: 'Captured 3-Way bets outside the colored ranges', wins: 0, losses: 0, net: 0 },
-            non3way: { key: 'non3way', label: 'Other / Non-3-Way Bets', rule: 'Other markets, sports, or bets without captured 3-Way details', wins: 0, losses: 0, net: 0 }
+            green: { key: 'green', label: 'Green Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}-${FOOTBALL_HOME_ODDS_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+            yellow: { key: 'yellow', label: 'Yellow Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}-${(FOOTBALL_HOME_GREEN_MIN - 0.01).toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+            orange: { key: 'orange', label: 'Orange Away', rule: `Best Away Win / -0.5 Odds: ${FOOTBALL_AWAY_ODDS_MIN.toFixed(2)}-${FOOTBALL_AWAY_ODDS_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+            other: { key: 'other', label: 'All Other Win Bets', rule: 'Captured 3-Way or equivalent -0.5 bets outside the colored ranges', wins: 0, losses: 0, net: 0 },
+            non3way: { key: 'non3way', label: 'Other / Non-Equivalent Bets', rule: 'Other markets, sports, +0.5 handicaps, or bets without captured details', wins: 0, losses: 0, net: 0 }
         };
     }
 
@@ -2010,12 +2104,21 @@
         const home = rows.find(entry => entry.selection.toLowerCase() === details.homeTeam.toLowerCase());
         const away = rows.find(entry => entry.selection.toLowerCase() === details.awayTeam.toLowerCase());
         const draw = rows.find(entry => /^(draw|tie)$/i.test(entry.selection));
+        const homeMinusHalf = getMinusHalfOdds(item, details.homeTeam);
+        const awayMinusHalf = getMinusHalfOdds(item, details.awayTeam);
+        const homeBestOdds = Math.max(Number(home?.odds || 0), Number(homeMinusHalf?.odds || 0));
+        const awayBestOdds = Math.max(Number(away?.odds || 0), Number(awayMinusHalf?.odds || 0));
         const recommendedSelection = matchType?.startsWith('home-')
             ? details.homeTeam
             : matchType === 'away-orange' ? details.awayTeam : '';
         const recommendedOdds = matchType?.startsWith('home-')
-            ? Number(home?.odds || 0)
-            : matchType === 'away-orange' ? Number(away?.odds || 0) : 0;
+            ? homeBestOdds
+            : matchType === 'away-orange' ? awayBestOdds : 0;
+        const recommendedMarket = matchType?.startsWith('home-')
+            ? (Number(homeMinusHalf?.odds || 0) > Number(home?.odds || 0) ? 'Asian Handicap 0.5 Ordinary time' : '3-Way Ordinary time')
+            : matchType === 'away-orange'
+                ? (Number(awayMinusHalf?.odds || 0) > Number(away?.odds || 0) ? 'Asian Handicap 0.5 Ordinary time' : '3-Way Ordinary time')
+                : '';
 
         const record = {
             ...details,
@@ -2023,12 +2126,15 @@
             homeOdds: Number(home?.odds || 0),
             drawOdds: Number(draw?.odds || 0),
             awayOdds: Number(away?.odds || 0),
+            homeMinusHalfOdds: Number(homeMinusHalf?.odds || 0),
+            awayMinusHalfOdds: Number(awayMinusHalf?.odds || 0),
             reviewedAt: Date.now()
         };
         if (matchType) {
             record.matchType = matchType;
             record.recommendedSelection = recommendedSelection;
             record.recommendedOdds = recommendedOdds;
+            record.recommendedMarket = recommendedMarket;
         }
         return saveFootballFixtureRecord(record);
     }
@@ -2041,12 +2147,23 @@
 
     function captureManualFootballBet(item, row, market) {
         const href = location.hash;
-        const fixture = captureReviewedFootballFixture(item, href, market, null);
+        const threeWayMarket = getThreeWayMarket(item);
+        const fixture = captureReviewedFootballFixture(item, href, threeWayMarket, null);
         if (!fixture) return;
-        const selection = String(row.querySelector('.bet-cell.result')?.textContent || '').replace(/\s+/g, ' ').trim();
+        const rawSelection = String(row.querySelector('.bet-cell.result')?.textContent || '').replace(/\s+/g, ' ').trim();
+        const handicapMatch = rawSelection.match(/\(\s*([+-]?\d+(?:[.,]\d+)?)\s*\)\s*$/);
+        const selection = rawSelection.replace(/\s*\([^)]*\)\s*$/, '').trim();
         const odds = parseDecimalMultiplier(row.querySelector('.bet-cell.odds.decimal')?.textContent);
         const betClicks = Array.isArray(fixture.betClicks) ? [...fixture.betClicks] : [];
-        betClicks.push({ selection, odds, stake: parseVisibleStake(row), clickedAt: Date.now() });
+        betClicks.push({
+            selection,
+            rawSelection,
+            market: getMarketName(market),
+            handicap: handicapMatch ? Number(handicapMatch[1].replace(',', '.')) : null,
+            odds,
+            stake: parseVisibleStake(row),
+            clickedAt: Date.now()
+        });
         return saveFootballFixtureRecord({ ...fixture, betClicks });
     }
 
@@ -2438,6 +2555,8 @@
             return {
                 ...best.fixture,
                 placedSelection: best.click.selection,
+                placedHandicap: best.click.handicap,
+                market: best.click.market || best.fixture.market,
                 linkedClickAt: best.click.clickedAt,
                 linkedBy: 'bet-click'
             };
@@ -2451,7 +2570,9 @@
             [
                 { selection: fixture.homeTeam, odds: fixture.homeOdds },
                 { selection: 'Draw', odds: fixture.drawOdds },
-                { selection: fixture.awayTeam, odds: fixture.awayOdds }
+                { selection: fixture.awayTeam, odds: fixture.awayOdds },
+                { selection: fixture.homeTeam, odds: fixture.homeMinusHalfOdds, handicap: -0.5, market: 'Asian Handicap 0.5 Ordinary time' },
+                { selection: fixture.awayTeam, odds: fixture.awayMinusHalfOdds, handicap: -0.5, market: 'Asian Handicap 0.5 Ordinary time' }
             ].forEach(candidate => {
                 if (!candidate.selection || !Number(candidate.odds || 0)) return;
                 if (Math.abs(Number(candidate.odds) - Number(odds || 0)) > 0.011) return;
@@ -2461,7 +2582,7 @@
 
         const uniqueCandidates = Array.from(new Map(
             retroCandidates.map(candidate => [
-                `${candidate.fixture.gameId}:${candidate.selection.toLowerCase()}`,
+                `${candidate.fixture.gameId}:${candidate.selection.toLowerCase()}:${candidate.market || '3way'}:${candidate.handicap ?? ''}`,
                 candidate
             ])
         ).values());
@@ -2471,15 +2592,18 @@
         return {
             ...retro.fixture,
             placedSelection: retro.selection,
+            placedHandicap: retro.handicap,
+            market: retro.market || retro.fixture.market,
             linkedBy: 'unique-reviewed-odds'
         };
     }
 
     function getReviewedOddsForFixtureSelection(fixture) {
-        const selection = String(fixture?.placedSelection || '').trim().toLowerCase();
+        const selection = String(fixture?.placedSelection || '').replace(/\s*\([^)]*\)\s*$/, '').trim().toLowerCase();
         if (!selection) return 0;
-        if (selection === String(fixture.homeTeam || '').trim().toLowerCase()) return Number(fixture.homeOdds || 0);
-        if (selection === String(fixture.awayTeam || '').trim().toLowerCase()) return Number(fixture.awayOdds || 0);
+        const isMinusHalf = Math.abs(Number(fixture.placedHandicap) + 0.5) < 0.001;
+        if (selection === String(fixture.homeTeam || '').trim().toLowerCase()) return Number(isMinusHalf ? fixture.homeMinusHalfOdds : fixture.homeOdds || 0);
+        if (selection === String(fixture.awayTeam || '').trim().toLowerCase()) return Number(isMinusHalf ? fixture.awayMinusHalfOdds : fixture.awayOdds || 0);
         if (/^(draw|tie)$/i.test(selection)) return Number(fixture.drawOdds || 0);
         return 0;
     }
@@ -2535,8 +2659,11 @@
         }
 
         let recorded = 0;
-        const rows = Array.from(market.querySelectorAll(':scope > li.bets')).filter(row => {
-            return row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal');
+        const comparisonMarkets = [market, getHalfGoalAsianHandicapMarket(item)].filter(Boolean);
+        const rows = comparisonMarkets.flatMap(comparisonMarket => {
+            return Array.from(comparisonMarket.querySelectorAll(':scope > li.bets')).filter(row => {
+                return row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal');
+            });
         });
 
         rows.forEach(row => {
@@ -2592,10 +2719,25 @@
         if (pendingFootballOddsTimeout) clearTimeout(pendingFootballOddsTimeout);
         if (pendingFootballOddsSettleTimeout) clearTimeout(pendingFootballOddsSettleTimeout);
 
+        let additionalMarketsRequestedAt = 0;
+
         const tryRecord = () => {
             const item = findFootballItemForHref(href);
             const info = item?.querySelector('.info-wrap');
             if (!item?.classList.contains('active') || info?.style?.display === 'none' || !getThreeWayMarket(item)) return false;
+            const needsComparisonMarkets = footballScanEnabled || guidedFootballSession.active;
+            const additionalMarketsControl = Array.from(item.querySelectorAll('a, button')).find(control => {
+                return /show(?:\s+\d+)?\s+additional betting options/i.test(String(control.textContent || '').replace(/\s+/g, ' ').trim());
+            });
+            if (needsComparisonMarkets && additionalMarketsControl && !additionalMarketsRequestedAt) {
+                additionalMarketsRequestedAt = Date.now();
+                additionalMarketsControl.click();
+                setTimeout(scheduleRecord, 1100);
+                return false;
+            }
+            if (additionalMarketsRequestedAt
+                && !getHalfGoalAsianHandicapMarket(item)
+                && Date.now() - additionalMarketsRequestedAt < 900) return false;
             if (footballOddsHistoryEnabled) recordFootballOddsForItem(item, href);
             if (footballScanEnabled || guidedFootballSession.active) {
                 const scanResult = scanFootballItem(item, href);
@@ -2677,8 +2819,18 @@
             || row.querySelector('input.amount')?.value === 'Suspended';
         const homeOdds = parseDecimalMultiplier(homeRow.querySelector('.bet-cell.odds.decimal')?.textContent);
         const awayOdds = parseDecimalMultiplier(awayRow.querySelector('.bet-cell.odds.decimal')?.textContent);
-        const homeAvailable = Boolean(homeOdds) && !rowIsSuspended(homeRow);
-        const awayAvailable = Boolean(awayOdds) && !rowIsSuspended(awayRow);
+        const homeMinusHalf = getMinusHalfOdds(item, homeName);
+        const awayMinusHalf = getMinusHalfOdds(item, awayName);
+        const homeThreeWayAvailable = Boolean(homeOdds) && !rowIsSuspended(homeRow);
+        const awayThreeWayAvailable = Boolean(awayOdds) && !rowIsSuspended(awayRow);
+        const homeMinusHalfAvailable = Boolean(homeMinusHalf?.odds) && !rowIsSuspended(homeMinusHalf.row);
+        const awayMinusHalfAvailable = Boolean(awayMinusHalf?.odds) && !rowIsSuspended(awayMinusHalf.row);
+        const homeBestOdds = Math.max(homeThreeWayAvailable ? homeOdds : 0, homeMinusHalfAvailable ? homeMinusHalf.odds : 0);
+        const awayBestOdds = Math.max(awayThreeWayAvailable ? awayOdds : 0, awayMinusHalfAvailable ? awayMinusHalf.odds : 0);
+        const homeUsesMinusHalf = homeMinusHalfAvailable && Number(homeMinusHalf.odds) > Number(homeThreeWayAvailable ? homeOdds : 0);
+        const awayUsesMinusHalf = awayMinusHalfAvailable && Number(awayMinusHalf.odds) > Number(awayThreeWayAvailable ? awayOdds : 0);
+        const homeAvailable = Boolean(homeBestOdds);
+        const awayAvailable = Boolean(awayBestOdds);
         if (!homeAvailable && !awayAvailable) return { scanned: 0, matched: 0, matchType: null };
 
         item.classList.remove(
@@ -2692,18 +2844,24 @@
         let matchType = null;
         let badgeText = '';
         let badgeTitle = '';
-        if (homeAvailable && homeOdds >= FOOTBALL_HOME_GREEN_MIN && homeOdds <= FOOTBALL_HOME_ODDS_MAX) {
+        if (homeAvailable && homeBestOdds >= FOOTBALL_HOME_GREEN_MIN && homeBestOdds <= FOOTBALL_HOME_ODDS_MAX) {
             matchType = 'home-green';
-            badgeText = `HOME x${homeOdds.toFixed(2)}`;
-            badgeTitle = `${homeName} — 3-Way Ordinary time`;
-        } else if (homeAvailable && homeOdds >= FOOTBALL_HOME_YELLOW_MIN && homeOdds < FOOTBALL_HOME_GREEN_MIN) {
+            badgeText = `HOME ${homeUsesMinusHalf ? '-0.5 ' : ''}x${homeBestOdds.toFixed(2)}`;
+            badgeTitle = homeUsesMinusHalf
+                ? `${homeName} -0.5 — +${(homeBestOdds - Number(homeOdds || 0)).toFixed(2)} versus 3-Way`
+                : `${homeName} — 3-Way Ordinary time`;
+        } else if (homeAvailable && homeBestOdds >= FOOTBALL_HOME_YELLOW_MIN && homeBestOdds < FOOTBALL_HOME_GREEN_MIN) {
             matchType = 'home-yellow';
-            badgeText = `HOME x${homeOdds.toFixed(2)}`;
-            badgeTitle = `${homeName} — 3-Way Ordinary time`;
-        } else if (awayAvailable && awayOdds >= FOOTBALL_AWAY_ODDS_MIN && awayOdds <= FOOTBALL_AWAY_ODDS_MAX) {
+            badgeText = `HOME ${homeUsesMinusHalf ? '-0.5 ' : ''}x${homeBestOdds.toFixed(2)}`;
+            badgeTitle = homeUsesMinusHalf
+                ? `${homeName} -0.5 — +${(homeBestOdds - Number(homeOdds || 0)).toFixed(2)} versus 3-Way`
+                : `${homeName} — 3-Way Ordinary time`;
+        } else if (awayAvailable && awayBestOdds >= FOOTBALL_AWAY_ODDS_MIN && awayBestOdds <= FOOTBALL_AWAY_ODDS_MAX) {
             matchType = 'away-orange';
-            badgeText = `AWAY x${awayOdds.toFixed(2)}`;
-            badgeTitle = `${awayName || 'Away team'} — 3-Way Ordinary time`;
+            badgeText = `AWAY ${awayUsesMinusHalf ? '-0.5 ' : ''}x${awayBestOdds.toFixed(2)}`;
+            badgeTitle = awayUsesMinusHalf
+                ? `${awayName || 'Away team'} -0.5 — +${(awayBestOdds - Number(awayOdds || 0)).toFixed(2)} versus 3-Way`
+                : `${awayName || 'Away team'} — 3-Way Ordinary time`;
         }
 
         captureReviewedFootballFixture(item, href, market, matchType);
@@ -3057,6 +3215,7 @@
                 <div style="font-weight:bold; font-size:13px; margin-bottom:2px;">${escapeHtml(fixture.homeTeam)} v ${escapeHtml(fixture.awayTeam)}</div>
                 ${fixture.competition ? `<div class="tbp-muted" style="margin-bottom:7px;">${escapeHtml(fixture.competition)}</div>` : ''}
                 <div class="tbp-row"><span>Pick</span><span>${escapeHtml(fixture.placedSelection || fixture.recommendedSelection || 'Names captured manually')}</span></div>
+                ${(fixture.market || fixture.recommendedMarket) ? `<div class="tbp-row"><span>Market</span><span>${escapeHtml(fixture.placedSelection ? fixture.market : fixture.recommendedMarket || fixture.market)}</span></div>` : ''}
                 ${fixture.linkedBy === 'unique-reviewed-odds' ? '<div class="tbp-muted" style="margin-bottom:5px;">Auto-matched from uniquely matching reviewed odds</div>' : ''}
                 ${fixture.startTimestamp ? `<div class="tbp-row"><span>Kickoff</span><span>${escapeHtml(formatDate(Math.floor(fixture.startTimestamp / 1000)))}</span></div>` : ''}
                 ${footballScoreEnabled ? `<div style="margin:8px 0 3px; padding:7px 8px; background:#172633; border:1px solid #3b82a8; border-radius:4px;"><div class="tbp-row" style="margin-top:0;"><span style="font-weight:bold; color:#7fc8f1;">Score</span><span class="${footballScoreClass}" style="font-size:13px;">${escapeHtml(footballScoreText)}</span></div></div>` : ''}
@@ -3261,7 +3420,7 @@ ${safeJson(log.raw)}
                     <input type="checkbox" id="tbp-football-scan-enabled" ${footballScanEnabled ? 'checked' : ''}>
                 </div>
                 <div class="tbp-muted" style="margin-top:7px;">
-                    Highlights 3-Way Ordinary time fixtures by straight-win odds: yellow for home x${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}–x${(FOOTBALL_HOME_GREEN_MIN - 0.01).toFixed(2)}, green for home x${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}–x${FOOTBALL_HOME_ODDS_MAX.toFixed(2)}, and orange for away x${FOOTBALL_AWAY_ODDS_MIN.toFixed(2)}–x${FOOTBALL_AWAY_ODDS_MAX.toFixed(2)}.
+                    Compares each 3-Way straight win with the same team's full-match Asian Handicap -0.5 when Torn offers it, then highlights the better equivalent payout: yellow for home x${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}–x${(FOOTBALL_HOME_GREEN_MIN - 0.01).toFixed(2)}, green for home x${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}–x${FOOTBALL_HOME_ODDS_MAX.toFixed(2)}, and orange for away x${FOOTBALL_AWAY_ODDS_MIN.toFixed(2)}–x${FOOTBALL_AWAY_ODDS_MAX.toFixed(2)}. +0.5 is never treated as equivalent.
                 </div>
             </div>
 
@@ -3307,6 +3466,7 @@ ${safeJson(log.raw)}
                 <div class="tbp-muted" style="margin-bottom:7px;">
                     At or after ${String(footballScoreDayStartHour).padStart(2, '0')}:00 local time, only mapped fixtures whose kickoff window is active are requested. Two active games use two calls; no active games use zero. Press Check Scores once after placing a new bet so its fixture ID is mapped. Automatic checks run only while Torn PDA keeps this page and script alive.
                 </div>
+                ${footballAutoScoreEnabled && footballScoreProvider === 'api-football' ? `<div class="tbp-muted" style="margin-bottom:7px;"><strong>Cycle audit:</strong> ${escapeHtml(footballAutoScoreAuditText())}</div>` : ''}
                 <div class="tbp-summary-grid" style="margin-top:7px; margin-bottom:7px;">
                     <div class="tbp-summary-box"><div class="tbp-summary-label">${footballScoreProvider === 'sportsdb' ? 'Used This Minute' : 'Requests Used'}</div><div class="tbp-summary-value">${footballScoreProvider === 'sportsdb' ? sportsDbUsage.used : scoreUsage.used}</div></div>
                     <div class="tbp-summary-box"><div class="tbp-summary-label">Remaining</div><div class="tbp-summary-value ${(footballScoreProvider === 'sportsdb' ? sportsDbUsage.remaining : scoreUsage.remaining) <= 10 ? 'tbp-loss' : 'tbp-win'}">${footballScoreProvider === 'sportsdb' ? `${sportsDbUsage.remaining} / ${sportsDbUsage.limit}` : `${scoreUsage.remaining} / ${scoreUsage.limit}`}</div></div>
@@ -3690,9 +3850,12 @@ document.addEventListener('click', async e => {
         const marketName = String(market.querySelector('.market-name-cell .bold')?.textContent || '')
             .replace(/\s+/g, ' ')
             .trim();
-        if (!/^3-Way Ordinary time$/i.test(marketName)) return;
+        if (!/^3-Way Ordinary time$/i.test(marketName)
+            && !/^Asian Handicap 0(?:[.,]5) Ordinary time(?:\s+due to start.*)?$/i.test(marketName)) return;
         if (!row.querySelector('.bet-cell.result') || !row.querySelector('.bet-cell.odds.decimal')) return;
         const selection = String(row.querySelector('.bet-cell.result')?.textContent || '').replace(/\s+/g, ' ').trim();
+        if (/^Asian Handicap 0(?:[.,]5) Ordinary time(?:\s+due to start.*)?$/i.test(marketName)
+            && !/\(\s*-0(?:[.,]5)\s*\)\s*$/.test(selection)) return;
         const odds = parseDecimalMultiplier(row.querySelector('.bet-cell.odds.decimal')?.textContent);
         const captured = captureManualFootballBet(item, row, market);
         if (!captured) return;
