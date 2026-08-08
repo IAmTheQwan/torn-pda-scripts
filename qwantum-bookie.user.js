@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.2.4
+// @version      1.2.5
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -32,6 +32,7 @@
     let activeTab = localStorage.getItem('tbp_active_tab') || 'open';
     let isMinimized = JSON.parse(localStorage.getItem('tbp_minimized') || 'false');
     let showDebug = JSON.parse(localStorage.getItem('tbp_show_debug') || 'false');
+    let footballScanEnabled = JSON.parse(localStorage.getItem('tbp_football_scan_enabled') || 'false');
 
     let batches = JSON.parse(localStorage.getItem('tbp_batches') || '[]');
     let selectedBatchId = localStorage.getItem('tbp_selected_batch_id') || '';
@@ -51,11 +52,15 @@
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
     const API_PAGE_DELAY_MS = 1100;
+    const FOOTBALL_HOME_ODDS_MIN = 1.3;
+    const FOOTBALL_HOME_ODDS_MAX = 1.7;
 
     const styles = `
         #tbp-container { position:fixed; top:20px; right:20px; width:390px; background:#1a1a1a; color:#eee; border:1px solid #444; z-index:999999!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
         #tbp-container.minimized { width:38px; height:38px; cursor:pointer; display:flex; align-items:center; justify-content:center; background:#007bff; border:1px solid #0056b3; border-radius:4px; font-weight:bold; font-size:20px; }
         .tbp-header { background:#252525; padding:10px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #333; }
+        .tbp-header-title { display:flex; align-items:center; gap:8px; }
+        .tbp-scan-btn { padding:4px 7px; font-size:10px; background:#705b00; color:#fff; border:1px solid #a98a00; }
         .tbp-tabs { display:flex; background:#222; border-bottom:1px solid #333; }
         .tbp-tab { flex:1; padding:10px 3px; text-align:center; cursor:pointer; font-size:9px; text-transform:uppercase; color:#888; }
         .tbp-tab.active { background:#333; border-bottom:2px solid #007bff; color:#fff; font-weight:bold; }
@@ -80,6 +85,8 @@
         .tbp-debug { font-size:10px; color:#bbb; white-space:pre-wrap; word-break:break-word; background:#111; border:1px solid #333; padding:6px; border-radius:4px; margin-top:6px; }
         .tbp-btn-row { display:flex; gap:6px; margin-top:8px; }
         .tbp-btn-row .tbp-btn { flex:1; }
+        li.tbp-football-match > a > ul.pop-game { background:rgba(40,167,69,.2)!important; box-shadow:inset 4px 0 0 #28a745; }
+        .tbp-football-badge { display:inline-block; margin-left:7px; padding:2px 5px; border-radius:3px; background:#28a745; color:#fff; font-size:10px; font-weight:bold; vertical-align:middle; }
     `;
 
     const styleSheet = document.createElement('style');
@@ -98,6 +105,7 @@
         localStorage.setItem('tbp_active_tab', activeTab);
         localStorage.setItem('tbp_minimized', JSON.stringify(isMinimized));
         localStorage.setItem('tbp_show_debug', JSON.stringify(showDebug));
+        localStorage.setItem('tbp_football_scan_enabled', JSON.stringify(footballScanEnabled));
         localStorage.setItem('tbp_batches', JSON.stringify(batches));
         localStorage.setItem('tbp_selected_batch_id', selectedBatchId);
     }
@@ -631,6 +639,103 @@
         render();
     }
 
+    function isFootballBookiePage() {
+        try {
+            const params = new URLSearchParams(location.search);
+            return location.pathname === '/page.php'
+                && params.get('sid') === 'bookie'
+                && /^#\/football(?:\/|$)/i.test(location.hash);
+        } catch {
+            return false;
+        }
+    }
+
+    function clearFootballHighlights() {
+        document.querySelectorAll('li.tbp-football-match').forEach(item => {
+            item.classList.remove('tbp-football-match');
+        });
+        document.querySelectorAll('.tbp-football-badge').forEach(badge => badge.remove());
+    }
+
+    function parseDecimalMultiplier(value) {
+        const match = String(value || '').match(/x\s*([\d.]+)/i);
+        return match ? Number(match[1]) : 0;
+    }
+
+    function scanLoadedFootballGames() {
+        clearFootballHighlights();
+
+        if (!footballScanEnabled) {
+            return { error: 'Enable Football home-odds scanning in Settings first.' };
+        }
+        if (!isFootballBookiePage()) {
+            return { error: 'Open the Football section of Torn Bookie before scanning.' };
+        }
+        if (document.visibilityState !== 'visible') {
+            return { error: 'The Football page must be visible while scanning.' };
+        }
+
+        let scanned = 0;
+        let matched = 0;
+
+        document.querySelectorAll('li.c-pointer').forEach(item => {
+            if (item.classList.contains('disabled')) return;
+
+            const sport = String(item.querySelector('li.game')?.title || '').trim().toLowerCase();
+            if (sport && sport !== 'football') return;
+
+            const matchElement = item.querySelector('.matchName p, .pop-game .name p');
+            const matchTitle = String(matchElement?.title || matchElement?.textContent || '').replace(/\s+/g, ' ').trim();
+            if (!matchTitle) return;
+
+            const homeName = String(
+                matchElement.querySelector('b')?.textContent
+                || matchTitle.split(/\s+v\s+/i)[0]
+                || ''
+            ).replace(/\s+/g, ' ').trim();
+
+            const market = Array.from(item.querySelectorAll('.info-wrap ul.bets-wrap')).find(wrap => {
+                const name = String(wrap.querySelector('.market-name-cell .bold')?.textContent || '')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                const rows = wrap.querySelectorAll(':scope > li.bets .bet-cell.result');
+                return /^3-Way Ordinary time$/i.test(name) && rows.length === 3;
+            });
+            if (!market) return;
+
+            const rows = Array.from(market.querySelectorAll(':scope > li.bets')).filter(row => {
+                return row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal');
+            });
+            if (rows.length !== 3) return;
+
+            const homeRow = rows.find(row => {
+                const result = String(row.querySelector('.bet-cell.result')?.textContent || '')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                return result.toLowerCase() === homeName.toLowerCase();
+            }) || rows[0];
+
+            const suspended = homeRow.querySelector('.input-money-group')?.classList.contains('disabled')
+                || homeRow.querySelector('input.amount')?.value === 'Suspended';
+            const odds = parseDecimalMultiplier(homeRow.querySelector('.bet-cell.odds.decimal')?.textContent);
+            if (!odds || suspended) return;
+
+            scanned++;
+            if (odds < FOOTBALL_HOME_ODDS_MIN || odds > FOOTBALL_HOME_ODDS_MAX) return;
+
+            matched++;
+            item.classList.add('tbp-football-match');
+
+            const badge = document.createElement('span');
+            badge.className = 'tbp-football-badge';
+            badge.textContent = `HOME x${odds.toFixed(2)}`;
+            badge.title = `${homeName} — 3-Way Ordinary time`;
+            matchElement.appendChild(badge);
+        });
+
+        return { scanned, matched };
+    }
+
     function render() {
         if (isMinimized) {
             container.className = 'minimized';
@@ -650,7 +755,10 @@
 
         container.innerHTML = `
             <div class="tbp-header">
-                <strong>Bookie Panel</strong>
+                <div class="tbp-header-title">
+                    <strong>Bookie Panel</strong>
+                    ${footballScanEnabled ? '<button class="tbp-btn tbp-scan-btn" id="tbp-football-scan-btn">Scan Games</button>' : ''}
+                </div>
                 <button class="tbp-btn" id="tbp-hide-btn" style="background:transparent; color:#888;">_</button>
             </div>
 
@@ -897,6 +1005,16 @@ ${safeJson(log.raw)}
 
             <div class="tbp-card">
                 <div class="tbp-row">
+                    <span>Enable Football home-odds scan</span>
+                    <input type="checkbox" id="tbp-football-scan-enabled" ${footballScanEnabled ? 'checked' : ''}>
+                </div>
+                <div class="tbp-muted" style="margin-top:7px;">
+                    Adds a manual Scan Games button to the panel header. It highlights loaded Football fixtures whose home selection is x${FOOTBALL_HOME_ODDS_MIN.toFixed(2)}–x${FOOTBALL_HOME_ODDS_MAX.toFixed(2)} in the 3-Way Ordinary time market. Games are never opened automatically.
+                </div>
+            </div>
+
+            <div class="tbp-card">
+                <div class="tbp-row">
                     <span>Show Debug Tab</span>
                     <input type="checkbox" id="tbp-show-debug" ${showDebug ? 'checked' : ''}>
                 </div>
@@ -935,6 +1053,24 @@ ${safeJson(log.raw)}
             render();
         };
 
+        const footballScanBtn = document.getElementById('tbp-football-scan-btn');
+        if (footballScanBtn) {
+            footballScanBtn.onclick = () => {
+                const result = scanLoadedFootballGames();
+                if (result.error) {
+                    alert(result.error);
+                    return;
+                }
+
+                footballScanBtn.textContent = `${result.matched} found`;
+                footballScanBtn.title = result.scanned
+                    ? `Scanned ${result.scanned} loaded 3-Way Football fixture${result.scanned === 1 ? '' : 's'}.`
+                    : 'No loaded 3-Way markets found. Manually expand games, then scan again.';
+
+                if (!result.scanned) alert(footballScanBtn.title);
+            };
+        }
+
         document.getElementById('tbp-full-rescan-btn').onclick = async () => {
             if (!confirm(`Full rescan may request up to ${Math.min(maxPages, MAX_API_PAGES_PER_SCAN)} API pages. Continue?`)) return;
 
@@ -961,7 +1097,9 @@ ${safeJson(log.raw)}
                     MAX_API_PAGES_PER_SCAN
                 ));
                 showDebug = document.getElementById('tbp-show-debug').checked;
+                footballScanEnabled = document.getElementById('tbp-football-scan-enabled').checked;
                 saveData();
+                if (!footballScanEnabled) clearFootballHighlights();
                 await hydrateFromCache();
             };
         }
