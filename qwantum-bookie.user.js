@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.4.9
+// @version      1.5.0
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -893,24 +893,44 @@ const details = parseFootballFixtureTitle(matchTitle);
 const pendingBets = Array.from(link.querySelectorAll('.stick .text[title]'))
 .map(element => parsePendingMyBetTitle(element.title))
 .filter(Boolean);
-const match = pendingBets.find(candidate => {
+const exactMatch = pendingBets.find(candidate => {
 const stakeMatches = Math.abs(candidate.stake - Number(pending.stake || 0)) < 1;
 const oddsMatch = Math.abs(candidate.odds - Number(pending.odds || 0)) <= 0.011;
 return stakeMatches && oddsMatch;
 });
-if (!gameId || !details.homeTeam || !details.awayTeam || !match) {
-return { captured: false, inactive: false, reason: 'That My Bets game does not match the exact stake and odds of the armed bet.' };
+const stakeMatches = pendingBets.filter(candidate =>
+Math.abs(candidate.stake - Number(pending.stake || 0)) < 1
+);
+const oddsRanked = [...pendingBets].sort((a, b) =>
+Math.abs(a.odds - Number(pending.odds || 0)) - Math.abs(b.odds - Number(pending.odds || 0))
+);
+const closestIsUnique = oddsRanked.length === 1
+|| (oddsRanked.length > 1
+&& Math.abs(oddsRanked[0].odds - Number(pending.odds || 0))
+< Math.abs(oddsRanked[1].odds - Number(pending.odds || 0)));
+const match = exactMatch
+|| (stakeMatches.length === 1 ? stakeMatches[0] : null)
+|| (pendingBets.length === 1 ? pendingBets[0] : null)
+|| (closestIsUnique ? oddsRanked[0] : null);
+if (!gameId || !details.homeTeam || !details.awayTeam) {
+return { captured: false, inactive: false, reason: 'Club names were not visible in that My Bets game row.' };
 }
+const reviewedFixture = loadFootballFixtureRecords()
+.find(fixture => String(fixture.gameId) === String(gameId)) || {};
 saveManualBetLink(pending.betId, {
+...reviewedFixture,
 gameId,
 matchTitle,
 ...details,
-placedSelection: match.selection,
-market: match.market
+placedSelection: match?.selection || '',
+market: match?.market || '',
+myBetsOdds: Number(match?.odds || 0),
+apiOddsAtCapture: Number(pending.odds || 0),
+captureMatch: exactMatch ? 'exact' : match ? 'manual-relaxed' : 'names-only'
 });
 localStorage.removeItem(PENDING_MANUAL_CAPTURE_KEY);
 buildBookieData();
-return { captured: true, fixture: details, selection: match.selection };
+return { captured: true, fixture: details, selection: match?.selection || '' };
 }
 function showManualCaptureNotice(message, success = false) {
 document.getElementById('tbp-manual-capture-notice')?.remove();
@@ -921,9 +941,32 @@ notice.textContent = message;
 document.body.appendChild(notice);
 setTimeout(() => notice.remove(), 6000);
 }
+function handleManualCaptureResult(result) {
+if (result?.inactive) return;
+if (!result?.captured) {
+showManualCaptureNotice(result?.reason || 'Club names were not visible in that game row.');
+return;
+}
+lastLoadStatus = `Captured ${result.fixture.homeTeam} v ${result.fixture.awayTeam} for the armed bet.`;
+showManualCaptureNotice(result.selection
+? `${lastLoadStatus} Pick: ${result.selection}.`
+: `${lastLoadStatus} Club names saved; selection could not be identified uniquely.`, true);
+setTimeout(render, 0);
+}
+function captureArmedBetFromCurrentMyBetsRoute() {
+if (!getPendingManualCapture() || !/^#\/your-bets\/\d+$/i.test(location.hash)) return;
+setTimeout(() => {
+const link = document.querySelector(`a[href="${location.hash}"]`);
+if (link) handleManualCaptureResult(captureArmedBetFromMyBetsLink(link));
+}, 250);
+}
 function findFixtureForOpenBet(log, stake, odds) {
 const manual = loadManualBetLinks()[String(log.id)];
-if (manual) return manual;
+if (manual) {
+const reviewed = loadFootballFixtureRecords()
+.find(fixture => String(fixture.gameId) === String(manual.gameId)) || {};
+return { ...reviewed, ...manual };
+}
 const placedAt = Number(log.timestamp || 0) * 1000;
 const fixtures = loadFootballFixtureRecords();
 let best = null;
@@ -971,6 +1014,14 @@ return {
 placedSelection: retro.selection,
 linkedBy: 'unique-reviewed-odds'
 };
+}
+function getReviewedOddsForFixtureSelection(fixture) {
+const selection = String(fixture?.placedSelection || '').trim().toLowerCase();
+if (!selection) return 0;
+if (selection === String(fixture.homeTeam || '').trim().toLowerCase()) return Number(fixture.homeOdds || 0);
+if (selection === String(fixture.awayTeam || '').trim().toLowerCase()) return Number(fixture.awayOdds || 0);
+if (/^(draw|tie)$/i.test(selection)) return Number(fixture.drawOdds || 0);
+return 0;
 }
 function getPendingFootballBetCaptures() {
 const now = Date.now();
@@ -1449,10 +1500,19 @@ const row = document.createElement('div');
 row.className = 'tbp-card';
 const fixture = b.fixture;
 const isCaptureArmed = pendingManual?.betId === String(b.id);
+const reviewedOdds = getReviewedOddsForFixtureSelection(fixture);
+const reviewedOddsDelta = reviewedOdds ? reviewedOdds - Number(b.odds || 0) : 0;
+const myBetsOdds = Number(fixture?.myBetsOdds || 0);
+const myBetsOddsDelta = myBetsOdds ? myBetsOdds - Number(b.odds || 0) : 0;
+const oddsComparison = reviewedOdds && Math.abs(reviewedOddsDelta) > 0.001 ? `
+<div class="tbp-row"><span>Last reviewed odds</span><span>x${num(reviewedOdds)} (${reviewedOddsDelta > 0 ? '+' : ''}${reviewedOddsDelta.toFixed(2)})</span></div>
+` : myBetsOdds && Math.abs(myBetsOddsDelta) > 0.001 ? `
+<div class="tbp-row"><span>My Bets odds</span><span>x${num(myBetsOdds)} (${myBetsOddsDelta > 0 ? '+' : ''}${myBetsOddsDelta.toFixed(2)})</span></div>
+` : '';
 const fixtureDetails = fixture ? `
 <div style="font-weight:bold; font-size:13px; margin-bottom:2px;">${escapeHtml(fixture.homeTeam)} v ${escapeHtml(fixture.awayTeam)}</div>
 ${fixture.competition ? `<div class="tbp-muted" style="margin-bottom:7px;">${escapeHtml(fixture.competition)}</div>` : ''}
-<div class="tbp-row"><span>Pick</span><span>${escapeHtml(fixture.placedSelection || fixture.recommendedSelection || '')}</span></div>
+<div class="tbp-row"><span>Pick</span><span>${escapeHtml(fixture.placedSelection || fixture.recommendedSelection || 'Names captured manually')}</span></div>
 ${fixture.linkedBy === 'unique-reviewed-odds' ? '<div class="tbp-muted" style="margin-bottom:5px;">Auto-matched from uniquely matching reviewed odds</div>' : ''}
 ${fixture.startTimestamp ? `<div class="tbp-row"><span>Kickoff</span><span>${escapeHtml(formatDate(Math.floor(fixture.startTimestamp / 1000)))}</span></div>` : ''}
 ` : `
@@ -1464,6 +1524,7 @@ ${fixtureDetails}
 <div class="tbp-row"><span>Date</span><span>${formatDate(b.timestamp)}</span></div>
 <div class="tbp-row"><span>Stake</span><span>${money(b.stake)}</span></div>
 <div class="tbp-row"><span>Odds</span><span>x${num(b.odds)}</span></div>
+${oddsComparison}
 <div class="tbp-row"><span>Potential Profit</span><span class="tbp-win">${money(b.potentialProfit)}</span></div>
 <div class="tbp-row"><span>Potential Return</span><span class="tbp-blue">${money(b.potentialReturn)}</span></div>
 <div class="tbp-row"><span>Bet names</span><button class="tbp-btn ${isCaptureArmed ? 'tbp-btn-danger' : ''} tbp-capture-btn" data-tbp-capture-bet-id="${escapeHtml(String(b.id))}">${isCaptureArmed ? 'Armed' : fixture ? 'Recapture' : 'Capture'}</button></div>
@@ -1885,15 +1946,7 @@ if (document.visibilityState !== 'visible' || !getPendingManualCapture()) return
 const target = event.target instanceof Element ? event.target : null;
 const link = target?.closest('a[href*="#/your-bets/"]');
 if (!link) return;
-const result = captureArmedBetFromMyBetsLink(link);
-if (result.inactive) return;
-if (!result.captured) {
-showManualCaptureNotice(result.reason || 'That game does not match the armed bet.');
-return;
-}
-lastLoadStatus = `Captured ${result.fixture.homeTeam} v ${result.fixture.awayTeam} for the armed bet.`;
-showManualCaptureNotice(`${lastLoadStatus} Pick: ${result.selection}.`, true);
-setTimeout(render, 0);
+handleManualCaptureResult(captureArmedBetFromMyBetsLink(link));
 }, true);
 document.addEventListener('click', event => {
 if (!guidedFootballSession.active || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
@@ -1932,6 +1985,7 @@ return;
 scheduleGuidedFootballHighlightRestore();
 }
 window.addEventListener('hashchange', handleFootballReviewRouteChange);
+window.addEventListener('hashchange', captureArmedBetFromCurrentMyBetsRoute);
 window.addEventListener('popstate', handleFootballReviewRouteChange);
 document.addEventListener('visibilitychange', () => {
 if (!guidedFootballSession.active) return;
