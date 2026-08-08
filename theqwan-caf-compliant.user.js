@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.9.0
+// @version      1.9.1
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -538,6 +538,15 @@
       box-sizing: border-box;
     }
     #${MARKET_PANEL_ID} button:disabled { color: #777; opacity: .75; }
+    #${MARKET_PANEL_ID} .caf-clean-market-double {
+      grid-column: 1 / -1;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-double.is-active {
+      color: #171117;
+      background: #d8b4fe;
+      border-color: #e9d5ff;
+      font-weight: 800;
+    }
     #${MARKET_PANEL_ID} .caf-clean-market-disclosure {
       margin-top: 7px;
       color: #999;
@@ -2374,7 +2383,8 @@
       bonusMin: "",
       bonusMax: "",
       historyCount: 25,
-      matchBonuses: true
+      matchBonuses: true,
+      doubleOnly: false
     };
   }
 
@@ -2398,7 +2408,8 @@
       bonusMin: panel.querySelector("#caf-clean-market-bonus-min")?.value || "",
       bonusMax: panel.querySelector("#caf-clean-market-bonus-max")?.value || "",
       historyCount: Number(panel.querySelector("#caf-clean-market-history-count")?.value || 25),
-      matchBonuses: !!panel.querySelector("#caf-clean-market-match-bonuses")?.checked
+      matchBonuses: !!panel.querySelector("#caf-clean-market-match-bonuses")?.checked,
+      doubleOnly: panel.querySelector("#caf-clean-market-double")?.dataset.active === "true"
     };
   }
 
@@ -2406,6 +2417,15 @@
     const current = marketSettingsFromControls();
     localStorage.setItem(MARKET_SETTINGS_KEY, JSON.stringify(current));
     return current;
+  }
+
+  function setMarketDoubleOnlyButton(button, active) {
+    if (!button) return;
+    const isActive = !!active;
+    button.dataset.active = isActive ? "true" : "false";
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+    button.textContent = `Double bonuses only: ${isActive ? "ON" : "OFF"}`;
   }
 
   function setMarketStatus(message, isError = false) {
@@ -2578,6 +2598,7 @@
   function marketItemMatches(item, filter) {
     const bonusIds = (item.bonuses || []).map(bonus => String(bonus.id));
     return bonusIds.length > 0
+      && (!filter.doubleOnly || bonusIds.length >= 2)
       && (!filter.bonus1 || bonusIds.includes(String(filter.bonus1)))
       && (!filter.bonus2 || bonusIds.includes(String(filter.bonus2)))
       && itemMatchesBonusRange(item, filter.bonusMin, filter.bonusMax);
@@ -3042,7 +3063,8 @@
       const range = filter.bonusMin || filter.bonusMax
         ? ` in the ${filter.bonusMin || "0"}–${filter.bonusMax || "∞"}% range`
         : "";
-      setMarketStatus(`Showing ${matchCount} matching bonus listing(s)${range}; ${bonusCount} of ${rows.length} loaded listing(s) contain a parsed bonus.`);
+      const kind = filter.doubleOnly ? " double-bonus" : " bonus";
+      setMarketStatus(`Showing ${matchCount} matching${kind} listing(s)${range}; ${bonusCount} of ${rows.length} loaded listing(s) contain a parsed bonus.`);
     }
     return rows.filter(row => !row.classList.contains("caf-clean-market-hidden"));
   }
@@ -3088,6 +3110,7 @@
     panel.querySelector("#caf-clean-market-bonus-max").value = defaults.bonusMax;
     panel.querySelector("#caf-clean-market-history-count").value = String(defaults.historyCount);
     panel.querySelector("#caf-clean-market-match-bonuses").checked = defaults.matchBonuses;
+    setMarketDoubleOnlyButton(panel.querySelector("#caf-clean-market-double"), defaults.doubleOnly);
     localStorage.removeItem(MARKET_SETTINGS_KEY);
     marketRows().forEach(row => {
       clearMarketDeal(row);
@@ -3122,6 +3145,7 @@
         <label>Maximum bonus %<input id="caf-clean-market-bonus-max" type="number" min="0" step="0.01" placeholder="No maximum" value="${escapeAttr(current.bonusMax)}"></label>
         <label>History sales<select id="caf-clean-market-history-count">${[12, 25, 50, 100].map(count => `<option value="${count}" ${Number(current.historyCount) === count ? "selected" : ""}>${count}</option>`).join("")}</select></label>
         <label style="justify-content:flex-end"><span><input id="caf-clean-market-match-bonuses" type="checkbox" style="width:auto;min-height:auto" ${current.matchBonuses !== false ? "checked" : ""}> Match listing bonus types</span></label>
+        <button id="caf-clean-market-double" class="caf-clean-market-double ${current.doubleOnly ? "is-active" : ""}" data-active="${current.doubleOnly ? "true" : "false"}" aria-pressed="${current.doubleOnly ? "true" : "false"}">Double bonuses only: ${current.doubleOnly ? "ON" : "OFF"}</button>
         <button id="caf-clean-market-apply">Apply to Loaded Listings</button>
         <button id="caf-clean-market-analyze">Analyze Visible Deals</button>
         <button id="caf-clean-market-add-strong">Add All GOOD/STEAL</button>
@@ -3138,6 +3162,18 @@
     panel.querySelector("#caf-clean-market-analyze").addEventListener("click", analyzeVisibleMarketDeals);
     panel.querySelector("#caf-clean-market-add-strong").addEventListener("click", addAllStrongMarketDeals);
     panel.querySelector("#caf-clean-market-reset").addEventListener("click", resetMarketFilters);
+    panel.querySelector("#caf-clean-market-double").addEventListener("click", event => {
+      event.preventDefault();
+      const button = event.currentTarget;
+      const active = button.dataset.active !== "true";
+      setMarketDoubleOnlyButton(button, active);
+      if (active) {
+        panel.querySelector("#caf-clean-market-bonus1").value = "";
+        panel.querySelector("#caf-clean-market-bonus2").value = "";
+      }
+      saveMarketSettings();
+      applyMarketFilters();
+    });
     panel.querySelector("#caf-clean-market-picks-toggle").addEventListener("click", event => {
       event.preventDefault();
       const body = panel.querySelector("#caf-clean-market-picks-body");
