@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.8.0
+// @version      1.8.1
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -667,7 +667,11 @@
       display: inline-block;
     }
     .caf-clean-market-bonus-line {
-      display: block;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      flex-wrap: wrap;
       margin-top: 2px;
       color: #d8b4fe !important;
       font-size: 10px !important;
@@ -696,6 +700,17 @@
     .caf-clean-market-add.is-added {
       color: #111;
       background: #8cffb0;
+    }
+    .caf-clean-market-add.is-inline {
+      position: static;
+      z-index: auto;
+      display: inline-block;
+      min-width: 34px;
+      min-height: 18px;
+      padding: 1px 4px;
+      font-size: 8px;
+      line-height: 1.2;
+      vertical-align: middle;
     }
     .caf-clean-market-grid-card > .caf-clean-market-tools {
       display: none !important;
@@ -2476,6 +2491,7 @@
       "caf-clean-market-broad",
       "caf-clean-market-unknown"
     );
+    delete row.dataset.cafMarketDealState;
     row.querySelector(".caf-clean-market-deal-badge")?.remove();
     setMarketBonusDealIndicator(row, "UNKNOWN");
   }
@@ -2526,18 +2542,28 @@
       line.className = "caf-clean-market-bonus-line";
       target.appendChild(line);
     }
-    line.textContent = itemBonusText(item);
+    let text = line.querySelector(".caf-clean-market-bonus-line-text");
+    if (!text) {
+      text = document.createElement("span");
+      text.className = "caf-clean-market-bonus-line-text";
+      line.prepend(text);
+    }
+    text.textContent = itemBonusText(item);
     line.title = itemBonusText(item);
   }
 
   function ensureMarketAddButton(row, item) {
     const { holder } = marketImageHolder(row);
+    const inlineContainer = isMarketGridCard(row)
+      ? row.querySelector(".caf-clean-market-bonus-line")
+      : null;
+    const container = inlineContainer || holder;
     let button = row.querySelector(".caf-clean-market-add");
-    if (!holder || !item.bonuses?.length) {
+    if (!container || !item.bonuses?.length) {
       button?.remove();
       return;
     }
-    holder.classList.add("caf-clean-market-thumb");
+    if (holder) holder.classList.add("caf-clean-market-thumb");
     const itemId = String(item.id);
     if (button && button.dataset.itemId !== itemId) {
       button.remove();
@@ -2548,14 +2574,20 @@
       button.type = "button";
       button.className = "caf-clean-market-add";
       button.dataset.itemId = itemId;
+      container.appendChild(button);
+    }
+    if (!button.__cafCleanAddBound) {
+      button.__cafCleanAddBound = true;
       button.addEventListener("click", event => {
         event.preventDefault();
         event.stopPropagation();
-        const currentItem = marketItemByRow.get(row);
-        if (currentItem) toggleMarketPick(row, currentItem);
+        const currentRow = button.closest(MARKET_SELECTORS.gridTile) || button.closest(MARKET_SELECTORS.row);
+        const currentItem = currentRow ? marketItemByRow.get(currentRow) : null;
+        if (currentRow && currentItem) toggleMarketPick(currentRow, currentItem);
       });
-      holder.appendChild(button);
     }
+    if (button.parentElement !== container) container.appendChild(button);
+    button.classList.toggle("is-inline", container === inlineContainer);
     const added = marketPicks.has(itemId);
     button.classList.toggle("is-added", added);
     button.textContent = added ? "Added" : "+ Add";
@@ -2601,7 +2633,18 @@
   }
 
   function marketDealStateFromRow(row) {
-    return row.querySelector(".caf-clean-market-bonus-percent")?.dataset.dealState || "unknown";
+    if (row.dataset.cafMarketDealState) return row.dataset.cafMarketDealState;
+    const stateByClass = [
+      ["caf-clean-market-steal", "steal"],
+      ["caf-clean-market-good", "good"],
+      ["caf-clean-market-fair", "fair"],
+      ["caf-clean-market-high", "high"],
+      ["caf-clean-market-broad", "broad"],
+      ["caf-clean-market-unknown", "unknown"]
+    ].find(([className]) => row.classList.contains(className));
+    return stateByClass?.[1]
+      || row.querySelector(".caf-clean-market-bonus-percent")?.dataset.dealState
+      || "unknown";
   }
 
   function marketDealLabel(state) {
@@ -2618,7 +2661,7 @@
   function syncMarketAddButtons() {
     document.querySelectorAll(".caf-clean-market-add[data-item-id]").forEach(button => {
       const added = marketPicks.has(button.dataset.itemId);
-      const row = button.closest(MARKET_SELECTORS.gridCard) || button.closest(MARKET_SELECTORS.row);
+      const row = button.closest(MARKET_SELECTORS.gridTile) || button.closest(MARKET_SELECTORS.row);
       const item = row ? marketItemByRow.get(row) : null;
       button.classList.toggle("is-added", added);
       button.textContent = added ? "Added" : "+ Add";
@@ -2736,6 +2779,7 @@
     const item = marketItemByRow.get(row);
     if (!summary) {
       row.classList.add("caf-clean-market-unknown");
+      row.dataset.cafMarketDealState = "unknown";
       if (item) updateMarketPickDeal(item.id, "unknown");
       return;
     }
@@ -2746,6 +2790,7 @@
       badge.textContent = `BROAD ${summary.dealLabel}`;
       badge.title = "This is based on broader same-item history because no exact bonus match was found; the row is not highlighted as a deal.";
       row.classList.add("caf-clean-market-broad");
+      row.dataset.cafMarketDealState = "broad";
       setMarketBonusDealIndicator(row, summary.dealLabel, true);
       if (item) updateMarketPickDeal(item.id, "broad");
     } else {
@@ -2758,7 +2803,9 @@
         HIGH: "caf-clean-market-high"
       }[summary.dealLabel];
       if (rowClass) row.classList.add(rowClass);
-      if (item) updateMarketPickDeal(item.id, String(summary.dealLabel || "unknown").toLowerCase());
+      const dealState = String(summary.dealLabel || "unknown").toLowerCase();
+      row.dataset.cafMarketDealState = dealState;
+      if (item) updateMarketPickDeal(item.id, dealState);
     }
     if (head) head.prepend(badge);
   }
@@ -2806,6 +2853,12 @@
     let matchCount = 0;
 
     parsedRows.forEach(({ row, item }) => {
+      item.historySettings = {
+        count: filter.historyCount,
+        matchBonuses: filter.matchBonuses,
+        doubleOnly: false
+      };
+      marketItemByRow.set(row, item);
       ensureMarketBonusLine(row, item);
       ensureMarketBonusBadge(row, item);
       ensureMarketAddButton(row, item);
@@ -2823,12 +2876,6 @@
     }
 
     parsedRows.forEach(({ row, item }) => {
-      item.historySettings = {
-        count: filter.historyCount,
-        matchBonuses: filter.matchBonuses,
-        doubleOnly: false
-      };
-      marketItemByRow.set(row, item);
       row.classList.add("caf-clean-market-row");
       row.classList.toggle("caf-clean-market-grid-card", item.marketGridCard);
       const matches = marketItemMatches(item, filter);
