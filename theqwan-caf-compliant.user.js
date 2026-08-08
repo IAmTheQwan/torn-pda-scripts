@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.2.0
+// @version      1.3.0
 // @description  Foreground-only Auction House history and price guidance for the actively viewed page
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
@@ -76,6 +76,7 @@
     }
     #${PANEL_ID} button,
     #${PANEL_ID} select,
+    #${PANEL_ID} a.caf-clean-button,
     #${RESULTS_ID} button,
     .${ANALYSIS_CLASS} button {
       min-height: 34px;
@@ -85,6 +86,13 @@
       color: #8ecbff;
       padding: 6px;
       box-sizing: border-box;
+    }
+    #${PANEL_ID} a.caf-clean-button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      text-decoration: none;
     }
     #${PANEL_ID} button:disabled,
     #${RESULTS_ID} button:disabled,
@@ -116,6 +124,7 @@
       color: #ffcf70;
       line-height: 1.3;
     }
+    #caf-clean-next-page { grid-column: 1 / -1; }
     #${PANEL_ID} .caf-clean-disclosure {
       margin-top: 8px;
       color: #999;
@@ -714,15 +723,74 @@
       || /^(next|previous|prev|[›»‹«]|page\s+\d+)$/i.test(text);
   }
 
-  function markManualCollectionNavigation(event) {
+  function armCollectionForManualNavigation() {
     const collection = loadCollection();
-    if (!collection?.active || !isNativePaginationClick(event)) return;
+    if (!collection?.active) return false;
 
     collection.pending = true;
     collection.pendingAt = Date.now();
     saveCollection(collection);
     updateCollectionControls();
+    return true;
+  }
+
+  function markManualCollectionNavigation(event) {
+    if (!isNativePaginationClick(event) || !armCollectionForManualNavigation()) return;
     setStatus("Manual Torn navigation recognized. Waiting for the newly selected page to finish rendering.");
+    schedulePendingCollectionCapture();
+  }
+
+  function auctionStartFromUrl(value) {
+    try {
+      const url = new URL(value, location.href);
+      if (url.origin !== location.origin || url.pathname !== location.pathname) return null;
+      const start = new URLSearchParams(url.hash.replace(/^#/, "")).get("start");
+      return start === null ? null : Number(start);
+    } catch {
+      return null;
+    }
+  }
+
+  function nextTornPageUrl() {
+    const currentStart = auctionStartFromUrl(location.href) || 0;
+    const nativeCandidates = [...document.querySelectorAll("a[href]")]
+      .filter(link => !link.closest(`#${PANEL_ID}, #${RESULTS_ID}`))
+      .map(link => ({ href: link.href, start: auctionStartFromUrl(link.href) }))
+      .filter(candidate => Number.isFinite(candidate.start) && candidate.start > currentStart)
+      .sort((left, right) => left.start - right.start);
+
+    if (nativeCandidates.length) return nativeCandidates[0].href;
+
+    const url = new URL(location.href);
+    const hash = new URLSearchParams(url.hash.replace(/^#/, ""));
+    hash.set("start", String(currentStart + 10));
+    url.hash = hash.toString();
+    return url.href;
+  }
+
+  function prepareTopNextPage(event) {
+    if (!event.isTrusted || !isActiveView()) {
+      event.preventDefault();
+      setStatus("Keep the Auction House visible and tap Next Torn Page yourself.", true);
+      return;
+    }
+
+    const link = event.currentTarget;
+    link.href = nextTornPageUrl();
+    const armed = armCollectionForManualNavigation();
+    setStatus(armed
+      ? "Opening one Torn page from your tap. CAF will collect it after it finishes rendering."
+      : "Opening the next Torn page from your tap. Start Guided Collection first if you want it logged."
+    );
+  }
+
+  function updateTopNextPageLink() {
+    const link = document.getElementById("caf-clean-next-page");
+    if (link) link.href = nextTornPageUrl();
+  }
+
+  function handleAuctionPageChange() {
+    updateTopNextPageLink();
     schedulePendingCollectionCapture();
   }
 
@@ -1124,6 +1192,7 @@
           </select>
         </label>
         <button id="caf-clean-collector-toggle">Start Guided Collection</button>
+        <a id="caf-clean-next-page" class="caf-clean-button" href="#">Next Torn Page →</a>
         <div id="caf-clean-collection-progress"></div>
       </div>
       <div class="caf-clean-controls">
@@ -1145,6 +1214,7 @@
     panel.querySelector("#caf-clean-analyze").addEventListener("click", analyzeCurrentPage);
     panel.querySelector("#caf-clean-all-history").addEventListener("click", analyzeAllVisibleHistory);
     panel.querySelector("#caf-clean-collector-toggle").addEventListener("click", toggleGuidedCollection);
+    panel.querySelector("#caf-clean-next-page").addEventListener("click", prepareTopNextPage);
     panel.querySelector("#caf-clean-clear").addEventListener("click", clearAnalysis);
     panel.querySelector("#caf-clean-cache").addEventListener("click", () => {
       localStorage.removeItem(CACHE_KEY);
@@ -1153,12 +1223,13 @@
     panel.querySelectorAll("select, input").forEach(element => element.addEventListener("change", saveSettings));
 
     document.addEventListener("click", markManualCollectionNavigation, true);
-    window.addEventListener("hashchange", schedulePendingCollectionCapture);
+    window.addEventListener("hashchange", handleAuctionPageChange);
     window.addEventListener("focus", schedulePendingCollectionCapture);
     document.addEventListener("visibilitychange", schedulePendingCollectionCapture);
 
     const observer = new MutationObserver(schedulePendingCollectionCapture);
     observer.observe(document.body, { childList: true, subtree: true });
+    updateTopNextPageLink();
     restoreCollection();
   }
 
