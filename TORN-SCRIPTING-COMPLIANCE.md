@@ -41,6 +41,7 @@ API-only automation is allowed subject to the API's access, rate, data-handling,
 | Filtered results | Filter locally saved snapshots; make no Torn request. |
 | History | Send disclosed visible item details to the configured external history service; never send Torn credentials, cookies, or API keys. |
 | Item Market bonus filter | Read and filter only seller listings already rendered on the visible Item Market page; do not load other pages or hidden listings. |
+| Item Market grid matching | Observe the response from Torn's already-requested visible market load, keep it only in page memory, and use it only while that Item Market page is visible to match bonus data to rendered cards. Never create an additional Torn request or persist/repurpose the response. |
 | Item Market deal check | Begin only after the player taps a history/deal button. Compare the visible asking price with finished-sale history from the disclosed external service; make no extra request to Torn. |
 | Item Market deal colors | Treat colors as a price-only aid, not an appraisal or buying instruction. Do not highlight broader fallback history as an exact-match deal. |
 | Watch list | Add an item only from data already collected on a foreground Auction House page and store the snapshot locally. |

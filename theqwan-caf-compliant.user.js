@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.6.2
+// @version      1.7.0
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
 // @connect      btrmmuuoofbonmuwrkzg.supabase.co
+// @run-at       document-start
 // @license      MIT
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/caf4-compliant/theqwan-caf-compliant.meta.js
 // @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/caf4-compliant/theqwan-caf-compliant.user.js
@@ -36,6 +38,16 @@
   const SUPABASE_URL = "https://btrmmuuoofbonmuwrkzg.supabase.co";
   const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0cm1tdXVvb2Zib25tdXdya3pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg4NTEzMTgsImV4cCI6MjA4NDQyNzMxOH0.E-s0k46BORXLICAvxtEpqoM3Qmh4-TRLaJAwXO6wJTY";
   const MARKET_SELECTORS = {
+    root: "#item-market-root",
+    gridTile: "[class*='itemTile___']",
+    gridImageWrapper: "[class*='imageWrapper___']",
+    gridImage: "[class*='imageWrapper___'] img",
+    gridTitle: "div > [class*='title___']",
+    gridPrice: "[class*='priceAndTotal___'] span",
+    gridStats: "[class*='properties___']",
+    gridStat: "[class*='property___']",
+    gridStatIcon: "[class*='icon___']",
+    gridStatValue: "[class*='value___']",
     container: "[class*='sellerList___']",
     row: "[class*='rowWrapper___']",
     price: "[class*='price___']",
@@ -77,6 +89,7 @@
   const itemById = new Map();
   const cardById = new Map();
   const marketItemByRow = new WeakMap();
+  const marketResponseCache = new Map();
   let collectionCaptureTimer = null;
   let watchLocateTimer = null;
   let marketRefreshTimer = null;
@@ -595,6 +608,9 @@
     .caf-clean-market-bonus-value {
       display: inline-block;
     }
+    .caf-clean-market-grid-card > .caf-clean-market-tools {
+      display: none !important;
+    }
     .caf-clean-market-tools {
       display: block !important;
       flex: 1 0 100%;
@@ -637,7 +653,12 @@
       font-weight: 700;
     }
   `;
-  document.head.appendChild(style);
+  function mountStyle() {
+    const host = document.head || document.documentElement;
+    if (host && !style.isConnected) host.appendChild(style);
+  }
+  mountStyle();
+  if (!style.isConnected) document.addEventListener("readystatechange", mountStyle, { once: true });
 
   function isActiveView() {
     // Torn PDA webviews can report hasFocus() as false even while their page is
@@ -1883,7 +1904,9 @@
       quality_min: 0,
       quality_max: 200,
       __visibleLimit: current.count,
-      __targetBonusIds: current.matchBonuses ? item.bonuses.map(bonus => bonus.id) : [],
+      __targetBonusIds: current.matchBonuses
+        ? item.bonuses.map(bonus => Number(bonus.id)).filter(id => Number.isFinite(id) && id > 0)
+        : [],
       __forceDouble: current.doubleOnly
     };
 
@@ -2107,6 +2130,40 @@
     }
   }
 
+  function cacheVisibleMarketResponseItems(items) {
+    if (!Array.isArray(items)) return;
+    items.forEach((item, index) => {
+      if (!item || typeof item !== "object") return;
+      const key = String(item.listingID ?? item.listingId
+        ?? `${item.itemID ?? item.itemId ?? "item"}|${item.minPrice ?? item.price ?? 0}|${item.damage ?? 0}|${item.accuracy ?? 0}|${item.armor ?? item.armour ?? 0}|${index}`);
+      marketResponseCache.set(key, item);
+    });
+    while (marketResponseCache.size > 2500) {
+      marketResponseCache.delete(marketResponseCache.keys().next().value);
+    }
+    if (isActiveView()) scheduleMarketRefresh();
+  }
+
+  function installMarketFetchCapture() {
+    const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+    if (!pageWindow?.fetch || pageWindow.__cafCleanMarketFetchCapture) return;
+    const originalFetch = pageWindow.fetch;
+    pageWindow.__cafCleanMarketFetchCapture = true;
+    pageWindow.fetch = async function (...args) {
+      const response = await originalFetch.apply(this, args);
+      try {
+        const target = args[0];
+        const url = typeof target === "string" ? target : String(target?.url || target || "");
+        if (/sid=iMarket/i.test(url)) {
+          response.clone().json().then(data => {
+            cacheVisibleMarketResponseItems(data?.items);
+          }).catch(() => {});
+        }
+      } catch {}
+      return response;
+    };
+  }
+
   function defaultMarketSettings() {
     return {
       bonus1: "",
@@ -2157,15 +2214,83 @@
 
   function marketRows() {
     if (!isItemMarketPage()) return [];
-    return [...document.querySelectorAll(MARKET_SELECTORS.row)].filter(row =>
+    const sellerRows = [...document.querySelectorAll(MARKET_SELECTORS.row)].filter(row =>
       !row.closest(`#${MARKET_PANEL_ID}`)
       && !!row.querySelector(MARKET_SELECTORS.price)
     );
+    if (sellerRows.length) return sellerRows;
+
+    const root = document.querySelector(MARKET_SELECTORS.root) || document;
+    return [...root.querySelectorAll(MARKET_SELECTORS.gridTile)].filter(tile =>
+      !tile.closest(`#${MARKET_PANEL_ID}`)
+      && !!tile.querySelector(MARKET_SELECTORS.gridPrice)
+      && !!tile.querySelector(MARKET_SELECTORS.gridStats)
+    );
+  }
+
+  function isMarketGridCard(row) {
+    return row.matches(MARKET_SELECTORS.gridTile) && !!row.querySelector(MARKET_SELECTORS.gridStats);
+  }
+
+  function marketGridStats(row) {
+    const stats = { damage: 0, accuracy: 0, armor: 0 };
+    row.querySelectorAll(`${MARKET_SELECTORS.gridStats} ${MARKET_SELECTORS.gridStat}`).forEach(entry => {
+      const valueElement = entry.querySelector(MARKET_SELECTORS.gridStatValue);
+      const iconElement = entry.querySelector(MARKET_SELECTORS.gridStatIcon);
+      const value = numberFrom(valueElement?.textContent) || 0;
+      const type = `${valueElement?.getAttribute("aria-label") || ""} ${iconElement?.className || ""} ${entry.getAttribute("aria-label") || ""}`.toLowerCase();
+      if (type.includes("damage")) stats.damage = value;
+      else if (type.includes("accuracy")) stats.accuracy = value;
+      else if (type.includes("armor") || type.includes("armour")) stats.armor = value;
+    });
+    return stats;
+  }
+
+  function marketGridItemId(row) {
+    const image = row.querySelector(MARKET_SELECTORS.gridImage);
+    return (image?.src?.match(/\/images\/items\/(\d+)(?:\/|\.)/i) || [])[1] || "";
+  }
+
+  function sameMarketNumber(left, right) {
+    return Math.abs(Number(left || 0) - Number(right || 0)) < .011;
+  }
+
+  function matchMarketResponseItem(row, price, stats) {
+    if (!isMarketGridCard(row) || !marketResponseCache.size) return null;
+    const itemId = marketGridItemId(row);
+    const candidates = [...marketResponseCache.values()].filter(item =>
+      !itemId || String(item.itemID ?? item.itemId ?? "") === itemId
+    );
+    return candidates.find(item => {
+      const cachedPrice = Number(item.minPrice ?? item.price ?? 0);
+      if (cachedPrice !== Number(price || 0)) return false;
+      const armor = Number(item.armor ?? item.armour ?? 0);
+      if (armor > 0 || stats.armor > 0) return sameMarketNumber(armor, stats.armor);
+      return sameMarketNumber(item.damage, stats.damage)
+        && sameMarketNumber(item.accuracy, stats.accuracy);
+    }) || null;
+  }
+
+  function marketResponseBonuses(item) {
+    if (!Array.isArray(item?.bonuses)) return [];
+    return item.bonuses.map(bonus => {
+      const rawName = String(bonus?.title ?? bonus?.name ?? bonus?.bonus_name ?? "").trim();
+      const name = rawName || BONUS_NAMES[Number(bonus?.bonus_id)] || "Unknown bonus";
+      const id = Number(bonus?.bonus_id ?? bonus?.id ?? BONUS_IDS[name.toLowerCase()] ?? 0);
+      const valueSource = bonus?.value ?? bonus?.bonus_value;
+      const parsedValue = numberFrom(valueSource);
+      const descriptionValue = numberFrom((String(bonus?.description || "").match(/(\d+(?:\.\d+)?)\s*%/) || [])[1]);
+      return {
+        id,
+        name,
+        value: parsedValue === null ? descriptionValue : parsedValue
+      };
+    }).filter(bonus => bonus.name && bonus.name !== "Unknown bonus");
   }
 
   function marketListingSource(row) {
     const clone = row.cloneNode(true);
-    clone.querySelectorAll(".caf-clean-market-tools").forEach(element => element.remove());
+    clone.querySelectorAll(".caf-clean-market-tools, .caf-clean-market-bonus-percent").forEach(element => element.remove());
     const attributes = [...clone.querySelectorAll("[aria-label], [title], [data-item-name], [data-bonus], [data-bonus-name], [data-bonus-value]")]
       .flatMap(element => [
         element.getAttribute("aria-label"),
@@ -2180,11 +2305,15 @@
     return `${clone.innerText || clone.textContent || ""}\n${attributes}\n${clone.outerHTML || ""}`;
   }
 
-  function marketItemName(row, source) {
+  function marketItemName(row, source, cachedItem = null) {
     const explicit =
-      row.querySelector("[data-item-name]")?.getAttribute("data-item-name")
+      cachedItem?.itemName
+      || cachedItem?.name
+      || row.querySelector("[data-item-name]")?.getAttribute("data-item-name")
       || row.getAttribute("data-item-name")
       || row.querySelector(MARKET_SELECTORS.thumbnail)?.getAttribute("alt")
+      || row.querySelector(MARKET_SELECTORS.gridImage)?.getAttribute("alt")
+      || row.querySelector(MARKET_SELECTORS.gridTitle)?.textContent
       || document.querySelector(MARKET_SELECTORS.itemTitleName)?.textContent
       || "";
     const normalized = normalizeItemName(explicit);
@@ -2201,28 +2330,36 @@
 
   function parseMarketListing(row, index = 0) {
     const source = marketListingSource(row);
-    const priceText = row.querySelector(MARKET_SELECTORS.price)?.textContent || "";
+    const gridCard = isMarketGridCard(row);
+    const priceText = row.querySelector(gridCard ? MARKET_SELECTORS.gridPrice : MARKET_SELECTORS.price)?.textContent || "";
     const priceMatch = priceText.match(/\$?\s*([\d,]+(?:\.\d+)?)/) || source.match(/\$\s*([\d,]+(?:\.\d+)?)/);
     const price = priceMatch ? Number(String(priceMatch[1]).replace(/,/g, "")) : 0;
-    const parsedBonuses = bonusDetails(source);
-    const bonuses = parsedBonuses.filter(bonus => bonus.value !== null
+    const gridStats = gridCard ? marketGridStats(row) : null;
+    const cachedItem = gridCard ? matchMarketResponseItem(row, price, gridStats) : null;
+    const parsedBonuses = cachedItem ? marketResponseBonuses(cachedItem) : bonusDetails(source);
+    const bonuses = cachedItem ? parsedBonuses : parsedBonuses.filter(bonus => bonus.value !== null
       || new RegExp(`bonus[^\n]{0,80}${String(bonus.name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(source));
-    const damage = numberFrom((source.match(/Damage\s*[:=-]\s*([\d.]+)/i) || [])[1]) || 0;
-    const accuracy = numberFrom((source.match(/Accuracy\s*[:=-]\s*([\d.]+)/i) || [])[1]) || 0;
-    const quality = numberFrom((source.match(/Quality\s*[:=-]\s*([\d.]+)/i) || [])[1]);
-    const name = marketItemName(row, source);
+    const damage = gridStats?.damage || numberFrom((source.match(/Damage\s*[:=-]\s*([\d.]+)/i) || [])[1]) || 0;
+    const accuracy = gridStats?.accuracy || numberFrom((source.match(/Accuracy\s*[:=-]\s*([\d.]+)/i) || [])[1]) || 0;
+    const armor = gridStats?.armor || numberFrom((source.match(/Armou?r\s*[:=-]\s*([\d.]+)/i) || [])[1]) || 0;
+    const quality = numberFrom(cachedItem?.quality ?? (source.match(/Quality\s*[:=-]\s*([\d.]+)/i) || [])[1]);
+    const name = marketItemName(row, source, cachedItem);
     const identityMatch = (row.outerHTML || "").match(/(?:itemUID|itemUid|uid|listingID|listingId|itemID|itemId)["'=:\s-]+(\d+)/i);
 
     return {
-      id: identityMatch?.[1] || `market|${index}|${name}|${price}|${bonuses.map(bonus => `${bonus.id}:${bonus.value ?? ""}`).join(",")}`,
+      id: String(cachedItem?.listingID ?? cachedItem?.listingId ?? identityMatch?.[1]
+        ?? `market|${index}|${name}|${price}|${bonuses.map(bonus => `${bonus.id}:${bonus.value ?? ""}`).join(",")}`),
       name,
       damage,
       accuracy,
+      armor,
       quality,
       bid: price,
       bonuses,
       color: cardColor(row),
       marketListing: true,
+      marketGridCard: gridCard,
+      marketCacheMatched: !!cachedItem,
       historySettings: {
         count: Number(loadMarketSettings().historyCount || 25),
         matchBonuses: loadMarketSettings().matchBonuses !== false,
@@ -2275,8 +2412,11 @@
   }
 
   function ensureMarketBonusBadge(row, item) {
-    const image = row.querySelector(MARKET_SELECTORS.thumbnail);
-    const holder = image?.parentElement;
+    const gridCard = isMarketGridCard(row);
+    const image = row.querySelector(gridCard ? MARKET_SELECTORS.gridImage : MARKET_SELECTORS.thumbnail);
+    const holder = gridCard
+      ? row.querySelector(MARKET_SELECTORS.gridImageWrapper) || image?.parentElement
+      : image?.parentElement;
     row.querySelectorAll(".caf-clean-market-bonus-percent").forEach(badge => {
       if (!holder || badge.parentElement !== holder) badge.remove();
     });
@@ -2376,13 +2516,20 @@
     const rows = marketRows();
     const parsedRows = rows.map((row, index) => ({ row, item: parseMarketListing(row, index) }));
     const bonusCount = parsedRows.filter(entry => entry.item.bonuses.length).length;
+    const gridCount = parsedRows.filter(entry => entry.item.marketGridCard).length;
+    const gridCacheMatches = parsedRows.filter(entry => entry.item.marketCacheMatched).length;
     let matchCount = 0;
 
     parsedRows.forEach(({ row, item }) => ensureMarketBonusBadge(row, item));
 
     if (rows.length && !bonusCount) {
       rows.forEach(row => row.classList.remove("caf-clean-market-hidden"));
-      setMarketStatus("CAF found the loaded seller rows, but their bonus details are not currently exposed in the page. Nothing was hidden; open an equipment/weapon listing or expand its details and try again.", true);
+      const message = gridCount && !marketResponseCache.size
+        ? `CAF found ${gridCount} loaded market card(s), but their response data was loaded before CAF could capture it. Nothing was hidden. Refresh the Item Market page once after installing this update.`
+        : gridCount && !gridCacheMatches
+          ? `CAF captured market data but could not match it to the ${gridCount} visible card(s). Nothing was hidden; try changing a Torn filter once or refresh the Item Market page.`
+          : "CAF found the loaded seller rows, but their bonus details are not currently exposed in the page. Nothing was hidden; open an equipment/weapon listing or expand its details and try again.";
+      setMarketStatus(message, true);
       return [];
     }
 
@@ -2394,6 +2541,7 @@
       };
       marketItemByRow.set(row, item);
       row.classList.add("caf-clean-market-row");
+      row.classList.toggle("caf-clean-market-grid-card", item.marketGridCard);
       const matches = marketItemMatches(item, filter);
       row.classList.toggle("caf-clean-market-hidden", !matches);
       if (matches) {
@@ -2459,12 +2607,14 @@
 
   function injectMarketPanel() {
     if (!isItemMarketPage() || document.getElementById(MARKET_PANEL_ID) || !document.body) return;
+    const marketRoot = document.querySelector(MARKET_SELECTORS.root);
+    if (!marketRoot) return;
     const current = loadMarketSettings();
     const panel = document.createElement("div");
     panel.id = MARKET_PANEL_ID;
     panel.innerHTML = `
       <div class="caf-clean-market-title">CAF Clean — Bonus Equipment Market</div>
-      <div class="caf-clean-market-note">Filters only the Item Market listings Torn has already loaded on this page. Non-bonus items are hidden.</div>
+      <div class="caf-clean-market-note">Filters only the Item Market cards/listings Torn has already loaded. Non-bonus items are hidden after their visible market data is matched.</div>
       <div class="caf-clean-market-grid">
         <label>Bonus 1<select id="caf-clean-market-bonus1">${bonusFilterOptions(String(current.bonus1 || ""), "Any Bonus 1")}</select></label>
         <label>Bonus 2<select id="caf-clean-market-bonus2">${bonusFilterOptions(String(current.bonus2 || ""), "Any Bonus 2")}</select></label>
@@ -2478,11 +2628,11 @@
       </div>
       <details class="caf-clean-market-disclosure">
         <summary>Deal colors and data use</summary>
-        <div>STEAL is below the historical low; GOOD is below the median; FAIR is at or below the historical high; HIGH is above it. This is a price-only signal, not a guarantee. History checks send the visible item's name, stats, price, and bonuses to the external Supabase history service. No Torn credentials or API key are sent.</div>
+        <div>STEAL is below the historical low; GOOD is below the median; FAIR is at or below the historical high; HIGH is above it. This is a price-only signal, not a guarantee. CAF keeps the already-loaded Item Market response only in page memory so it can match bonus data to visible grid cards; it makes no extra Torn request and does not persist that response. History checks send the visible item's name, stats, price, and bonuses to the external Supabase history service. No Torn credentials or API key are sent.</div>
       </details>
       <div class="caf-clean-market-status">Waiting for Item Market listings...</div>
     `;
-    document.body.prepend(panel);
+    marketRoot.prepend(panel);
     panel.querySelector("#caf-clean-market-apply").addEventListener("click", () => applyMarketFilters());
     panel.querySelector("#caf-clean-market-analyze").addEventListener("click", analyzeVisibleMarketDeals);
     panel.querySelector("#caf-clean-market-reset").addEventListener("click", resetMarketFilters);
@@ -2500,6 +2650,7 @@
       document.querySelectorAll(".caf-clean-market-row").forEach(row => {
         row.classList.remove(
           "caf-clean-market-row",
+          "caf-clean-market-grid-card",
           "caf-clean-market-hidden",
           "caf-clean-market-steal",
           "caf-clean-market-good",
@@ -2515,6 +2666,9 @@
     if (!isActiveView()) return;
     marketRefreshTimer = setTimeout(() => {
       injectMarketPanel();
+      const panel = document.getElementById(MARKET_PANEL_ID);
+      const marketRoot = document.querySelector(MARKET_SELECTORS.root);
+      if (panel && marketRoot && panel.parentElement !== marketRoot) marketRoot.prepend(panel);
       applyMarketFilters({ announce: true });
     }, 180);
   }
@@ -2718,6 +2872,7 @@
     }
   }
 
+  installMarketFetchCapture();
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", initialize, { once: true });
   } else {
