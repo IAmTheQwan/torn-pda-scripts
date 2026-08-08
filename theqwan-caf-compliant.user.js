@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.4.2
+// @version      1.4.3
 // @description  Foreground-only Auction House history and price guidance for the actively viewed page
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
@@ -142,6 +142,14 @@
       min-width: 0;
       min-height: 32px;
       box-sizing: border-box;
+    }
+    #${PANEL_ID} .caf-clean-filter-field {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      min-width: 0;
+      color: #aaa;
+      font-size: 10px;
     }
     #caf-clean-collection-progress {
       grid-column: 1 / -1;
@@ -657,11 +665,11 @@
     };
   }
 
-  function bonusFilterOptions(selectedValue = "") {
+  function bonusFilterOptions(selectedValue = "", anyLabel = "Any bonus") {
     const options = Object.entries(BONUS_NAMES)
       .map(([id, name]) => ({ id: String(id), name }))
       .sort((left, right) => left.name.localeCompare(right.name));
-    return `<option value="">Any bonus</option>${options.map(option =>
+    return `<option value="">${escapeHtml(anyLabel)}</option>${options.map(option =>
       `<option value="${option.id}" ${selectedValue === option.id ? "selected" : ""}>${escapeHtml(option.name)}</option>`
     ).join("")}`;
   }
@@ -1495,8 +1503,14 @@
           <span></span>
           <input id="caf-clean-filter-quality-min" type="number" step="0.01" placeholder="Minimum quality" value="${escapeAttr(filter.qualityMin)}">
           <input id="caf-clean-filter-quality-max" type="number" step="0.01" placeholder="Maximum quality" value="${escapeAttr(filter.qualityMax)}">
-          <select id="caf-clean-filter-bonus1">${bonusFilterOptions(String(filter.bonus1 || ""))}</select>
-          <select id="caf-clean-filter-bonus2">${bonusFilterOptions(String(filter.bonus2 || ""))}</select>
+          <label class="caf-clean-filter-field">
+            <span>Bonus 1</span>
+            <select id="caf-clean-filter-bonus1">${bonusFilterOptions(String(filter.bonus1 || ""), "Any Bonus 1")}</select>
+          </label>
+          <label class="caf-clean-filter-field">
+            <span>Bonus 2</span>
+            <select id="caf-clean-filter-bonus2">${bonusFilterOptions(String(filter.bonus2 || ""), "Any Bonus 2")}</select>
+          </label>
           <label style="grid-column:1 / -1"><input id="caf-clean-filter-double" type="checkbox" ${filter.doubleOnly ? "checked" : ""}> Double-bonus items only</label>
           <button id="caf-clean-filter-generate">Generate New List</button>
           <button id="caf-clean-filter-clear">Clear Filtered List</button>
