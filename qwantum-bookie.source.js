@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.6.0
+// @version      1.7.0
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      api.torn.com
 // @connect      v3.football.api-sports.io
+// @connect      www.thesportsdb.com
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/Bookie/qwantum-bookie.meta.js
 // @downloadURL  https://github.com/IAmTheQwan/torn-pda-scripts/raw/refs/heads/Bookie/qwantum-bookie.user.js
@@ -39,6 +40,7 @@
     let guidedFootballReviewEnabled = JSON.parse(localStorage.getItem('tbp_guided_football_review_enabled') || 'false');
     let footballScoreEnabled = JSON.parse(localStorage.getItem('tbp_football_score_enabled') || 'false');
     let footballScoreApiKey = localStorage.getItem('tbp_football_score_api_key') || '';
+    let footballScoreProvider = localStorage.getItem('tbp_football_score_provider') || 'sportsdb';
 
     let batches = JSON.parse(localStorage.getItem('tbp_batches') || '[]');
     let selectedBatchId = localStorage.getItem('tbp_selected_batch_id') || '';
@@ -80,6 +82,9 @@
     const FOOTBALL_SCORE_MATCHES_KEY = 'tbp_football_score_matches';
     const FOOTBALL_SCORE_DAILY_LIMIT = 100;
     const FOOTBALL_SCORE_CACHE_MS = 10 * 60 * 1000;
+    const SPORTSDB_REQUEST_TIMES_KEY = 'tbp_sportsdb_request_times';
+    const SPORTSDB_MIN_REQUEST_GAP_MS = 2100;
+    const SPORTSDB_MINUTE_LIMIT = 30;
 
     const styles = `
         #tbp-container { position:fixed; top:20px; right:20px; width:390px; background:#1a1a1a; color:#eee; border:1px solid #444; z-index:999999!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
@@ -178,6 +183,7 @@
         localStorage.setItem('tbp_guided_football_review_enabled', JSON.stringify(guidedFootballReviewEnabled));
         localStorage.setItem('tbp_football_score_enabled', JSON.stringify(footballScoreEnabled));
         localStorage.setItem('tbp_football_score_api_key', footballScoreApiKey);
+        localStorage.setItem('tbp_football_score_provider', footballScoreProvider);
         localStorage.setItem('tbp_batches', JSON.stringify(batches));
         localStorage.setItem('tbp_selected_batch_id', selectedBatchId);
     }
@@ -371,6 +377,161 @@
         return intersection / Math.max(aTokens.size, bTokens.size);
     }
 
+    function loadSportsDbRequestTimes(now = Date.now()) {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(SPORTSDB_REQUEST_TIMES_KEY) || '[]');
+            return (Array.isArray(parsed) ? parsed : [])
+                .map(Number)
+                .filter(timestamp => now - timestamp < 60 * 1000)
+                .sort((a, b) => a - b);
+        } catch {
+            return [];
+        }
+    }
+
+    function getSportsDbUsage() {
+        const requests = loadSportsDbRequestTimes();
+        localStorage.setItem(SPORTSDB_REQUEST_TIMES_KEY, JSON.stringify(requests));
+        return {
+            used: requests.length,
+            remaining: Math.max(0, SPORTSDB_MINUTE_LIMIT - requests.length),
+            limit: SPORTSDB_MINUTE_LIMIT,
+            oldestAt: requests[0] || 0
+        };
+    }
+
+    function countSportsDbRequest() {
+        const requests = loadSportsDbRequestTimes();
+        requests.push(Date.now());
+        localStorage.setItem(SPORTSDB_REQUEST_TIMES_KEY, JSON.stringify(requests));
+        return getSportsDbUsage();
+    }
+
+    async function waitForSportsDbSlot() {
+        const usage = getSportsDbUsage();
+        if (usage.remaining <= 0 && usage.oldestAt) {
+            await delay(Math.max(100, 60 * 1000 - (Date.now() - usage.oldestAt) + 150));
+        }
+    }
+
+    function sportsDbFixtureCacheKey(fixture, dateKey) {
+        return `sportsdb:${dateKey}:${normalizeScoreTeamName(fixture.homeTeam)}:${normalizeScoreTeamName(fixture.awayTeam)}`;
+    }
+
+    function requestSportsDbFixture(fixture, dateKey) {
+        return new Promise(resolve => {
+            const eventName = `${fixture.homeTeam}_vs_${fixture.awayTeam}`.replace(/\s+/g, '_');
+            const url = `https://www.thesportsdb.com/api/v1/json/123/searchevents.php?e=${encodeURIComponent(eventName)}&d=${encodeURIComponent(dateKey)}`;
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                onload: res => {
+                    countSportsDbRequest();
+                    try {
+                        const data = JSON.parse(res.responseText);
+                        resolve({ error: null, events: Array.isArray(data.event) ? data.event : Array.isArray(data.events) ? data.events : [] });
+                    } catch {
+                        resolve({ error: 'Could not read TheSportsDB response.', events: [] });
+                    }
+                },
+                onerror: () => {
+                    countSportsDbRequest();
+                    resolve({ error: 'Could not reach TheSportsDB.', events: [] });
+                }
+            });
+        });
+    }
+
+    function sportsDbEventTimestamp(event) {
+        const raw = String(event.strTimestamp || '').trim();
+        const usTimestamp = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i);
+        if (usTimestamp) {
+            let hour = Number(usTimestamp[4]);
+            const meridiem = String(usTimestamp[7] || '').toUpperCase();
+            if (meridiem === 'PM' && hour < 12) hour += 12;
+            if (meridiem === 'AM' && hour === 12) hour = 0;
+            return Date.UTC(Number(usTimestamp[3]), Number(usTimestamp[1]) - 1, Number(usTimestamp[2]), hour, Number(usTimestamp[5]), Number(usTimestamp[6] || 0));
+        }
+        const combined = Date.parse(`${event.dateEvent || ''}T${event.strTime || '00:00:00'}Z`);
+        return Number.isFinite(combined) ? combined : 0;
+    }
+
+    function findSportsDbEvent(fixture, events) {
+        return events.map(event => {
+            const homeSimilarity = scoreTeamSimilarity(fixture.homeTeam, event.strHomeTeam);
+            const awaySimilarity = scoreTeamSimilarity(fixture.awayTeam, event.strAwayTeam);
+            return { event, homeSimilarity, awaySimilarity, confidence: (homeSimilarity + awaySimilarity) / 2 };
+        }).filter(candidate => candidate.homeSimilarity >= 0.72 && candidate.awaySimilarity >= 0.72 && candidate.confidence >= 0.82)
+            .sort((a, b) => b.confidence - a.confidence)[0] || null;
+    }
+
+    function isFinalFootballStatus(status) {
+        return ['FT', 'AET', 'AP', 'PEN', 'AW'].includes(String(status || '').toUpperCase());
+    }
+
+    async function getSportsDbEventForFixture(fixture, dateKey) {
+        const cache = loadFootballScoreCache();
+        const cacheKey = sportsDbFixtureCacheKey(fixture, dateKey);
+        const cached = cache[cacheKey];
+        const cachedFinal = isFinalFootballStatus(cached?.match?.event?.strStatus);
+        if (cached && (cachedFinal || Date.now() - Number(cached.cachedAt || 0) < FOOTBALL_SCORE_CACHE_MS)) {
+            return { ...cached.match, cached: true };
+        }
+        await waitForSportsDbSlot();
+        const result = await requestSportsDbFixture(fixture, dateKey);
+        if (result.error) return { error: result.error, event: null, cached: false };
+        const match = findSportsDbEvent(fixture, result.events);
+        const stored = { error: null, event: match?.event || null, confidence: Number(match?.confidence || 0), cached: false };
+        cache[cacheKey] = { cachedAt: Date.now(), match: stored };
+        saveFootballScoreCache(cache);
+        return stored;
+    }
+
+    async function checkOpenBetScoresSportsDb(namedBets) {
+        const reviewedByGameId = new Map(loadFootballFixtureRecords().map(fixture => [String(fixture.gameId), fixture]));
+        const today = utcDateKey();
+        const scoreMatches = loadFootballScoreMatches();
+        let matched = 0;
+        let requests = 0;
+        let cacheHits = 0;
+        let firstError = '';
+
+        for (let index = 0; index < namedBets.length; index++) {
+            const bet = namedBets[index];
+            const fixture = { ...(reviewedByGameId.get(String(bet.fixture.gameId)) || {}), ...bet.fixture };
+            const dateKey = fixture.startTimestamp ? utcDateKey(fixture.startTimestamp) : today;
+            const result = await getSportsDbEventForFixture(fixture, dateKey);
+            if (result.error) {
+                firstError ||= result.error;
+                continue;
+            }
+            if (result.cached) cacheHits++;
+            else requests++;
+            if (!result.event) continue;
+            const event = result.event;
+            scoreMatches[String(bet.id)] = {
+                provider: 'sportsdb',
+                providerFixtureId: event.idEvent,
+                homeTeam: event.strHomeTeam || fixture.homeTeam,
+                awayTeam: event.strAwayTeam || fixture.awayTeam,
+                homeGoals: event.intHomeScore === '' || event.intHomeScore === null || event.intHomeScore === undefined ? null : Number(event.intHomeScore),
+                awayGoals: event.intAwayScore === '' || event.intAwayScore === null || event.intAwayScore === undefined ? null : Number(event.intAwayScore),
+                statusShort: event.strStatus || '',
+                statusLong: event.strStatus || '',
+                elapsed: event.strProgress || '',
+                kickoff: sportsDbEventTimestamp(event),
+                confidence: result.confidence,
+                checkedAt: Date.now()
+            };
+            matched++;
+            if (index < namedBets.length - 1 && !result.cached) await delay(SPORTSDB_MIN_REQUEST_GAP_MS);
+        }
+        saveFootballScoreMatches(scoreMatches);
+        const usage = getSportsDbUsage();
+        lastLoadStatus = `TheSportsDB: matched ${matched} of ${namedBets.length}; ${requests} request${requests === 1 ? '' : 's'}, ${cacheHits} cached. ${usage.remaining}/${usage.limit} calls remain this minute.`;
+        if (firstError) alert(firstError);
+    }
+
     function requestFootballFixtures(dateKey) {
         return new Promise(resolve => {
             GM_xmlhttpRequest({
@@ -435,14 +596,9 @@
         return candidates[0];
     }
 
-    async function checkOpenBetScores() {
-        if (!footballScoreEnabled || !footballScoreApiKey) {
-            alert('Enable Football scores and add an API-Football key in Settings first.');
-            return;
-        }
-        const namedBets = openBets.filter(bet => bet.fixture?.homeTeam && bet.fixture?.awayTeam);
-        if (!namedBets.length) {
-            alert('No named open Football bets are available to match.');
+    async function checkOpenBetScoresApiFootball(namedBets) {
+        if (!footballScoreApiKey) {
+            alert('Add an API-Football key in Settings first.');
             return;
         }
         const reviewedByGameId = new Map(loadFootballFixtureRecords().map(fixture => [String(fixture.gameId), fixture]));
@@ -489,6 +645,23 @@
         });
         saveFootballScoreMatches(scoreMatches);
         lastLoadStatus = `Scores: matched ${matched} of ${namedBets.length} named open bets; ${requests} request${requests === 1 ? '' : 's'}, ${cacheHits} cached date${cacheHits === 1 ? '' : 's'}.`;
+    }
+
+    async function checkOpenBetScores() {
+        if (!footballScoreEnabled) {
+            alert('Enable Football scores in Settings first.');
+            return;
+        }
+        const namedBets = openBets.filter(bet => bet.fixture?.homeTeam && bet.fixture?.awayTeam);
+        if (!namedBets.length) {
+            alert('No named open Football bets are available to match.');
+            return;
+        }
+        if (footballScoreProvider === 'sportsdb') {
+            await checkOpenBetScoresSportsDb(namedBets);
+            return;
+        }
+        await checkOpenBetScoresApiFootball(namedBets);
     }
 
     function formatFootballScore(score) {
@@ -2081,7 +2254,7 @@
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Return</div><div class="tbp-summary-value tbp-blue">${money(totalReturn)}</div></div>
             </div>
             ${footballScoreEnabled ? `
-                <button class="tbp-btn tbp-btn-primary" id="tbp-check-scores-btn" style="width:100%; margin-bottom:8px;">Check Scores</button>
+                <button class="tbp-btn tbp-btn-primary" id="tbp-check-scores-btn" style="width:100%; margin-bottom:8px;">Check Scores (${footballScoreProvider === 'sportsdb' ? 'TheSportsDB' : 'API-Football'})</button>
             ` : ''}
             ${pendingCaptureDetails}
             ${pendingManualDetails}
@@ -2273,6 +2446,7 @@ ${safeJson(log.raw)}
 
     function renderSettings(body) {
         const scoreUsage = loadFootballScoreUsage();
+        const sportsDbUsage = getSportsDbUsage();
         const resetDate = new Date(`${scoreUsage.date}T00:00:00Z`);
         resetDate.setUTCDate(resetDate.getUTCDate() + 1);
         body.innerHTML = `
@@ -2304,9 +2478,9 @@ ${safeJson(log.raw)}
                 <div style="font-weight:bold; margin-bottom:6px;">API usage and privacy</div>
                 <div class="tbp-muted">
                     <strong>Data storage:</strong> Bookie logs in this browser's IndexedDB; viewed Football fixtures, manual bet clicks, and My Bets name links in local storage.<br>
-                    <strong>Data sharing:</strong> Torn history stays local. When Football scores are enabled, only fixture-date requests are sent to API-Football; captured bet amounts and Torn history are never sent there.<br>
+                    <strong>Data sharing:</strong> Torn history stays local. When Football scores are enabled, only team names and fixture dates are sent to the selected score provider; captured bet amounts and Torn history are never sent.<br>
                     <strong>Purpose:</strong> Personal bookie history, totals, named open-bet estimates, Football review, and incremental refreshes.<br>
-                    <strong>Key handling:</strong> Both keys stay in this browser. The Torn key is sent only to api.torn.com, and the optional score key only to v3.football.api-sports.io.<br>
+                    <strong>Key handling:</strong> Keys stay in this browser. The Torn key is sent only to api.torn.com, and the optional API-Football key only to v3.football.api-sports.io. TheSportsDB free mode uses its public key.<br>
                     <strong>Required access:</strong> Custom access to user → log, restricted to category 195 (Bookie), or Full Access.
                 </div>
             </div>
@@ -2346,14 +2520,21 @@ ${safeJson(log.raw)}
                     <span>Enable Football scores</span>
                     <input type="checkbox" id="tbp-football-score-enabled" ${footballScoreEnabled ? 'checked' : ''}>
                 </div>
-                <div class="tbp-muted" style="margin-top:7px;">Uses API-Football only when you press Check Scores. One cached date can update several named bets.</div>
+                <div class="tbp-muted" style="margin-top:7px;">Checks only when you press Check Scores. Finished results remain cached.</div>
+                <label class="tbp-muted" style="display:block; margin-top:9px;">SCORE PROVIDER</label>
+                <select id="tbp-football-score-provider" class="tbp-select" style="margin-bottom:6px;">
+                    <option value="sportsdb" ${footballScoreProvider === 'sportsdb' ? 'selected' : ''}>TheSportsDB Free (30/minute)</option>
+                    <option value="api-football" ${footballScoreProvider === 'api-football' ? 'selected' : ''}>API-Football (100/day)</option>
+                </select>
                 <label class="tbp-muted" style="display:block; margin-top:9px;">API-FOOTBALL KEY</label>
-                <input type="password" id="tbp-football-score-api-key" class="tbp-input" value="${escapeHtml(footballScoreApiKey)}" placeholder="Paste API-Football key" style="margin-bottom:6px;">
+                <input type="password" id="tbp-football-score-api-key" class="tbp-input" value="${escapeHtml(footballScoreApiKey)}" placeholder="Optional unless API-Football is selected" style="margin-bottom:6px;">
                 <div class="tbp-summary-grid" style="margin-top:7px; margin-bottom:7px;">
-                    <div class="tbp-summary-box"><div class="tbp-summary-label">Requests Used</div><div class="tbp-summary-value">${scoreUsage.used}</div></div>
-                    <div class="tbp-summary-box"><div class="tbp-summary-label">Remaining</div><div class="tbp-summary-value ${scoreUsage.remaining <= 10 ? 'tbp-loss' : 'tbp-win'}">${scoreUsage.remaining} / ${scoreUsage.limit}</div></div>
+                    <div class="tbp-summary-box"><div class="tbp-summary-label">${footballScoreProvider === 'sportsdb' ? 'Used This Minute' : 'Requests Used'}</div><div class="tbp-summary-value">${footballScoreProvider === 'sportsdb' ? sportsDbUsage.used : scoreUsage.used}</div></div>
+                    <div class="tbp-summary-box"><div class="tbp-summary-label">Remaining</div><div class="tbp-summary-value ${(footballScoreProvider === 'sportsdb' ? sportsDbUsage.remaining : scoreUsage.remaining) <= 10 ? 'tbp-loss' : 'tbp-win'}">${footballScoreProvider === 'sportsdb' ? `${sportsDbUsage.remaining} / ${sportsDbUsage.limit}` : `${scoreUsage.remaining} / ${scoreUsage.limit}`}</div></div>
                 </div>
-                <div class="tbp-muted">Counter resets daily. Next reset: ${escapeHtml(resetDate.toLocaleString())}. ${scoreUsage.source === 'provider' ? 'Verified from API-Football.' : 'Locally counted until the provider returns quota headers.'} Cached checks do not use a request.</div>
+                <div class="tbp-muted">${footballScoreProvider === 'sportsdb'
+                    ? `The rolling counter clears each call 60 seconds after it was made. Calls are spaced ${Math.round(SPORTSDB_MIN_REQUEST_GAP_MS / 100) / 10} seconds apart, so the check duration adapts to the number of named games.`
+                    : `Counter resets daily. Next reset: ${escapeHtml(resetDate.toLocaleString())}. ${scoreUsage.source === 'provider' ? 'Verified from API-Football.' : 'Locally counted until the provider returns quota headers.'}`} Cached checks do not use a request.</div>
             </div>
 
             <div class="tbp-card">
@@ -2525,6 +2706,7 @@ ${safeJson(log.raw)}
                 footballOddsHistoryEnabled = document.getElementById('tbp-football-odds-history-enabled').checked;
                 guidedFootballReviewEnabled = document.getElementById('tbp-guided-football-review-enabled').checked;
                 footballScoreEnabled = document.getElementById('tbp-football-score-enabled').checked;
+                footballScoreProvider = document.getElementById('tbp-football-score-provider').value;
                 footballScoreApiKey = document.getElementById('tbp-football-score-api-key').value.trim();
                 saveData();
                 if (!footballScanEnabled) clearFootballHighlights();
