@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.4.1
+// @version      1.4.2
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -67,6 +67,7 @@
     const MAX_FOOTBALL_FIXTURE_RECORDS = 200;
     const FOOTBALL_FIXTURE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
     const FOOTBALL_BET_LINK_WINDOW_MS = 10 * 60 * 1000;
+    const FOOTBALL_PENDING_BET_VISIBLE_MS = 30 * 60 * 1000;
 
     const styles = `
         #tbp-container { position:fixed; top:20px; right:20px; width:390px; background:#1a1a1a; color:#eee; border:1px solid #444; z-index:999999!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
@@ -954,7 +955,7 @@
         const odds = parseDecimalMultiplier(row.querySelector('.bet-cell.odds.decimal')?.textContent);
         const betClicks = Array.isArray(fixture.betClicks) ? [...fixture.betClicks] : [];
         betClicks.push({ selection, odds, stake: parseVisibleStake(row), clickedAt: Date.now() });
-        saveFootballFixtureRecord({ ...fixture, betClicks });
+        return saveFootballFixtureRecord({ ...fixture, betClicks });
     }
 
     function findFixtureForOpenBet(log, stake, odds) {
@@ -969,7 +970,35 @@
                 if (!best || timeGap < best.timeGap) best = { fixture, click, timeGap };
             });
         });
-        return best ? { ...best.fixture, placedSelection: best.click.selection, linkedBy: 'bet-click' } : null;
+        return best ? {
+            ...best.fixture,
+            placedSelection: best.click.selection,
+            linkedClickAt: best.click.clickedAt,
+            linkedBy: 'bet-click'
+        } : null;
+    }
+
+    function getPendingFootballBetCaptures() {
+        const now = Date.now();
+        const linkedClicks = new Set(openBets
+            .map(bet => Number(bet.fixture?.linkedClickAt || 0))
+            .filter(Boolean));
+        return loadFootballFixtureRecords().flatMap(fixture => {
+            return (fixture.betClicks || [])
+                .filter(click => now - Number(click.clickedAt || 0) <= FOOTBALL_PENDING_BET_VISIBLE_MS)
+                .filter(click => !linkedClicks.has(Number(click.clickedAt || 0)))
+                .map(click => ({ fixture, click }));
+        }).sort((a, b) => Number(b.click.clickedAt || 0) - Number(a.click.clickedAt || 0));
+    }
+
+    function showFootballBetCaptureNotice(fixture, selection, odds) {
+        document.getElementById('tbp-football-capture-notice')?.remove();
+        const notice = document.createElement('div');
+        notice.id = 'tbp-football-capture-notice';
+        notice.style.cssText = 'position:fixed; top:72px; right:20px; max-width:340px; padding:9px 12px; border-radius:6px; background:#275a7a; border:1px solid #59a7d3; color:#fff; z-index:1000000; font:12px Segoe UI,sans-serif; box-shadow:0 5px 18px rgba(0,0,0,.65);';
+        notice.textContent = `Bet click captured: ${fixture.homeTeam} v ${fixture.awayTeam} — ${selection} x${Number(odds || 0).toFixed(2)}. Refresh after Torn confirms the bet.`;
+        document.body.appendChild(notice);
+        setTimeout(() => notice.remove(), 5000);
     }
 
     function recordFootballOddsForItem(item, href = '') {
@@ -1441,6 +1470,21 @@
         const totalStake = openBets.reduce((s, b) => s + b.stake, 0);
         const totalProfit = openBets.reduce((s, b) => s + b.potentialProfit, 0);
         const totalReturn = openBets.reduce((s, b) => s + b.potentialReturn, 0);
+        const pendingCaptures = getPendingFootballBetCaptures();
+        const pendingCaptureDetails = pendingCaptures.length ? `
+            <div class="tbp-card" style="border-color:#3b82a8;">
+                <div style="font-weight:bold; color:#7fc8f1; margin-bottom:6px;">Captured — awaiting API refresh</div>
+                ${pendingCaptures.map(({ fixture, click }) => `
+                    <div style="margin-top:6px; padding-top:6px; border-top:1px solid #3a3a3a;">
+                        <div style="font-weight:bold; font-size:12px;">${escapeHtml(fixture.homeTeam)} v ${escapeHtml(fixture.awayTeam)}</div>
+                        ${fixture.competition ? `<div class="tbp-muted">${escapeHtml(fixture.competition)}</div>` : ''}
+                        <div class="tbp-row"><span>Pick</span><span>${escapeHtml(click.selection)} · x${num(click.odds)}</span></div>
+                        <div class="tbp-row"><span>Captured</span><span>${escapeHtml(formatDate(Math.floor(Number(click.clickedAt || 0) / 1000)))}</span></div>
+                    </div>
+                `).join('')}
+                <div class="tbp-muted" style="margin-top:7px;">After Torn confirms the bet, press Check for New Data to attach these names to its Open card.</div>
+            </div>
+        ` : '';
 
         body.innerHTML = `
             <div class="tbp-muted" style="margin-bottom:8px;">${lastLoadStatus}</div>
@@ -1450,6 +1494,7 @@
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Profit</div><div class="tbp-summary-value tbp-win">${money(totalProfit)}</div></div>
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Return</div><div class="tbp-summary-value tbp-blue">${money(totalReturn)}</div></div>
             </div>
+            ${pendingCaptureDetails}
             <div id="tbp-open-list"></div>
         `;
 
@@ -1684,7 +1729,7 @@ ${safeJson(log.raw)}
                     <input type="checkbox" id="tbp-guided-football-review-enabled" ${guidedFootballReviewEnabled ? 'checked' : ''}>
                 </div>
                 <div class="tbp-muted" style="margin-top:7px;">
-                    Game Review opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. It automatically counts qualifying straight-win odds and keeps each matching fixture bar color until you press End or leave Football.
+                    Game Review opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. It counts qualifying straight-win odds, keeps each matching fixture bar color until End, and captures club details when you manually press a 3-Way BET button so they can appear in Open after an API refresh.
                 </div>
             </div>
 
@@ -1952,7 +1997,12 @@ document.addEventListener('click', async e => {
             .trim();
         if (!/^3-Way Ordinary time$/i.test(marketName)) return;
         if (!row.querySelector('.bet-cell.result') || !row.querySelector('.bet-cell.odds.decimal')) return;
-        captureManualFootballBet(item, row, market);
+        const selection = String(row.querySelector('.bet-cell.result')?.textContent || '').replace(/\s+/g, ' ').trim();
+        const odds = parseDecimalMultiplier(row.querySelector('.bet-cell.odds.decimal')?.textContent);
+        const captured = captureManualFootballBet(item, row, market);
+        if (!captured) return;
+        showFootballBetCaptureNotice(captured, selection, odds);
+        if (activeTab === 'open') setTimeout(render, 0);
     }, true);
 
     document.addEventListener('click', event => {
