@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.12.0
+// @version      1.13.0
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -540,13 +540,16 @@
       box-sizing: border-box;
     }
     #${MARKET_PANEL_ID} button:disabled { color: #777; opacity: .75; }
-    #${MARKET_PANEL_ID} .caf-clean-market-double {
-      grid-column: 1 / -1;
-    }
     #${MARKET_PANEL_ID} .caf-clean-market-double.is-active {
       color: #171117;
       background: #d8b4fe;
       border-color: #e9d5ff;
+      font-weight: 800;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-strong.is-active {
+      color: #102016;
+      background: #67d982;
+      border-color: #9af0ad;
       font-weight: 800;
     }
     #${MARKET_PANEL_ID} .caf-clean-market-color-filter {
@@ -2448,7 +2451,8 @@
       color: "",
       historyCount: 25,
       matchBonuses: true,
-      doubleOnly: false
+      doubleOnly: false,
+      strongDealsOnly: false
     };
   }
 
@@ -2474,7 +2478,8 @@
       color: panel.querySelector(".caf-clean-market-color-button.is-active")?.dataset.color || "",
       historyCount: Number(panel.querySelector("#caf-clean-market-history-count")?.value || 25),
       matchBonuses: !!panel.querySelector("#caf-clean-market-match-bonuses")?.checked,
-      doubleOnly: panel.querySelector("#caf-clean-market-double")?.dataset.active === "true"
+      doubleOnly: panel.querySelector("#caf-clean-market-double")?.dataset.active === "true",
+      strongDealsOnly: panel.querySelector("#caf-clean-market-strong")?.dataset.active === "true"
     };
   }
 
@@ -2491,6 +2496,15 @@
     button.classList.toggle("is-active", isActive);
     button.setAttribute("aria-pressed", String(isActive));
     button.textContent = `Double bonuses only: ${isActive ? "ON" : "OFF"}`;
+  }
+
+  function setMarketStrongDealsButton(button, active) {
+    if (!button) return;
+    const isActive = !!active;
+    button.dataset.active = isActive ? "true" : "false";
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+    button.textContent = `Only GOOD/STEAL: ${isActive ? "ON" : "OFF"}`;
   }
 
   function setMarketColorFilter(panel, color) {
@@ -2682,8 +2696,14 @@
       && itemMatchesBonusRange(item, filter.bonusMin, filter.bonusMax);
   }
 
+  function marketStrongDealMatches(row, filter, ignoreStrongDeals = false) {
+    return ignoreStrongDeals
+      || !filter.strongDealsOnly
+      || ["steal", "good"].includes(marketComparableDealStateFromRow(row));
+  }
+
   function hasMarketNarrowingFilter(filter) {
-    return !!(filter.doubleOnly || filter.color || filter.bonus1 || filter.bonus2
+    return !!(filter.doubleOnly || filter.strongDealsOnly || filter.color || filter.bonus1 || filter.bonus2
       || filter.bonusMin !== "" || filter.bonusMax !== "");
   }
 
@@ -3114,7 +3134,7 @@
     return tools;
   }
 
-  function applyMarketFilters({ announce = true } = {}) {
+  function applyMarketFilters({ announce = true, ignoreStrongDeals = false } = {}) {
     if (!isItemMarketPage() || !isActiveView()) return [];
     const filter = saveMarketSettings();
     const rows = marketRows();
@@ -3152,7 +3172,8 @@
     parsedRows.forEach(({ row, item }) => {
       row.classList.add("caf-clean-market-row");
       row.classList.toggle("caf-clean-market-grid-card", item.marketGridCard);
-      const matches = marketItemMatches(item, filter);
+      const matches = marketItemMatches(item, filter)
+        && marketStrongDealMatches(row, filter, ignoreStrongDeals);
       row.classList.toggle("caf-clean-market-hidden", !matches);
       if (matches) {
         matchCount += 1;
@@ -3167,10 +3188,16 @@
         : "";
       const kind = filter.doubleOnly ? " double-bonus" : " bonus";
       const color = filter.color ? ` ${filter.color.toUpperCase()}` : "";
+      const deal = filter.strongDealsOnly && !ignoreStrongDeals
+        ? " rated strength-adjusted GOOD/STEAL"
+        : "";
       const runway = hasMarketNarrowingFilter(filter) && matchCount < rows.length
         ? " Keep scrolling to let Torn render more; CAF will filter new cards automatically."
         : "";
-      setMarketStatus(`Showing ${matchCount} matching${color}${kind} listing(s)${range}; ${bonusCount} of ${rows.length} loaded listing(s) contain a parsed bonus.${runway}`);
+      const analyzeHint = filter.strongDealsOnly && !ignoreStrongDeals
+        ? " Tap Analyze Visible Deals to rate every listing matching the other filters."
+        : "";
+      setMarketStatus(`Showing ${matchCount} matching${color}${kind} listing(s)${deal}${range}; ${bonusCount} of ${rows.length} loaded listing(s) contain a parsed bonus.${analyzeHint}${runway}`);
     }
     return rows.filter(row => !row.classList.contains("caf-clean-market-hidden"));
   }
@@ -3200,7 +3227,8 @@
   }
 
   async function analyzeVisibleMarketDeals() {
-    const rows = applyMarketFilters();
+    const strongDealsOnly = marketSettingsFromControls().strongDealsOnly;
+    const rows = applyMarketFilters({ ignoreStrongDeals: strongDealsOnly });
     const button = document.getElementById("caf-clean-market-analyze");
     if (!button || !rows.length) {
       setMarketStatus("No matching bonus listings are currently loaded to analyze.", true);
@@ -3254,7 +3282,14 @@
       await Promise.all(Array.from({ length: workerCount }, () => worker()));
       if (!stopped) {
         const failureText = failed ? ` ${failed} listing(s) could not be rated.` : "";
-        setMarketStatus(`Deal checks complete for ${completed} visible bonus listing(s).${failureText} The top rail is the raw type match; the bottom rail is strength-adjusted and controls Add All GOOD/STEAL.`);
+        const currentStrongDealsOnly = marketSettingsFromControls().strongDealsOnly;
+        const strongVisibleCount = currentStrongDealsOnly
+          ? applyMarketFilters({ announce: false }).length
+          : null;
+        const strongText = currentStrongDealsOnly
+          ? ` Showing ${strongVisibleCount} strength-adjusted GOOD/STEAL deal(s).`
+          : "";
+        setMarketStatus(`Deal checks complete for ${completed} visible bonus listing(s).${failureText}${strongText} The top rail is the raw type match; the bottom rail is strength-adjusted and controls Add All GOOD/STEAL.`);
       }
     } finally {
       button.disabled = false;
@@ -3274,6 +3309,7 @@
     panel.querySelector("#caf-clean-market-history-count").value = String(defaults.historyCount);
     panel.querySelector("#caf-clean-market-match-bonuses").checked = defaults.matchBonuses;
     setMarketDoubleOnlyButton(panel.querySelector("#caf-clean-market-double"), defaults.doubleOnly);
+    setMarketStrongDealsButton(panel.querySelector("#caf-clean-market-strong"), defaults.strongDealsOnly);
     localStorage.removeItem(MARKET_SETTINGS_KEY);
     marketRows().forEach(row => {
       clearMarketDeal(row);
@@ -3312,6 +3348,7 @@
         <label>History sales<select id="caf-clean-market-history-count">${[12, 25, 50, 100].map(count => `<option value="${count}" ${Number(current.historyCount) === count ? "selected" : ""}>${count}</option>`).join("")}</select></label>
         <label style="justify-content:flex-end"><span><input id="caf-clean-market-match-bonuses" type="checkbox" style="width:auto;min-height:auto" ${current.matchBonuses !== false ? "checked" : ""}> Match listing bonus types</span></label>
         <button id="caf-clean-market-double" class="caf-clean-market-double ${current.doubleOnly ? "is-active" : ""}" data-active="${current.doubleOnly ? "true" : "false"}" aria-pressed="${current.doubleOnly ? "true" : "false"}">Double bonuses only: ${current.doubleOnly ? "ON" : "OFF"}</button>
+        <button id="caf-clean-market-strong" class="caf-clean-market-strong ${current.strongDealsOnly ? "is-active" : ""}" data-active="${current.strongDealsOnly ? "true" : "false"}" aria-pressed="${current.strongDealsOnly ? "true" : "false"}">Only GOOD/STEAL: ${current.strongDealsOnly ? "ON" : "OFF"}</button>
         <button id="caf-clean-market-apply">Apply to Loaded Listings</button>
         <button id="caf-clean-market-analyze">Analyze Visible Deals</button>
         <button id="caf-clean-market-add-strong">Add All GOOD/STEAL</button>
@@ -3337,6 +3374,13 @@
         panel.querySelector("#caf-clean-market-bonus1").value = "";
         panel.querySelector("#caf-clean-market-bonus2").value = "";
       }
+      saveMarketSettings();
+      applyMarketFilters();
+    });
+    panel.querySelector("#caf-clean-market-strong").addEventListener("click", event => {
+      event.preventDefault();
+      const button = event.currentTarget;
+      setMarketStrongDealsButton(button, button.dataset.active !== "true");
       saveMarketSettings();
       applyMarketFilters();
     });

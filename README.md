@@ -9,6 +9,8 @@ The Auction House **Generate Filtered List** action uses the saved guided collec
 
 The Item Market panel includes a persistent **Double bonuses only** toggle. Turning it on clears the two bonus-name selectors so every currently loaded double-bonus listing is shown, while any minimum/maximum bonus-percentage range remains in effect. Bonus selectors can then be used again to narrow that double-bonus set.
 
+Beside it, **Only GOOD/STEAL** filters the Item Market to listings whose strength-adjusted (bottom-rail) history result is GOOD or STEAL. If enabled before analysis, **Analyze Visible Deals** temporarily processes every listing matching the other filters, then leaves only the qualifying deals visible.
+
 The **All / Yellow / Orange / Red** buttons filter loaded bonus equipment by its Torn color. Narrowed grid results keep a scroll runway below the matches. As the player manually scrolls and Torn renders more listings, CAF applies the active color, double-bonus, bonus-name, and percentage filters to those new cards automatically. CAF does not request another Torn batch itself.
 
 Item Market cards also have a compact `+ Add` control. Added weapons appear in the collapsible **Market Picks** area at the top of the filter panel, where each pick has the same history summary and expandable previous-sales table used by CAF. After deal analysis, **Add All GOOD/STEAL** collects the visible strong-price results into that list. Market Picks remain only in the current page's memory; they are not a background tracker or persistent Torn-data store.
