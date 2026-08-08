@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.8.1
+// @version      1.9.0
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -603,23 +603,48 @@
       transition: box-shadow .15s ease, background-color .15s ease;
     }
     .caf-clean-market-row.caf-clean-market-steal {
-      box-shadow: inset 4px 0 #00e676, inset 0 0 0 1px #00e676, 0 0 8px rgba(0,230,118,.4);
+      box-shadow: inset 0 0 0 1px #00e676, 0 0 8px rgba(0,230,118,.4);
       background-color: rgba(0,230,118,.08) !important;
     }
     .caf-clean-market-row.caf-clean-market-good {
-      box-shadow: inset 4px 0 #5ee27a, inset 0 0 0 1px #5ee27a;
+      box-shadow: inset 0 0 0 1px #5ee27a;
       background-color: rgba(94,226,122,.07) !important;
     }
     .caf-clean-market-row.caf-clean-market-fair {
-      box-shadow: inset 3px 0 #ffd166;
+      box-shadow: none;
     }
     .caf-clean-market-row.caf-clean-market-high {
-      box-shadow: inset 3px 0 #ff7b89;
+      box-shadow: none;
     }
     .caf-clean-market-row.caf-clean-market-broad,
     .caf-clean-market-row.caf-clean-market-unknown {
-      box-shadow: inset 3px 0 #8b949e;
+      box-shadow: none;
     }
+    .caf-clean-market-deal-rail {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 8;
+      display: flex;
+      flex-direction: column;
+      width: 4px;
+      overflow: hidden;
+      border-radius: 2px 0 0 2px;
+      pointer-events: none;
+    }
+    .caf-clean-market-deal-rail > span {
+      display: block;
+      flex: 1 1 50%;
+      min-height: 1px;
+      background: #8b949e;
+    }
+    .caf-clean-market-deal-rail .is-steal { background: #00e676; box-shadow: 0 0 5px rgba(0,230,118,.95); }
+    .caf-clean-market-deal-rail .is-good { background: #5ee27a; }
+    .caf-clean-market-deal-rail .is-fair { background: #ffd166; }
+    .caf-clean-market-deal-rail .is-high { background: #ff5c70; }
+    .caf-clean-market-deal-rail .is-broad,
+    .caf-clean-market-deal-rail .is-unknown { background: #8b949e; }
     .caf-clean-market-thumb {
       position: relative !important;
     }
@@ -2106,6 +2131,51 @@
     return ["caf-clean-high", "HIGH"];
   }
 
+  function dealSummary(item, sales) {
+    const prices = sales.map(sale => Number(sale.price || 0)).filter(Boolean);
+    if (!prices.length) return null;
+    const low = Math.min(...prices);
+    const middle = median(prices);
+    const high = Math.max(...prices);
+    const [dealClass, dealLabel] = dealState(item.bid, low, middle, high);
+    return { low, middle, high, dealClass, dealLabel, salesCount: prices.length };
+  }
+
+  function saleBonusValueMap(sale) {
+    const values = new Map();
+    if (!Array.isArray(sale?.bonus_values)) return values;
+    sale.bonus_values.forEach(bonus => {
+      const id = Number(bonus?.bonus_id ?? bonus?.id);
+      const rawValue = bonus?.bonus_value ?? bonus?.value ?? bonus?.percentage ?? bonus?.percent;
+      const value = rawValue === null || rawValue === undefined || String(rawValue).trim() === ""
+        ? null
+        : numberFrom(rawValue);
+      if (Number.isFinite(id) && id > 0 && value !== null) values.set(id, value);
+    });
+    return values;
+  }
+
+  function strengthComparableSales(item, sales) {
+    const targets = (item.bonuses || []).map(bonus => ({
+      id: Number(bonus.id),
+      value: bonus.value === null || bonus.value === undefined || String(bonus.value).trim() === ""
+        ? null
+        : numberFrom(bonus.value)
+    })).filter(bonus => Number.isFinite(bonus.id) && bonus.id > 0 && bonus.value !== null);
+    if (!targets.length || targets.length !== (item.bonuses || []).length) return [];
+    return sales.filter(sale => {
+      const values = saleBonusValueMap(sale);
+      return targets.every(target => values.has(target.id) && values.get(target.id) <= target.value);
+    });
+  }
+
+  function strengthComparisonLabel(item) {
+    const bonuses = (item.bonuses || []).filter(bonus => bonus.value !== null && bonus.value !== undefined);
+    return bonuses.length
+      ? bonuses.map(bonus => `${bonus.name} ≤ ${bonus.value}%`).join(" / ")
+      : "same or weaker bonuses";
+  }
+
   function compareColor(value, current, minimum, maximum, lowerIsBetter = false) {
     if (value === null || current === null) return "#999";
     if (value === current) return "#ffd166";
@@ -2116,19 +2186,23 @@
   }
 
   function renderHistory(item, sales, box, usedBroadFallback = false) {
-    const prices = sales.map(sale => Number(sale.price || 0)).filter(Boolean);
-    if (!prices.length) {
+    const visibleLimit = Math.max(1, Number(item.historySettings?.count || sales.length || 25));
+    const visibleSales = sales.slice(0, visibleLimit);
+    const rawSummary = dealSummary(item, visibleSales);
+    if (!rawSummary) {
       box.innerHTML = `<span class="caf-clean-muted">No finished sales found for parsed item “${escapeHtml(normalizeItemName(item.name))}”.</span>`;
       return null;
     }
 
-    const low = Math.min(...prices);
-    const middle = median(prices);
-    const high = Math.max(...prices);
-    const [dealClass, dealLabel] = dealState(item.bid, low, middle, high);
-    const damageValues = sales.map(sale => saleNumber(sale, "stat_damage", "damage", "item_damage")).filter(value => value !== null);
-    const accuracyValues = sales.map(sale => saleNumber(sale, "stat_accuracy", "accuracy", "item_accuracy")).filter(value => value !== null);
-    const qualityValues = sales.map(sale => saleNumber(sale, "stat_quality", "quality")).filter(value => value !== null);
+    const { low, middle, high, dealClass, dealLabel } = rawSummary;
+    const comparableSales = item.marketListing && !usedBroadFallback
+      ? strengthComparableSales(item, sales).slice(0, visibleLimit)
+      : [];
+    const comparableSummary = comparableSales.length ? dealSummary(item, comparableSales) : null;
+    const comparableLabel = strengthComparisonLabel(item);
+    const damageValues = visibleSales.map(sale => saleNumber(sale, "stat_damage", "damage", "item_damage")).filter(value => value !== null);
+    const accuracyValues = visibleSales.map(sale => saleNumber(sale, "stat_accuracy", "accuracy", "item_accuracy")).filter(value => value !== null);
+    const qualityValues = visibleSales.map(sale => saleNumber(sale, "stat_quality", "quality")).filter(value => value !== null);
     const damageMin = damageValues.length ? Math.min(...damageValues, item.damage) : item.damage;
     const damageMax = damageValues.length ? Math.max(...damageValues, item.damage) : item.damage;
     const accuracyMin = accuracyValues.length ? Math.min(...accuracyValues, item.accuracy) : item.accuracy;
@@ -2138,17 +2212,30 @@
 
     box.innerHTML = `
       <div class="caf-clean-summary">
-        <span class="${dealClass}">${item.marketListing ? "Ask" : "Bid"} ${money(item.bid)} — ${dealLabel}</span>
+        <span class="${dealClass}">${item.marketListing ? "Type match" : "Bid"}: ${money(item.bid)} — ${dealLabel}</span>
         <span class="caf-clean-muted"> | </span>
         <span style="color:#7ee787">L ${money(low)}</span>
         <span class="caf-clean-muted"> | </span>
         <span style="color:#b98cff">M ${money(middle)}</span>
         <span class="caf-clean-muted"> | </span>
         <span style="color:#ff8b8b">H ${money(high)}</span>
-        <span class="caf-clean-muted"> | ${sales.length} sale(s)</span>
+        <span class="caf-clean-muted"> | ${rawSummary.salesCount} sale(s)</span>
       </div>
+      ${item.marketListing && !usedBroadFallback ? (comparableSummary ? `
+        <div class="caf-clean-summary">
+          <span class="${comparableSummary.dealClass}">Strength adjusted: ${money(item.bid)} — ${comparableSummary.dealLabel}</span>
+          <span class="caf-clean-muted"> | </span>
+          <span style="color:#7ee787">L ${money(comparableSummary.low)}</span>
+          <span class="caf-clean-muted"> | </span>
+          <span style="color:#b98cff">M ${money(comparableSummary.middle)}</span>
+          <span class="caf-clean-muted"> | </span>
+          <span style="color:#ff8b8b">H ${money(comparableSummary.high)}</span>
+          <span class="caf-clean-muted"> | ${comparableSummary.salesCount} sale(s)</span>
+        </div>
+        <div class="caf-clean-advice">Uses recorded ${escapeHtml(comparableLabel)} sales only.</div>
+      ` : `<div class="caf-clean-advice">Strength adjusted: no recorded ${escapeHtml(comparableLabel)} sales were found, so the lower rail is gray.</div>`) : ""}
       <div class="caf-clean-advice">${item.marketListing
-        ? "Price comparison only. Stats, bonus strength, market supply, and sale age can materially affect value."
+        ? "Price comparison only. Weapon stats, market supply, and sale age can materially affect value."
         : "Price comparison only. The current auction can still rise before it closes."}</div>
       ${usedBroadFallback ? `<div class="caf-clean-advice">No exact bonus match was found, so this shows broader history for the same item.</div>` : ""}
       <button class="caf-clean-toggle" style="width:100%;margin-top:5px">Previous Sales ▼</button>
@@ -2156,7 +2243,7 @@
         <div class="caf-clean-grid caf-clean-grid-header">
           <span>Sold</span><span>Dmg</span><span>Acc</span><span>Q</span><span>Bonus</span><span>Age</span>
         </div>
-        ${sales.map(sale => {
+        ${visibleSales.map(sale => {
           const price = Number(sale.price || 0);
           const damage = saleNumber(sale, "stat_damage", "damage", "item_damage");
           const accuracy = saleNumber(sale, "stat_accuracy", "accuracy", "item_accuracy");
@@ -2186,7 +2273,16 @@
       salesBox.style.display = open ? "none" : "block";
       toggle.textContent = open ? "Previous Sales ▼" : "Previous Sales ▲";
     });
-    return { low, middle, high, dealClass, dealLabel, salesCount: sales.length, usedBroadFallback };
+    return {
+      ...rawSummary,
+      usedBroadFallback,
+      comparableLow: comparableSummary?.low ?? null,
+      comparableMiddle: comparableSummary?.middle ?? null,
+      comparableHigh: comparableSummary?.high ?? null,
+      comparableDealClass: comparableSummary?.dealClass ?? null,
+      comparableDealLabel: comparableSummary?.dealLabel ?? null,
+      comparableSalesCount: comparableSummary?.salesCount ?? 0
+    };
   }
 
   async function runHistory(item, scope) {
@@ -2208,7 +2304,10 @@
 
     try {
       const body = historyBody(item);
-      let sales = await searchHistoryDeep(body);
+      const searchBody = item.marketListing
+        ? { ...body, __visibleLimit: Math.min(400, Math.max(100, body.__visibleLimit * 4)) }
+        : body;
+      let sales = await searchHistoryDeep(searchBody);
       let usedBroadFallback = false;
 
       if (!sales.length && (body.__targetBonusIds.length || body.__forceDouble)) {
@@ -2383,9 +2482,11 @@
       const id = Number(bonus?.bonus_id ?? bonus?.id ?? BONUS_IDS[name.toLowerCase()] ?? 0);
       const valueSource = bonus?.value ?? bonus?.bonus_value ?? bonus?.bonusValue
         ?? bonus?.percentage ?? bonus?.percent;
-      const parsedValue = numberFrom((String(valueSource ?? "").match(/-?\d+(?:\.\d+)?/) || [])[0]);
+      const parsedValueText = (String(valueSource ?? "").match(/-?\d+(?:\.\d+)?/) || [])[0];
+      const parsedValue = parsedValueText === undefined ? null : numberFrom(parsedValueText);
       const description = String(bonus?.description ?? bonus?.desc ?? bonus?.effect ?? "");
-      const descriptionValue = numberFrom((description.match(/(\d+(?:\.\d+)?)\s*%/) || [])[1]);
+      const descriptionValueText = (description.match(/(\d+(?:\.\d+)?)\s*%/) || [])[1];
+      const descriptionValue = descriptionValueText === undefined ? null : numberFrom(descriptionValueText);
       return {
         id,
         name,
@@ -2396,7 +2497,7 @@
 
   function marketListingSource(row) {
     const clone = row.cloneNode(true);
-    clone.querySelectorAll(".caf-clean-market-tools, .caf-clean-market-bonus-percent, .caf-clean-market-bonus-line, .caf-clean-market-add").forEach(element => element.remove());
+    clone.querySelectorAll(".caf-clean-market-tools, .caf-clean-market-bonus-percent, .caf-clean-market-bonus-line, .caf-clean-market-add, .caf-clean-market-deal-rail").forEach(element => element.remove());
     const attributes = [...clone.querySelectorAll("[aria-label], [title], [data-item-name], [data-bonus], [data-bonus-name], [data-bonus-value]")]
       .flatMap(element => [
         element.getAttribute("aria-label"),
@@ -2482,6 +2583,36 @@
       && itemMatchesBonusRange(item, filter.bonusMin, filter.bonusMax);
   }
 
+  function ensureMarketDealRail(row, item) {
+    let rail = row.querySelector(":scope > .caf-clean-market-deal-rail");
+    if (!item?.bonuses?.length) {
+      rail?.remove();
+      return null;
+    }
+    if (!rail) {
+      rail = document.createElement("span");
+      rail.className = "caf-clean-market-deal-rail";
+      rail.innerHTML = `<span class="caf-clean-market-deal-rail-type is-unknown"></span><span class="caf-clean-market-deal-rail-strength is-unknown"></span>`;
+      row.prepend(rail);
+    }
+    return rail;
+  }
+
+  function setMarketDealRail(row, typeState = "unknown", strengthState = "unknown") {
+    const item = marketItemByRow.get(row);
+    const rail = ensureMarketDealRail(row, item);
+    if (!rail) return;
+    const validStates = new Set(["steal", "good", "fair", "high", "broad", "unknown"]);
+    const top = validStates.has(typeState) ? typeState : "unknown";
+    const bottom = validStates.has(strengthState) ? strengthState : "unknown";
+    const topBar = rail.querySelector(".caf-clean-market-deal-rail-type");
+    const bottomBar = rail.querySelector(".caf-clean-market-deal-rail-strength");
+    if (topBar) topBar.className = `caf-clean-market-deal-rail-type is-${top}`;
+    if (bottomBar) bottomBar.className = `caf-clean-market-deal-rail-strength is-${bottom}`;
+    rail.title = `Top: type-match ${marketDealLabel(top)}. Bottom: same-or-weaker strength ${marketDealLabel(bottom)}.`;
+    rail.setAttribute("aria-label", rail.title);
+  }
+
   function clearMarketDeal(row) {
     row.classList.remove(
       "caf-clean-market-steal",
@@ -2492,8 +2623,10 @@
       "caf-clean-market-unknown"
     );
     delete row.dataset.cafMarketDealState;
+    delete row.dataset.cafMarketComparableDealState;
     row.querySelector(".caf-clean-market-deal-badge")?.remove();
     setMarketBonusDealIndicator(row, "UNKNOWN");
+    setMarketDealRail(row, "unknown", "unknown");
   }
 
   function setMarketBonusDealIndicator(row, label = "UNKNOWN", broad = false) {
@@ -2576,16 +2709,13 @@
       button.dataset.itemId = itemId;
       container.appendChild(button);
     }
-    if (!button.__cafCleanAddBound) {
-      button.__cafCleanAddBound = true;
-      button.addEventListener("click", event => {
-        event.preventDefault();
-        event.stopPropagation();
-        const currentRow = button.closest(MARKET_SELECTORS.gridTile) || button.closest(MARKET_SELECTORS.row);
-        const currentItem = currentRow ? marketItemByRow.get(currentRow) : null;
-        if (currentRow && currentItem) toggleMarketPick(currentRow, currentItem);
-      });
-    }
+    button.onclick = event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const currentRow = button.closest(MARKET_SELECTORS.gridTile) || button.closest(MARKET_SELECTORS.row);
+      const currentItem = currentRow ? marketItemByRow.get(currentRow) : null;
+      if (currentRow && currentItem) toggleMarketPick(currentRow, currentItem);
+    };
     if (button.parentElement !== container) container.appendChild(button);
     button.classList.toggle("is-inline", container === inlineContainer);
     const added = marketPicks.has(itemId);
@@ -2647,6 +2777,15 @@
       || "unknown";
   }
 
+  function marketComparableDealStateFromRow(row) {
+    return row.dataset.cafMarketComparableDealState || "unknown";
+  }
+
+  function marketStateFromLabel(label, fallback = "unknown") {
+    const state = String(label || "").toLowerCase();
+    return ["steal", "good", "fair", "high", "broad"].includes(state) ? state : fallback;
+  }
+
   function marketDealLabel(state) {
     return {
       steal: "STEAL",
@@ -2669,17 +2808,18 @@
     });
   }
 
-  function updateMarketPickDeal(itemId, state) {
+  function updateMarketPickDeal(itemId, typeState, strengthState = typeState) {
     const entry = marketPicks.get(String(itemId));
     if (!entry) return;
-    entry.dealState = state || "unknown";
+    entry.typeDealState = typeState || "unknown";
+    entry.dealState = strengthState || "unknown";
     const pick = [...document.querySelectorAll(".caf-clean-market-pick")]
       .find(element => element.dataset.itemId === String(itemId));
     if (!pick) return;
     const dot = pick.querySelector(".caf-clean-market-deal-dot");
     const label = pick.querySelector(".caf-clean-market-pick-deal");
     if (dot) dot.className = `caf-clean-market-deal-dot is-${entry.dealState}`;
-    if (label) label.textContent = marketDealLabel(entry.dealState);
+    if (label) label.textContent = `RAW ${marketDealLabel(entry.typeDealState)} · ADJ ${marketDealLabel(entry.dealState)}`;
   }
 
   function renderMarketPicks() {
@@ -2701,7 +2841,7 @@
         <div class="caf-clean-market-pick-head">
           <span class="caf-clean-market-deal-dot is-${escapeAttr(entry.dealState || "unknown")}"></span>
           <span class="caf-clean-market-pick-name">${escapeHtml(item.name)}</span>
-          <span class="caf-clean-market-pick-deal">${marketDealLabel(entry.dealState || "unknown")}</span>
+          <span class="caf-clean-market-pick-deal">RAW ${marketDealLabel(entry.typeDealState || "unknown")} · ADJ ${marketDealLabel(entry.dealState || "unknown")}</span>
           <button class="caf-clean-market-pick-remove" type="button">Remove</button>
         </div>
         <div class="caf-clean-market-pick-meta">Ask ${money(item.bid)} · ${escapeHtml(itemBonusText(item))}</div>
@@ -2720,10 +2860,13 @@
         event.preventDefault();
         event.stopPropagation();
         const summary = await runHistory(item, pick);
-        const state = summary?.usedBroadFallback
+        const typeState = summary?.usedBroadFallback
           ? "broad"
-          : String(summary?.dealLabel || "unknown").toLowerCase();
-        updateMarketPickDeal(itemId, state);
+          : marketStateFromLabel(summary?.dealLabel);
+        const strengthState = summary?.usedBroadFallback
+          ? "unknown"
+          : marketStateFromLabel(summary?.comparableDealLabel);
+        updateMarketPickDeal(itemId, typeState, strengthState);
         if (entry.sourceRow?.isConnected) applyMarketDeal(entry.sourceRow, summary);
       });
     });
@@ -2738,7 +2881,8 @@
         historySettings: { ...(item.historySettings || {}) }
       },
       sourceRow: row,
-      dealState: marketDealStateFromRow(row)
+      typeDealState: marketDealStateFromRow(row),
+      dealState: marketComparableDealStateFromRow(row)
     });
     if (render) renderMarketPicks();
     syncMarketAddButtons();
@@ -2761,7 +2905,7 @@
     let added = 0;
     rows.forEach(row => {
       const item = marketItemByRow.get(row);
-      const state = marketDealStateFromRow(row);
+      const state = marketComparableDealStateFromRow(row);
       if (!item || !["steal", "good"].includes(state)) return;
       if (!marketPicks.has(String(item.id))) added += 1;
       addMarketPick(row, item, false);
@@ -2769,8 +2913,8 @@
     renderMarketPicks();
     syncMarketAddButtons();
     setMarketStatus(added
-      ? `Added ${added} GOOD/STEAL deal(s) to Market Picks.`
-      : "No new GOOD/STEAL deals are currently analyzed and visible.", !added);
+      ? `Added ${added} strength-adjusted GOOD/STEAL deal(s) to Market Picks.`
+      : "No new strength-adjusted GOOD/STEAL deals are currently analyzed and visible.", !added);
   }
 
   function applyMarketDeal(row, summary) {
@@ -2780,7 +2924,9 @@
     if (!summary) {
       row.classList.add("caf-clean-market-unknown");
       row.dataset.cafMarketDealState = "unknown";
-      if (item) updateMarketPickDeal(item.id, "unknown");
+      row.dataset.cafMarketComparableDealState = "unknown";
+      setMarketDealRail(row, "unknown", "unknown");
+      if (item) updateMarketPickDeal(item.id, "unknown", "unknown");
       return;
     }
 
@@ -2791,8 +2937,10 @@
       badge.title = "This is based on broader same-item history because no exact bonus match was found; the row is not highlighted as a deal.";
       row.classList.add("caf-clean-market-broad");
       row.dataset.cafMarketDealState = "broad";
+      row.dataset.cafMarketComparableDealState = "unknown";
       setMarketBonusDealIndicator(row, summary.dealLabel, true);
-      if (item) updateMarketPickDeal(item.id, "broad");
+      setMarketDealRail(row, "broad", "unknown");
+      if (item) updateMarketPickDeal(item.id, "broad", "unknown");
     } else {
       badge.textContent = summary.dealLabel;
       setMarketBonusDealIndicator(row, summary.dealLabel);
@@ -2803,9 +2951,12 @@
         HIGH: "caf-clean-market-high"
       }[summary.dealLabel];
       if (rowClass) row.classList.add(rowClass);
-      const dealState = String(summary.dealLabel || "unknown").toLowerCase();
+      const dealState = marketStateFromLabel(summary.dealLabel);
+      const comparableDealState = marketStateFromLabel(summary.comparableDealLabel);
       row.dataset.cafMarketDealState = dealState;
-      if (item) updateMarketPickDeal(item.id, dealState);
+      row.dataset.cafMarketComparableDealState = comparableDealState;
+      setMarketDealRail(row, dealState, comparableDealState);
+      if (item) updateMarketPickDeal(item.id, dealState, comparableDealState);
     }
     if (head) head.prepend(badge);
   }
@@ -2859,6 +3010,7 @@
         doubleOnly: false
       };
       marketItemByRow.set(row, item);
+      ensureMarketDealRail(row, item);
       ensureMarketBonusLine(row, item);
       ensureMarketBonusBadge(row, item);
       ensureMarketAddButton(row, item);
@@ -2920,7 +3072,7 @@
         applyMarketDeal(row, summary);
         await delay(150);
       }
-      setMarketStatus(`Deal checks complete for ${rows.length} visible bonus listing(s). Green rows are below exact-match historical median; bright green rows are below the historical low.`);
+      setMarketStatus(`Deal checks complete for ${rows.length} visible bonus listing(s). The top rail is the raw type match; the bottom rail is strength-adjusted and controls Add All GOOD/STEAL.`);
     } finally {
       button.disabled = false;
     }
@@ -2977,7 +3129,7 @@
       </div>
       <details class="caf-clean-market-disclosure">
         <summary>Deal colors and data use</summary>
-        <div>STEAL is below the historical low; GOOD is below the median; FAIR is at or below the historical high; HIGH is above it. Gray means no exact-match result is available. This is a price-only signal, not a guarantee. CAF keeps the already-loaded Item Market response and Market Picks only in page memory; it makes no extra Torn request and does not persist that data. History checks send the visible item's name, stats, price, and bonuses to the external Supabase history service. No Torn credentials or API key are sent.</div>
+        <div>The left rail is split: the top half compares all same-item, same-bonus-type sales; the bottom half uses only sales where every matching bonus percentage is equal to or weaker than the listing. Add All GOOD/STEAL uses the bottom result. STEAL is below the historical low; GOOD is below the median; FAIR is at or below the historical high; HIGH is above it. Gray means no usable comparison is available. This is a price-only signal, not a guarantee. CAF keeps the already-loaded Item Market response and Market Picks only in page memory; it makes no extra Torn request and does not persist that data. History checks send the visible item's name, stats, price, and bonuses to the external Supabase history service. No Torn credentials or API key are sent.</div>
       </details>
       <div class="caf-clean-market-status">Waiting for Item Market listings...</div>
     `;
@@ -3018,8 +3170,10 @@
           "caf-clean-market-broad",
           "caf-clean-market-unknown"
         );
+        delete row.dataset.cafMarketDealState;
+        delete row.dataset.cafMarketComparableDealState;
         row.querySelector(":scope > .caf-clean-market-tools")?.remove();
-        row.querySelectorAll(".caf-clean-market-bonus-percent").forEach(badge => badge.remove());
+        row.querySelectorAll(".caf-clean-market-bonus-percent, .caf-clean-market-deal-rail").forEach(element => element.remove());
         row.querySelectorAll(".caf-clean-market-bonus-line, .caf-clean-market-add").forEach(element => element.remove());
         row.querySelectorAll(".caf-clean-market-thumb").forEach(holder => holder.classList.remove("caf-clean-market-thumb"));
       });
