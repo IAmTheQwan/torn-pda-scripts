@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.8.0
+// @version      1.9.0
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -811,16 +811,22 @@
         return 'other';
     }
 
-    function saveBetStatsLink(betId, fixture, placedAt = 0) {
+    function saveBetStatsLink(betId, fixture, placedAt = 0, betData = {}) {
         if (!betId || !fixture) return;
         const links = loadBetStatsLinks();
+        const existing = links[String(betId)] || {};
+        const nextCategory = getFixtureStatsCategory(fixture);
         links[String(betId)] = {
-            category: getFixtureStatsCategory(fixture),
-            gameId: fixture.gameId || '',
-            homeTeam: fixture.homeTeam || '',
-            awayTeam: fixture.awayTeam || '',
-            placedSelection: fixture.placedSelection || fixture.recommendedSelection || '',
-            placedAt: Number(placedAt || 0),
+            ...existing,
+            category: nextCategory !== 'other' || !existing.category ? nextCategory : existing.category,
+            gameId: fixture.gameId || existing.gameId || '',
+            homeTeam: fixture.homeTeam || existing.homeTeam || '',
+            awayTeam: fixture.awayTeam || existing.awayTeam || '',
+            placedSelection: fixture.placedSelection || fixture.recommendedSelection || existing.placedSelection || '',
+            startTimestamp: Number(fixture.startTimestamp || existing.startTimestamp || 0),
+            placedAt: Number(placedAt || existing.placedAt || 0),
+            stake: Number(betData.stake || existing.stake || 0),
+            odds: Number(betData.odds || fixture.myBetsOdds || existing.odds || 0),
             capturedAt: Date.now()
         };
         const limited = Object.entries(links)
@@ -920,7 +926,7 @@
             clusterStarted = true;
             lastClusterTimestamp = log.timestamp;
             const fixture = findFixtureForOpenBet(log, bet, odds);
-            if (fixture) saveBetStatsLink(log.id, fixture, log.timestamp);
+            if (fixture) saveBetStatsLink(log.id, fixture, log.timestamp, { stake: bet, odds });
 
             foundOpen.push({
                 id: log.id,
@@ -1396,6 +1402,17 @@
             }
         });
 
+        pendingBySelection.forEach(pending => {
+            pending.forEach(placed => {
+                const providerResult = links[String(placed.log.id)] || {};
+                if (!['win', 'loss'].includes(providerResult.providerOutcome)) return;
+                const row = categories[placed.category] || categories.other;
+                if (providerResult.providerOutcome === 'win') row.wins++;
+                else row.losses++;
+                row.net += Number(providerResult.providerNet || 0);
+            });
+        });
+
         const rows = Object.values(categories).map(row => {
             const settled = row.wins + row.losses;
             return {
@@ -1414,6 +1431,122 @@
         total.winPct = total.settled ? total.wins / total.settled * 100 : 0;
         total.lossPct = total.settled ? total.losses / total.settled * 100 : 0;
         return { rows, total, fromDate: scanStartDate || defaultScanStartDate() };
+    }
+
+    function getSettledPlacedBetIds(fromTimestamp) {
+        const settled = new Set();
+        const pendingBySelection = new Map();
+        [...rawLogs].sort((a, b) => a.timestamp - b.timestamp).forEach(log => {
+            if (Number(log.timestamp || 0) < fromTimestamp) return;
+            const type = classifyLog(log);
+            const key = getSelectionKey(log);
+            if (!key) return;
+            if (type === 'placed') {
+                if (!pendingBySelection.has(key)) pendingBySelection.set(key, []);
+                pendingBySelection.get(key).push({ id: String(log.id), bet: getBetAmount(log) });
+                return;
+            }
+            if (!['win', 'loss', 'refund'].includes(type)) return;
+            const pending = pendingBySelection.get(key) || [];
+            if (!pending.length) return;
+            const resultBet = getBetAmount(log);
+            let index = resultBet ? pending.findIndex(entry => Math.abs(entry.bet - resultBet) < 1) : -1;
+            if (index < 0) index = 0;
+            const [placed] = pending.splice(index, 1);
+            settled.add(placed.id);
+            if (!pending.length) pendingBySelection.delete(key);
+        });
+        return settled;
+    }
+
+    function outcomeForTrackedSelection(link, homeGoals, awayGoals) {
+        const selection = normalizeScoreTeamName(link.placedSelection);
+        const home = normalizeScoreTeamName(link.homeTeam);
+        const away = normalizeScoreTeamName(link.awayTeam);
+        if (!selection || !Number.isFinite(homeGoals) || !Number.isFinite(awayGoals)) return '';
+        if (selection === home) return homeGoals > awayGoals ? 'win' : 'loss';
+        if (selection === away) return awayGoals > homeGoals ? 'win' : 'loss';
+        if (/^(draw|tie)$/i.test(String(link.placedSelection || '').trim())) return homeGoals === awayGoals ? 'win' : 'loss';
+        return '';
+    }
+
+    async function measureTrackedStatsDatabase() {
+        buildBookieData();
+        const fromTimestamp = dateToUnixStart(scanStartDate || defaultScanStartDate());
+        const settledIds = getSettledPlacedBetIds(fromTimestamp);
+        let links = loadBetStatsLinks();
+        const placedLogs = rawLogs
+            .filter(log => classifyLog(log) === 'placed' && Number(log.timestamp || 0) >= fromTimestamp)
+            .sort((a, b) => a.timestamp - b.timestamp);
+        let measured = 0;
+        let alreadySettled = 0;
+        let unresolved = 0;
+        let requests = 0;
+        let cacheHits = 0;
+
+        for (const log of placedLogs) {
+            const id = String(log.id);
+            if (settledIds.has(id)) {
+                alreadySettled++;
+                continue;
+            }
+            let link = links[id];
+            if (!link) {
+                const fixture = findFixtureForOpenBet(log, getBetAmount(log), getOdds(log));
+                if (fixture) {
+                    saveBetStatsLink(id, fixture, log.timestamp, { stake: getBetAmount(log), odds: getOdds(log) });
+                    links = loadBetStatsLinks();
+                    link = links[id];
+                }
+            }
+            if (!link?.homeTeam || !link?.awayTeam || !link?.placedSelection || !Number(link.startTimestamp || 0)) {
+                unresolved++;
+                continue;
+            }
+            if (['win', 'loss'].includes(link.providerOutcome)) {
+                measured++;
+                continue;
+            }
+            if (Number(link.startTimestamp) > Date.now()) continue;
+
+            const fixture = {
+                homeTeam: link.homeTeam,
+                awayTeam: link.awayTeam,
+                startTimestamp: Number(link.startTimestamp)
+            };
+            const result = await getSportsDbEventForFixture(fixture, utcDateKey(fixture.startTimestamp));
+            if (result.error || !result.event) {
+                unresolved++;
+                continue;
+            }
+            if (result.cached) cacheHits++;
+            else requests++;
+            const event = result.event;
+            if (!isFinalFootballStatus(event.strStatus)) continue;
+            const homeGoals = Number(event.intHomeScore);
+            const awayGoals = Number(event.intAwayScore);
+            const outcome = outcomeForTrackedSelection(link, homeGoals, awayGoals);
+            if (!outcome) {
+                unresolved++;
+                continue;
+            }
+            const stake = Number(link.stake || getBetAmount(log) || 0);
+            const odds = Number(link.odds || getOdds(log) || 0);
+            links[id] = {
+                ...link,
+                providerOutcome: outcome,
+                providerNet: outcome === 'win' ? stake * Math.max(0, odds - 1) : -stake,
+                providerScore: `${homeGoals}-${awayGoals}`,
+                providerStatus: event.strStatus,
+                providerMeasuredAt: Date.now()
+            };
+            localStorage.setItem(BET_STATS_LINKS_KEY, JSON.stringify(links));
+            measured++;
+            if (!result.cached) await delay(SPORTSDB_MIN_REQUEST_GAP_MS);
+        }
+
+        const usage = getSportsDbUsage();
+        lastLoadStatus = `Stats database audit: ${alreadySettled} measured from Torn, ${measured} from TheSportsDB, ${unresolved} missing fixture evidence. ${requests} requests, ${cacheHits} cached; ${usage.remaining}/${usage.limit} calls remain this minute.`;
     }
 
     function getFootballFixtureDetails(item, href = '') {
@@ -1536,14 +1669,14 @@
         }
     }
 
-    function saveManualBetLink(betId, fixture) {
+    function saveManualBetLink(betId, fixture, betData = {}) {
         const links = loadManualBetLinks();
         links[String(betId)] = { ...fixture, capturedAt: Date.now(), linkedBy: 'manual-my-bets' };
         const limited = Object.entries(links)
             .sort((a, b) => Number(b[1]?.capturedAt || 0) - Number(a[1]?.capturedAt || 0))
             .slice(0, 200);
         localStorage.setItem(MANUAL_BET_LINKS_KEY, JSON.stringify(Object.fromEntries(limited)));
-        saveBetStatsLink(betId, fixture);
+        saveBetStatsLink(betId, fixture, 0, betData);
     }
 
     function getPendingManualCapture() {
@@ -1733,7 +1866,7 @@
             myBetsOdds: Number(match?.odds || 0),
             apiOddsAtCapture: Number(pending.odds || 0),
             captureMatch: exactMatch ? 'exact' : match ? 'manual-relaxed' : 'names-only'
-        });
+        }, { stake: pending.stake, odds: pending.odds });
         localStorage.removeItem(PENDING_MANUAL_CAPTURE_KEY);
         buildBookieData();
         return { captured: true, fixture: details, selection: match?.selection || '' };
@@ -2687,7 +2820,9 @@ ${safeJson(log.raw)}
             other: 'border-left:6px solid #777;'
         };
         body.innerHTML = `
+            <div class="tbp-muted" style="margin-bottom:8px;">${lastLoadStatus}</div>
             <div class="tbp-muted" style="margin-bottom:8px;">Settled bets placed from ${escapeHtml(stats.fromDate)} through today. Categories use the color recorded when the Football fixture was reviewed.</div>
+            <button class="tbp-btn tbp-btn-primary" id="tbp-measure-stats-btn" style="width:100%; margin-bottom:8px;">Measure Tracked Database</button>
             <div class="tbp-summary-grid">
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Total Record</div><div class="tbp-summary-value">${total.wins}-${total.losses}</div></div>
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Win / Loss</div><div class="tbp-summary-value" style="font-size:13px;">${total.winPct.toFixed(1)}% / ${total.lossPct.toFixed(1)}%</div></div>
@@ -2778,6 +2913,16 @@ ${safeJson(log.raw)}
                 checkScoresBtn.disabled = true;
                 checkScoresBtn.textContent = 'Checking...';
                 await checkOpenBetScores();
+                render();
+            };
+        }
+
+        const measureStatsBtn = document.getElementById('tbp-measure-stats-btn');
+        if (measureStatsBtn) {
+            measureStatsBtn.onclick = async () => {
+                measureStatsBtn.disabled = true;
+                measureStatsBtn.textContent = 'Measuring...';
+                await measureTrackedStatsDatabase();
                 render();
             };
         }
