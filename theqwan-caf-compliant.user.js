@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.9.1
+// @version      1.10.0
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -547,6 +547,36 @@
       border-color: #e9d5ff;
       font-weight: 800;
     }
+    #${MARKET_PANEL_ID} .caf-clean-market-color-filter {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-column: 1 / -1;
+      gap: 5px;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-color-filter button {
+      min-height: 30px;
+      padding: 4px 2px;
+      color: #aaa;
+      font-weight: 700;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-color-filter button.is-active {
+      color: #111;
+      background: #8ecbff;
+      border-color: #b6dcff;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-color-filter button[data-color="yellow"].is-active {
+      background: #d8d800;
+      border-color: #ffff72;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-color-filter button[data-color="orange"].is-active {
+      background: #ff8c00;
+      border-color: #ffbd66;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-color-filter button[data-color="red"].is-active {
+      color: #fff;
+      background: #b82f3d;
+      border-color: #ff7b89;
+    }
     #${MARKET_PANEL_ID} .caf-clean-market-disclosure {
       margin-top: 7px;
       color: #999;
@@ -606,6 +636,21 @@
     }
     #${MARKET_PANEL_ID} .caf-clean-market-pick .caf-clean-history { width: 100%; }
     .caf-clean-market-hidden { display: none !important; }
+    .caf-clean-market-load-runway::after {
+      content: "Scroll to let Torn render more listings — CAF will filter them as they appear";
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      grid-column: 1 / -1;
+      min-height: 52vh;
+      padding: 12px;
+      color: #8ecbff;
+      background: linear-gradient(180deg, rgba(20,20,20,.15), rgba(20,20,20,.8));
+      border: 1px dashed #4f6c83;
+      border-radius: 6px;
+      box-sizing: border-box;
+      text-align: center;
+    }
     .caf-clean-market-row {
       position: relative;
       box-sizing: border-box;
@@ -2382,6 +2427,7 @@
       bonus2: "",
       bonusMin: "",
       bonusMax: "",
+      color: "",
       historyCount: 25,
       matchBonuses: true,
       doubleOnly: false
@@ -2407,6 +2453,7 @@
       bonus2: panel.querySelector("#caf-clean-market-bonus2")?.value || "",
       bonusMin: panel.querySelector("#caf-clean-market-bonus-min")?.value || "",
       bonusMax: panel.querySelector("#caf-clean-market-bonus-max")?.value || "",
+      color: panel.querySelector(".caf-clean-market-color-button.is-active")?.dataset.color || "",
       historyCount: Number(panel.querySelector("#caf-clean-market-history-count")?.value || 25),
       matchBonuses: !!panel.querySelector("#caf-clean-market-match-bonuses")?.checked,
       doubleOnly: panel.querySelector("#caf-clean-market-double")?.dataset.active === "true"
@@ -2426,6 +2473,18 @@
     button.classList.toggle("is-active", isActive);
     button.setAttribute("aria-pressed", String(isActive));
     button.textContent = `Double bonuses only: ${isActive ? "ON" : "OFF"}`;
+  }
+
+  function setMarketColorFilter(panel, color) {
+    if (!panel) return;
+    const selected = ["yellow", "orange", "red"].includes(String(color || "").toLowerCase())
+      ? String(color).toLowerCase()
+      : "";
+    panel.querySelectorAll(".caf-clean-market-color-button").forEach(button => {
+      const active = button.dataset.color === selected;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
   }
 
   function setMarketStatus(message, isError = false) {
@@ -2599,9 +2658,32 @@
     const bonusIds = (item.bonuses || []).map(bonus => String(bonus.id));
     return bonusIds.length > 0
       && (!filter.doubleOnly || bonusIds.length >= 2)
+      && (!filter.color || item.color === filter.color)
       && (!filter.bonus1 || bonusIds.includes(String(filter.bonus1)))
       && (!filter.bonus2 || bonusIds.includes(String(filter.bonus2)))
       && itemMatchesBonusRange(item, filter.bonusMin, filter.bonusMax);
+  }
+
+  function hasMarketNarrowingFilter(filter) {
+    return !!(filter.doubleOnly || filter.color || filter.bonus1 || filter.bonus2
+      || filter.bonusMin !== "" || filter.bonusMax !== "");
+  }
+
+  function updateMarketLoadRunways(parsedRows, filter) {
+    const marketRoot = document.querySelector(MARKET_SELECTORS.root);
+    if (!marketRoot) return;
+    const activeParents = new Set();
+    if (hasMarketNarrowingFilter(filter)) {
+      parsedRows.forEach(({ row, item }) => {
+        if (item.marketGridCard && row.classList.contains("caf-clean-market-hidden") && row.parentElement) {
+          activeParents.add(row.parentElement);
+        }
+      });
+    }
+    marketRoot.querySelectorAll(".caf-clean-market-load-runway").forEach(container => {
+      container.classList.toggle("caf-clean-market-load-runway", activeParents.has(container));
+    });
+    activeParents.forEach(container => container.classList.add("caf-clean-market-load-runway"));
   }
 
   function ensureMarketDealRail(row, item) {
@@ -3039,6 +3121,7 @@
 
     if (rows.length && !bonusCount) {
       rows.forEach(row => row.classList.remove("caf-clean-market-hidden"));
+      updateMarketLoadRunways([], filter);
       const message = gridCount && !marketResponseCache.size
         ? `CAF found ${gridCount} loaded market card(s), but their response data was loaded before CAF could capture it. Nothing was hidden. Refresh the Item Market page once after installing this update.`
         : gridCount && !gridCacheMatches
@@ -3058,13 +3141,18 @@
         ensureMarketTools(row, item);
       }
     });
+    updateMarketLoadRunways(parsedRows, filter);
 
     if (announce) {
       const range = filter.bonusMin || filter.bonusMax
         ? ` in the ${filter.bonusMin || "0"}–${filter.bonusMax || "∞"}% range`
         : "";
       const kind = filter.doubleOnly ? " double-bonus" : " bonus";
-      setMarketStatus(`Showing ${matchCount} matching${kind} listing(s)${range}; ${bonusCount} of ${rows.length} loaded listing(s) contain a parsed bonus.`);
+      const color = filter.color ? ` ${filter.color.toUpperCase()}` : "";
+      const runway = hasMarketNarrowingFilter(filter) && matchCount < rows.length
+        ? " Keep scrolling to let Torn render more; CAF will filter new cards automatically."
+        : "";
+      setMarketStatus(`Showing ${matchCount} matching${color}${kind} listing(s)${range}; ${bonusCount} of ${rows.length} loaded listing(s) contain a parsed bonus.${runway}`);
     }
     return rows.filter(row => !row.classList.contains("caf-clean-market-hidden"));
   }
@@ -3108,6 +3196,7 @@
     panel.querySelector("#caf-clean-market-bonus2").value = defaults.bonus2;
     panel.querySelector("#caf-clean-market-bonus-min").value = defaults.bonusMin;
     panel.querySelector("#caf-clean-market-bonus-max").value = defaults.bonusMax;
+    setMarketColorFilter(panel, defaults.color);
     panel.querySelector("#caf-clean-market-history-count").value = String(defaults.historyCount);
     panel.querySelector("#caf-clean-market-match-bonuses").checked = defaults.matchBonuses;
     setMarketDoubleOnlyButton(panel.querySelector("#caf-clean-market-double"), defaults.doubleOnly);
@@ -3143,6 +3232,9 @@
         <label>Bonus 2<select id="caf-clean-market-bonus2">${bonusFilterOptions(String(current.bonus2 || ""), "Any Bonus 2")}</select></label>
         <label>Minimum bonus %<input id="caf-clean-market-bonus-min" type="number" min="0" step="0.01" placeholder="No minimum" value="${escapeAttr(current.bonusMin)}"></label>
         <label>Maximum bonus %<input id="caf-clean-market-bonus-max" type="number" min="0" step="0.01" placeholder="No maximum" value="${escapeAttr(current.bonusMax)}"></label>
+        <div class="caf-clean-market-color-filter" role="group" aria-label="Weapon color filter">
+          ${[["", "All"], ["yellow", "Yellow"], ["orange", "Orange"], ["red", "Red"]].map(([color, label]) => `<button type="button" class="caf-clean-market-color-button ${String(current.color || "") === color ? "is-active" : ""}" data-color="${color}" aria-pressed="${String(current.color || "") === color ? "true" : "false"}">${label}</button>`).join("")}
+        </div>
         <label>History sales<select id="caf-clean-market-history-count">${[12, 25, 50, 100].map(count => `<option value="${count}" ${Number(current.historyCount) === count ? "selected" : ""}>${count}</option>`).join("")}</select></label>
         <label style="justify-content:flex-end"><span><input id="caf-clean-market-match-bonuses" type="checkbox" style="width:auto;min-height:auto" ${current.matchBonuses !== false ? "checked" : ""}> Match listing bonus types</span></label>
         <button id="caf-clean-market-double" class="caf-clean-market-double ${current.doubleOnly ? "is-active" : ""}" data-active="${current.doubleOnly ? "true" : "false"}" aria-pressed="${current.doubleOnly ? "true" : "false"}">Double bonuses only: ${current.doubleOnly ? "ON" : "OFF"}</button>
@@ -3174,6 +3266,12 @@
       saveMarketSettings();
       applyMarketFilters();
     });
+    panel.querySelectorAll(".caf-clean-market-color-button").forEach(button => button.addEventListener("click", event => {
+      event.preventDefault();
+      setMarketColorFilter(panel, event.currentTarget.dataset.color || "");
+      saveMarketSettings();
+      applyMarketFilters();
+    }));
     panel.querySelector("#caf-clean-market-picks-toggle").addEventListener("click", event => {
       event.preventDefault();
       const body = panel.querySelector("#caf-clean-market-picks-body");
@@ -3213,6 +3311,7 @@
         row.querySelectorAll(".caf-clean-market-bonus-line, .caf-clean-market-add").forEach(element => element.remove());
         row.querySelectorAll(".caf-clean-market-thumb").forEach(holder => holder.classList.remove("caf-clean-market-thumb"));
       });
+      document.querySelectorAll(".caf-clean-market-load-runway").forEach(container => container.classList.remove("caf-clean-market-load-runway"));
       return;
     }
     if (!isActiveView()) return;
