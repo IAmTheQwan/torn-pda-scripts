@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.10.0
+// @version      1.11.0
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -92,6 +92,8 @@
   const marketItemByRow = new WeakMap();
   const marketResponseCache = new Map();
   const marketPicks = new Map();
+  const historyRequestsInFlight = new Map();
+  const MARKET_ANALYSIS_CONCURRENCY = 6;
   let collectionCaptureTimer = null;
   let watchLocateTimer = null;
   let marketRefreshTimer = null;
@@ -2038,15 +2040,14 @@
   }
 
   function historyRequest(body) {
-    return new Promise((resolve, reject) => {
-      const clean = cleanRequestBody(body);
-      const key = JSON.stringify(clean);
-      const cached = cacheGet(key);
-      if (cached) {
-        resolve(cached);
-        return;
-      }
+    const clean = cleanRequestBody(body);
+    const key = JSON.stringify(clean);
+    const existing = historyRequestsInFlight.get(key);
+    if (existing) return existing;
+    const cached = cacheGet(key);
+    if (cached) return Promise.resolve(cached);
 
+    const request = new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: "POST",
         url: `${SUPABASE_URL}/functions/v1/search-auctions`,
@@ -2074,6 +2075,12 @@
         ontimeout: () => reject(new Error("History service timed out"))
       });
     });
+    historyRequestsInFlight.set(key, request);
+    const clear = () => {
+      if (historyRequestsInFlight.get(key) === request) historyRequestsInFlight.delete(key);
+    };
+    request.then(clear, clear);
+    return request;
   }
 
   function historyBody(item) {
@@ -3157,6 +3164,30 @@
     return rows.filter(row => !row.classList.contains("caf-clean-market-hidden"));
   }
 
+  function marketAnalysisLookupKey(item) {
+    const body = historyBody(item);
+    const searchBody = item.marketListing
+      ? { ...body, __visibleLimit: Math.min(400, Math.max(100, body.__visibleLimit * 4)) }
+      : body;
+    return JSON.stringify(searchBody);
+  }
+
+  function spreadMarketAnalysisTasks(tasks) {
+    const groups = new Map();
+    tasks.forEach(task => {
+      const key = marketAnalysisLookupKey(task.item);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(task);
+    });
+    const spread = [];
+    for (let depth = 0; spread.length < tasks.length; depth++) {
+      groups.forEach(group => {
+        if (group[depth]) spread.push(group[depth]);
+      });
+    }
+    return spread;
+  }
+
   async function analyzeVisibleMarketDeals() {
     const rows = applyMarketFilters();
     const button = document.getElementById("caf-clean-market-analyze");
@@ -3165,26 +3196,58 @@
       return;
     }
 
+    const tasks = spreadMarketAnalysisTasks(rows.map(row => ({
+      row,
+      item: marketItemByRow.get(row),
+      tools: row.querySelector(":scope > .caf-clean-market-tools")
+    })).filter(task => task.row.isConnected && task.item && task.tools));
+    if (!tasks.length) {
+      setMarketStatus("No matching bonus listings are currently available to analyze.", true);
+      return;
+    }
+
+    const idleLabel = button.textContent || "Analyze Visible Deals";
+    let nextIndex = 0;
+    let completed = 0;
+    let failed = 0;
+    let stopped = false;
+    const workerCount = Math.min(MARKET_ANALYSIS_CONCURRENCY, tasks.length);
     button.disabled = true;
+    button.textContent = `Analyzing 0/${tasks.length}`;
+    setMarketStatus(`Analyzing ${tasks.length} visible deal(s) with ${workerCount} parallel history checks...`);
     try {
-      for (let index = 0; index < rows.length; index++) {
-        if (!isActiveView() || !isItemMarketPage()) {
-          setMarketStatus("Deal analysis stopped because the Item Market page is no longer visible. Existing results were kept.", true);
-          return;
+      const worker = async () => {
+        while (!stopped) {
+          if (!isActiveView() || !isItemMarketPage()) {
+            stopped = true;
+            setMarketStatus("Deal analysis stopped because the Item Market page is no longer visible. Existing results were kept.", true);
+            return;
+          }
+          const taskIndex = nextIndex++;
+          if (taskIndex >= tasks.length) return;
+          const { row, item, tools } = tasks[taskIndex];
+          if (!row.isConnected) {
+            completed += 1;
+            continue;
+          }
+          const summary = await runHistory(item, tools);
+          if (!summary) failed += 1;
+          applyMarketDeal(row, summary);
+          completed += 1;
+          button.textContent = `Analyzing ${completed}/${tasks.length}`;
+          if (!stopped) {
+            setMarketStatus(`Painted ${completed} of ${tasks.length} deal(s) using up to ${workerCount} parallel history checks${failed ? `; ${failed} had no usable history` : ""}.`);
+          }
         }
-        const row = rows[index];
-        if (!row.isConnected) continue;
-        const item = marketItemByRow.get(row);
-        const tools = row.querySelector(":scope > .caf-clean-market-tools");
-        if (!item || !tools) continue;
-        setMarketStatus(`Checking deal ${index + 1} of ${rows.length}: ${item.name}`);
-        const summary = await runHistory(item, tools);
-        applyMarketDeal(row, summary);
-        await delay(150);
+      };
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
+      if (!stopped) {
+        const failureText = failed ? ` ${failed} listing(s) could not be rated.` : "";
+        setMarketStatus(`Deal checks complete for ${completed} visible bonus listing(s).${failureText} The top rail is the raw type match; the bottom rail is strength-adjusted and controls Add All GOOD/STEAL.`);
       }
-      setMarketStatus(`Deal checks complete for ${rows.length} visible bonus listing(s). The top rail is the raw type match; the bottom rail is strength-adjusted and controls Add All GOOD/STEAL.`);
     } finally {
       button.disabled = false;
+      button.textContent = idleLabel;
     }
   }
 
@@ -3515,7 +3578,7 @@
     if (document.body) {
       const marketObserver = new MutationObserver(records => {
         const hasMarketPageMutation = records.some(record =>
-          !record.target.closest?.(`#${MARKET_PANEL_ID}, .caf-clean-market-tools`)
+          !record.target.closest?.(`#${MARKET_PANEL_ID}, .caf-clean-market-tools, .caf-clean-market-deal-rail`)
         );
         if (hasMarketPageMutation) scheduleMarketRefresh();
       });

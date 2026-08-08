@@ -11,6 +11,8 @@ The **All / Yellow / Orange / Red** buttons filter loaded bonus equipment by its
 
 Item Market cards also have a compact `+ Add` control. Added weapons appear in the collapsible **Market Picks** area at the top of the filter panel, where each pick has the same history summary and expandable previous-sales table used by CAF. After deal analysis, **Add All GOOD/STEAL** collects the visible strong-price results into that list. Market Picks remain only in the current page's memory; they are not a background tracker or persistent Torn-data store.
 
+**Analyze Visible Deals** uses a bounded pool of up to six parallel history checks, prioritizes distinct lookups first, and shares identical in-flight lookups between equivalent listings. Duplicate cards then reuse the shared or cached sales instead of occupying the first request wave. Cards paint as their checks finish, while the button and status line show overall progress. This changes only requests to the disclosed external history service; CAF still makes no additional request to Torn.
+
 The Item Market deal rail is split vertically. Its top half shows the original price result across the current same-item/bonus-type history pool. Its bottom half is strength-adjusted: it uses only sales whose corresponding bonus percentages are equal to or weaker than the listing. For a double-bonus item, every corresponding historical bonus must be equal to or weaker. **Add All GOOD/STEAL** uses this safer bottom result.
 
 ## Compliance
