@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.3.0
+// @version      1.3.1
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -1409,9 +1409,32 @@ ${safeJson(log.raw)}
         `;
     }
 
+    function captureVisibleScanSettings() {
+        const modeInput = document.getElementById('tbp-scan-mode');
+        const dateInput = document.getElementById('tbp-scan-start-date');
+        const pagesInput = document.getElementById('tbp-max-pages');
+        if (!modeInput && !dateInput && !pagesInput) return;
+
+        if (modeInput) scanMode = modeInput.value;
+        if (dateInput) scanStartDate = dateInput.value || defaultScanStartDate();
+        if (pagesInput) {
+            maxPages = Math.max(1, Math.min(
+                Number(pagesInput.value || 5),
+                MAX_API_PAGES_PER_SCAN
+            ));
+        }
+        saveData();
+    }
+
     function attachEvents() {
+        ['tbp-scan-mode', 'tbp-scan-start-date', 'tbp-max-pages'].forEach(id => {
+            const input = document.getElementById(id);
+            if (input) input.onchange = captureVisibleScanSettings;
+        });
+
         document.querySelectorAll('.tbp-tab').forEach(tab => {
             tab.onclick = () => {
+                captureVisibleScanSettings();
                 activeTab = tab.dataset.tab;
                 saveData();
                 render();
@@ -1420,12 +1443,14 @@ ${safeJson(log.raw)}
 
         document.getElementById('tbp-hide-btn').onclick = e => {
             e.stopPropagation();
+            captureVisibleScanSettings();
             isMinimized = true;
             saveData();
             render();
         };
 
         document.getElementById('tbp-refresh-btn').onclick = async () => {
+            captureVisibleScanSettings();
             const btn = document.getElementById('tbp-refresh-btn');
             const fullBtn = document.getElementById('tbp-full-rescan-btn');
             btn.innerText = 'Checking...';
@@ -1483,6 +1508,7 @@ ${safeJson(log.raw)}
         }
 
         document.getElementById('tbp-full-rescan-btn').onclick = async () => {
+            captureVisibleScanSettings();
             if (!confirm(`Full rescan may request up to ${Math.min(maxPages, MAX_API_PAGES_PER_SCAN)} API pages. Continue?`)) return;
 
             const btn = document.getElementById('tbp-full-rescan-btn');
@@ -1609,6 +1635,8 @@ document.addEventListener('click', async e => {
     ) {
         // Ignore our own button because it already has its own handler
         if (btn.id === 'tbp-refresh-btn') return;
+
+        captureVisibleScanSettings();
 
         setTimeout(async () => {
             if (!apiKey) return;
