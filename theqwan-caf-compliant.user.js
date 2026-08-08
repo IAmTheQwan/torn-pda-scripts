@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.11.0
+// @version      1.12.0
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -1603,28 +1603,39 @@
       return;
     }
 
-    let source = [...itemById.values()];
+    const collection = loadCollection();
+    const usesCollection = !!collection?.items?.length;
+    let source = usesCollection ? collection.items.slice() : [...itemById.values()];
     if (!source.length) {
       source = analyzeCurrentPage();
     }
     if (!source.length) return;
 
+    if (usesCollection) {
+      source.forEach(item => itemById.set(item.id, item));
+    }
+
     const filter = filterSettingsFromControls();
     localStorage.setItem(FILTER_SETTINGS_KEY, JSON.stringify(filter));
     const filtered = source.filter(item => itemMatchesGeneratedFilter(item, filter));
+    const sourceDescription = usesCollection
+      ? `${collection.pages.length} captured page(s)`
+      : "the currently compiled page";
 
     if (!filtered.length) {
       document.getElementById(FILTERED_RESULTS_ID)?.remove();
-      setStatus(`Filter generated no matches from ${source.length} compiled item(s).`, true);
+      setStatus(`Filter generated no matches from ${source.length} saved item(s) across ${sourceDescription}. Adjust the filter or tap Clear Filtered List to reset it.`, true);
       return;
     }
 
+    localStorage.setItem(`${FILTERED_RESULTS_ID}:collapsed`, "false");
     renderCompiledResults(
       filtered,
-      `Filtered Results | ${filtered.length} of ${source.length} compiled item(s)`,
+      `Filtered Results | ${filtered.length} of ${source.length} item(s) | ${sourceDescription}`,
       FILTERED_RESULTS_ID
     );
-    setStatus(`Generated a separate filtered list with ${filtered.length} item(s).`);
+    document.getElementById(FILTERED_RESULTS_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setStatus(`Rendered ${filtered.length} filtered item(s) from ${source.length} saved item(s) across ${sourceDescription}.`);
   }
 
   function clearGeneratedFilter() {
