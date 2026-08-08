@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.4.2
+// @version      1.4.3
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -592,7 +592,8 @@
         const from = fullRescan || !cachedNewest
             ? configuredFrom
             : Math.max(configuredFrom, cachedNewest);
-        const pageLimit = Math.max(1, Math.min(Number(maxPages) || 5, MAX_API_PAGES_PER_SCAN));
+        const configuredPageLimit = Math.max(1, Math.min(Number(maxPages) || 5, MAX_API_PAGES_PER_SCAN));
+        const pageLimit = scanMode === 'date' ? MAX_API_PAGES_PER_SCAN : configuredPageLimit;
         const seen = new Set();
         const fetched = [];
         let to = null;
@@ -631,6 +632,9 @@
             if (scanMode !== 'pages' && (!oldest || oldest <= from)) break;
 
             to = oldest - 1;
+            if (page === pageLimit && scanMode === 'date') {
+                stopReason = `Stopped at the ${MAX_API_PAGES_PER_SCAN}-page emergency ceiling before reaching ${scanStartDate}.`;
+            }
             if (page < pageLimit) await delay(API_PAGE_DELAY_MS);
         }
 
@@ -1687,7 +1691,7 @@ ${safeJson(log.raw)}
             <div class="tbp-card">
                 <div class="tbp-muted">
                     Date + Page Limit uses both and stops when either limit is reached.
-                    Date Only starts at the configured date and still honors the page safety limit.
+                    Date Only continues to the configured date and ignores Max API Pages; a fixed ${MAX_API_PAGES_PER_SCAN}-page emergency ceiling still applies.
                     Page Limit Only ignores the configured scan date. Full Rescan always requires a separate confirmation.
                 </div>
             </div>
@@ -1844,7 +1848,13 @@ ${safeJson(log.raw)}
 
         document.getElementById('tbp-full-rescan-btn').onclick = async () => {
             captureVisibleScanSettings();
-            if (!confirm(`Full rescan may request up to ${Math.min(maxPages, MAX_API_PAGES_PER_SCAN)} API pages. Continue?`)) return;
+            const rescanPageLimit = scanMode === 'date'
+                ? MAX_API_PAGES_PER_SCAN
+                : Math.min(maxPages, MAX_API_PAGES_PER_SCAN);
+            const rescanScope = scanMode === 'date'
+                ? `reach ${scanStartDate}`
+                : `use up to ${rescanPageLimit} API pages`;
+            if (!confirm(`Full rescan will ${rescanScope} (maximum ${rescanPageLimit} pages this run). Continue?`)) return;
 
             const btn = document.getElementById('tbp-full-rescan-btn');
             const refreshBtn = document.getElementById('tbp-refresh-btn');
