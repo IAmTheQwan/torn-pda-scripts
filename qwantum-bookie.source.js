@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.9.0
+// @version      1.9.1
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -800,14 +800,20 @@
         }
     }
 
-    function getFixtureStatsCategory(fixture) {
-        if (!fixture?.matchType) return 'other';
+    function getFixtureStatsCategory(fixture, betOdds = 0) {
+        if (!fixture) return '';
         const selection = normalizeScoreTeamName(fixture.placedSelection || fixture.recommendedSelection);
         const home = normalizeScoreTeamName(fixture.homeTeam);
         const away = normalizeScoreTeamName(fixture.awayTeam);
         if (fixture.matchType === 'home-green' && selection && selection === home) return 'green';
         if (fixture.matchType === 'home-yellow' && selection && selection === home) return 'yellow';
         if (fixture.matchType === 'away-orange' && selection && selection === away) return 'orange';
+        const odds = Number(betOdds || fixture.myBetsOdds || fixture.odds || 0);
+        if (selection && selection === home) {
+            if (odds >= FOOTBALL_HOME_GREEN_MIN && odds <= FOOTBALL_HOME_ODDS_MAX) return 'green';
+            if (odds >= FOOTBALL_HOME_YELLOW_MIN && odds < FOOTBALL_HOME_GREEN_MIN) return 'yellow';
+        }
+        if (selection && selection === away && odds >= FOOTBALL_AWAY_ODDS_MIN && odds <= FOOTBALL_AWAY_ODDS_MAX) return 'orange';
         return 'other';
     }
 
@@ -815,7 +821,7 @@
         if (!betId || !fixture) return;
         const links = loadBetStatsLinks();
         const existing = links[String(betId)] || {};
-        const nextCategory = getFixtureStatsCategory(fixture);
+        const nextCategory = getFixtureStatsCategory(fixture, betData.odds);
         links[String(betId)] = {
             ...existing,
             category: nextCategory !== 'other' || !existing.category ? nextCategory : existing.category,
@@ -1358,6 +1364,8 @@
         const pendingBySelection = new Map();
         const fromTimestamp = dateToUnixStart(scanStartDate || defaultScanStartDate());
         const logs = [...rawLogs].sort((a, b) => a.timestamp - b.timestamp);
+        let trackedPlaced = 0;
+        let excludedUntracked = 0;
 
         logs.forEach(log => {
             if (Number(log.timestamp || 0) < fromTimestamp) return;
@@ -1368,13 +1376,22 @@
             if (type === 'placed') {
                 const bet = getBetAmount(log);
                 const odds = getOdds(log);
-                let category = links[String(log.id)]?.category || '';
-                if (!category) {
+                let link = links[String(log.id)] || null;
+                let category = link ? getFixtureStatsCategory(link, odds) : '';
+                if (!link) {
                     const fixture = findFixtureForOpenBet(log, bet, odds);
-                    category = getFixtureStatsCategory(fixture);
-                    if (fixture) saveBetStatsLink(log.id, fixture, log.timestamp);
+                    category = getFixtureStatsCategory(fixture, odds);
+                    if (fixture) {
+                        saveBetStatsLink(log.id, fixture, log.timestamp, { stake: bet, odds });
+                        link = loadBetStatsLinks()[String(log.id)] || fixture;
+                    }
+                }
+                if (!link) {
+                    excludedUntracked++;
+                    return;
                 }
                 if (!categories[category]) category = 'other';
+                trackedPlaced++;
                 if (!pendingBySelection.has(key)) pendingBySelection.set(key, []);
                 pendingBySelection.get(key).push({ log, bet, category });
                 return;
@@ -1430,7 +1447,7 @@
         total.settled = total.wins + total.losses;
         total.winPct = total.settled ? total.wins / total.settled * 100 : 0;
         total.lossPct = total.settled ? total.losses / total.settled * 100 : 0;
-        return { rows, total, fromDate: scanStartDate || defaultScanStartDate() };
+        return { rows, total, fromDate: scanStartDate || defaultScanStartDate(), trackedPlaced, excludedUntracked };
     }
 
     function getSettledPlacedBetIds(fromTimestamp) {
@@ -2821,8 +2838,9 @@ ${safeJson(log.raw)}
         };
         body.innerHTML = `
             <div class="tbp-muted" style="margin-bottom:8px;">${lastLoadStatus}</div>
-            <div class="tbp-muted" style="margin-bottom:8px;">Settled bets placed from ${escapeHtml(stats.fromDate)} through today. Categories use the color recorded when the Football fixture was reviewed.</div>
+            <div class="tbp-muted" style="margin-bottom:8px;">Tracked Football bets from ${escapeHtml(stats.fromDate)} through today. Color is determined from the captured home/away side and original odds. Legacy bets without captured fixture evidence are excluded.</div>
             <button class="tbp-btn tbp-btn-primary" id="tbp-measure-stats-btn" style="width:100%; margin-bottom:8px;">Measure Tracked Database</button>
+            <div class="tbp-row" style="margin:0 2px 9px;"><span>Tracked / Untracked excluded</span><span>${stats.trackedPlaced} / ${stats.excludedUntracked}</span></div>
             <div class="tbp-summary-grid">
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Total Record</div><div class="tbp-summary-value">${total.wins}-${total.losses}</div></div>
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Win / Loss</div><div class="tbp-summary-value" style="font-size:13px;">${total.winPct.toFixed(1)}% / ${total.lossPct.toFixed(1)}%</div></div>
@@ -2836,7 +2854,7 @@ ${safeJson(log.raw)}
                     <div class="tbp-row"><span>Net</span><span class="${row.net >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(row.net)}</span></div>
                 </div>
             `).join('')}
-            ${total.settled === 0 ? '<div class="tbp-muted">No settled bets with captured results were found in this date range yet.</div>' : ''}
+            ${total.settled === 0 ? '<div class="tbp-muted">No settled, tracked bets with captured home/away evidence were found in this date range yet.</div>' : ''}
         `;
     }
 
