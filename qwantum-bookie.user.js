@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.2.9
+// @version      1.3.0
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -861,7 +861,10 @@
             const info = item?.querySelector('.info-wrap');
             if (!item?.classList.contains('active') || info?.style?.display === 'none' || !getThreeWayMarket(item)) return false;
             if (footballOddsHistoryEnabled) recordFootballOddsForItem(item);
-            if (footballScanEnabled) scanFootballItem(item);
+            if (footballScanEnabled || guidedFootballSession.active) {
+                const scanResult = scanFootballItem(item);
+                recordGuidedFootballResult(href, scanResult);
+            }
 
             pendingFootballOddsObserver?.disconnect();
             pendingFootballOddsObserver = null;
@@ -942,7 +945,7 @@
     }
 
     function scanLoadedFootballGames() {
-        clearFootballHighlights();
+        if (!guidedFootballSession.active) clearFootballHighlights();
 
         if (!footballScanEnabled) {
             return { error: 'Enable Football home-odds scanning in Settings first.' };
@@ -966,10 +969,67 @@
         return { scanned, matched };
     }
 
-    let guidedFootballSession = { hrefs: [], index: -1 };
+    let guidedFootballSession = { active: false, hrefs: [], index: -1, results: {} };
 
     function resetGuidedFootballSession() {
-        guidedFootballSession = { hrefs: [], index: -1 };
+        guidedFootballSession = { active: false, hrefs: [], index: -1, results: {} };
+    }
+
+    function guidedFootballFoundCount() {
+        return Object.values(guidedFootballSession.results).filter(Boolean).length;
+    }
+
+    function guidedFootballButtonText() {
+        if (!guidedFootballSession.active) return 'Game Review';
+        const position = Math.max(0, guidedFootballSession.index + 1);
+        const total = guidedFootballSession.hrefs.length;
+        const found = guidedFootballFoundCount();
+        return position >= total
+            ? `Reviewed ${position}/${total} · ${found} found`
+            : `Next ${position}/${total} · ${found} found`;
+    }
+
+    function updateGuidedFootballControls() {
+        const reviewBtn = document.getElementById('tbp-football-guide-btn');
+        if (reviewBtn) {
+            reviewBtn.textContent = guidedFootballButtonText();
+            const complete = guidedFootballSession.active
+                && guidedFootballSession.index >= guidedFootballSession.hrefs.length - 1;
+            reviewBtn.disabled = complete;
+            reviewBtn.title = complete
+                ? `Review complete: ${guidedFootballFoundCount()} found. Press End to clear the review.`
+                : guidedFootballSession.active
+                    ? `Press once to open the next game; ${guidedFootballFoundCount()} found so far.`
+                    : 'Start a review of up to 20 upcoming Football games.';
+        }
+    }
+
+    function restoreGuidedFootballHighlights() {
+        if (!guidedFootballSession.active) return;
+        Object.entries(guidedFootballSession.results).forEach(([href, matched]) => {
+            if (!matched) return;
+            const link = Array.from(document.querySelectorAll('a[href*="#/football/"]'))
+                .find(candidate => candidate.getAttribute('href') === href);
+            link?.parentElement?.classList.add('tbp-football-match');
+        });
+    }
+
+    function recordGuidedFootballResult(href, result) {
+        if (!guidedFootballSession.active
+            || !guidedFootballSession.hrefs.includes(href)
+            || Object.prototype.hasOwnProperty.call(guidedFootballSession.results, href)) return;
+
+        guidedFootballSession.results[href] = Boolean(result.matched);
+        restoreGuidedFootballHighlights();
+        updateGuidedFootballControls();
+    }
+
+    function endGuidedFootballReview({ leftFootball = false } = {}) {
+        const wasActive = guidedFootballSession.active;
+        resetGuidedFootballSession();
+        clearFootballHighlights();
+        if (wasActive && !leftFootball && isFootballBookiePage()) location.hash = '#/football/';
+        render();
     }
 
     function getGuidedFootballCandidates() {
@@ -997,20 +1057,25 @@
             return { error: 'Open and actively view the Football section before starting guided review.' };
         }
 
-        if (!guidedFootballSession.hrefs.length) {
+        let started = false;
+        if (!guidedFootballSession.active) {
             const hrefs = getGuidedFootballCandidates();
             if (!hrefs.length) return { error: 'No upcoming Football games are currently available in the loaded list.' };
             guidedFootballSession = {
+                active: true,
                 hrefs,
-                index: hrefs.indexOf(location.hash)
+                index: -1,
+                results: {}
             };
+            started = true;
         }
 
         if (guidedFootballSession.index >= guidedFootballSession.hrefs.length - 1) {
-            const total = guidedFootballSession.hrefs.length;
-            location.hash = '#/football/';
-            resetGuidedFootballSession();
-            return { complete: true, total };
+            return {
+                complete: true,
+                total: guidedFootballSession.hrefs.length,
+                matched: guidedFootballFoundCount()
+            };
         }
 
         const nextIndex = guidedFootballSession.index + 1;
@@ -1018,16 +1083,19 @@
         const link = Array.from(document.querySelectorAll('a[href*="#/football/"]'))
             .find(candidate => candidate.getAttribute('href') === href);
         if (!link) {
+            clearFootballHighlights();
             resetGuidedFootballSession();
-            return { error: 'The Football list changed. Press Guided Review again to start a fresh session.' };
+            return { error: 'The Football list changed. Press Game Review again to start a fresh session.' };
         }
 
         guidedFootballSession.index = nextIndex;
         link.click();
         return {
             complete: false,
+            started,
             position: nextIndex + 1,
-            total: guidedFootballSession.hrefs.length
+            total: guidedFootballSession.hrefs.length,
+            matched: guidedFootballFoundCount()
         };
     }
 
@@ -1052,8 +1120,9 @@
             <div class="tbp-header">
                 <div class="tbp-header-title">
                     <strong>Bookie Panel</strong>
-                    ${footballScanEnabled ? '<button class="tbp-btn tbp-scan-btn" id="tbp-football-scan-btn">Scan Games</button>' : ''}
-                    ${guidedFootballReviewEnabled ? '<button class="tbp-btn tbp-guide-btn" id="tbp-football-guide-btn">Guided Review</button>' : ''}
+                    ${footballScanEnabled && !guidedFootballReviewEnabled ? '<button class="tbp-btn tbp-scan-btn" id="tbp-football-scan-btn">Scan Games</button>' : ''}
+                    ${guidedFootballReviewEnabled ? `<button class="tbp-btn tbp-guide-btn" id="tbp-football-guide-btn">${guidedFootballButtonText()}</button>` : ''}
+                    ${guidedFootballReviewEnabled && guidedFootballSession.active ? '<button class="tbp-btn tbp-btn-danger" id="tbp-football-end-guide-btn">End</button>' : ''}
                 </div>
                 <button class="tbp-btn" id="tbp-hide-btn" style="background:transparent; color:#888;">_</button>
             </div>
@@ -1321,11 +1390,11 @@ ${safeJson(log.raw)}
 
             <div class="tbp-card">
                 <div class="tbp-row">
-                    <span>Enable Guided Football review</span>
+                    <span>Enable Football Game Review</span>
                     <input type="checkbox" id="tbp-guided-football-review-enabled" ${guidedFootballReviewEnabled ? 'checked' : ''}>
                 </div>
                 <div class="tbp-muted" style="margin-top:7px;">
-                    Adds a header button that advances through up to ${MAX_GUIDED_FOOTBALL_GAMES} upcoming games. Each manual press opens one game and collapses the previous game; there is no automatic progression.
+                    Game Review opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. It automatically counts qualifying home odds and keeps matching fixture bars green until you press End or leave Football.
                 </div>
             </div>
 
@@ -1397,14 +1466,20 @@ ${safeJson(log.raw)}
                 }
 
                 if (result.complete) {
-                    footballGuideBtn.textContent = `Done ${result.total}`;
-                    footballGuideBtn.title = `Completed the guided review of ${result.total} games.`;
+                    updateGuidedFootballControls();
+                    footballGuideBtn.title = `Reviewed ${result.total} games and found ${result.matched} qualifying home odds. Press End to clear the review.`;
                     return;
                 }
 
-                footballGuideBtn.textContent = `Next ${result.position}/${result.total}`;
-                footballGuideBtn.title = 'Press once to open the next game.';
+                if (result.started) render();
+                else updateGuidedFootballControls();
             };
+            updateGuidedFootballControls();
+        }
+
+        const footballEndGuideBtn = document.getElementById('tbp-football-end-guide-btn');
+        if (footballEndGuideBtn) {
+            footballEndGuideBtn.onclick = () => endGuidedFootballReview();
         }
 
         document.getElementById('tbp-full-rescan-btn').onclick = async () => {
@@ -1450,7 +1525,10 @@ ${safeJson(log.raw)}
                 } else {
                     scheduleFootballHistoryExpiry(loadFootballOddsHistory());
                 }
-                if (!guidedFootballReviewEnabled) resetGuidedFootballSession();
+                if (!guidedFootballReviewEnabled) {
+                    resetGuidedFootballSession();
+                    clearFootballHighlights();
+                }
                 await hydrateFromCache();
             };
         }
@@ -1543,13 +1621,25 @@ document.addEventListener('click', async e => {
 }, true);
 
     document.addEventListener('click', event => {
-        if ((!footballOddsHistoryEnabled && !footballScanEnabled) || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+        if ((!footballOddsHistoryEnabled && !footballScanEnabled && !guidedFootballSession.active) || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
         const target = event.target instanceof Element ? event.target : null;
         const link = target?.closest('a[href*="#/football/"]');
         const href = link?.getAttribute('href') || '';
         if (!/^#\/football\/\d+$/i.test(href)) return;
         watchManuallyOpenedFootballGame(href);
     }, true);
+
+    function handleFootballReviewRouteChange() {
+        if (!guidedFootballSession.active) return;
+        if (!isFootballBookiePage()) {
+            endGuidedFootballReview({ leftFootball: true });
+            return;
+        }
+        setTimeout(restoreGuidedFootballHighlights, 0);
+    }
+
+    window.addEventListener('hashchange', handleFootballReviewRouteChange);
+    window.addEventListener('popstate', handleFootballReviewRouteChange);
 
     render();
     hydrateFromCache();
