@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.9.6
+// @version      1.9.7
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -721,6 +721,8 @@ return {};
 }
 function getFixtureStatsCategory(fixture, betOdds = 0) {
 if (!fixture) return '';
+const market = String(fixture.market || '').replace(/\s+/g, ' ').trim();
+if (market && !/^3-Way Ordinary time$/i.test(market)) return 'non3way';
 const selection = normalizeScoreTeamName(fixture.placedSelection || fixture.recommendedSelection);
 const home = normalizeScoreTeamName(fixture.homeTeam);
 const away = normalizeScoreTeamName(fixture.awayTeam);
@@ -747,6 +749,7 @@ gameId: fixture.gameId || existing.gameId || '',
 homeTeam: fixture.homeTeam || existing.homeTeam || '',
 awayTeam: fixture.awayTeam || existing.awayTeam || '',
 placedSelection: fixture.placedSelection || fixture.recommendedSelection || existing.placedSelection || '',
+market: fixture.market || existing.market || '',
 startTimestamp: Number(fixture.startTimestamp || existing.startTimestamp || 0),
 placedAt: Number(placedAt || existing.placedAt || 0),
 stake: Number(betData.stake || existing.stake || 0),
@@ -1186,7 +1189,8 @@ return {
 green: { key: 'green', label: 'Green Home', rule: `Home Win Odds: ${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}-${FOOTBALL_HOME_ODDS_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
 yellow: { key: 'yellow', label: 'Yellow Home', rule: `Home Win Odds: ${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}-${(FOOTBALL_HOME_GREEN_MIN - 0.01).toFixed(2)}`, wins: 0, losses: 0, net: 0 },
 orange: { key: 'orange', label: 'Orange Away', rule: `Away Win Odds: ${FOOTBALL_AWAY_ODDS_MIN.toFixed(2)}-${FOOTBALL_AWAY_ODDS_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
-other: { key: 'other', label: 'All Others', rule: 'Captured 3-Way bets outside the colored ranges', wins: 0, losses: 0, net: 0 }
+other: { key: 'other', label: 'All Other 3-Way Bets', rule: 'Captured 3-Way bets outside the colored ranges', wins: 0, losses: 0, net: 0 },
+non3way: { key: 'non3way', label: 'Other Non-3-Way Bets', rule: 'Captured bets using any other market', wins: 0, losses: 0, net: 0 }
 };
 }
 function hasColorStatsFixtureEvidence(link) {
@@ -1705,7 +1709,7 @@ const details = parseFootballFixtureTitle(matchTitle);
 if (!gameId || !details.homeTeam || !details.awayTeam) return;
 Array.from(link.querySelectorAll('.stick .text[title]')).forEach(element => {
 const completed = parseCompletedMyBetTitle(element.title);
-if (!completed || !/^3-Way Ordinary time$/i.test(completed.market)) return;
+if (!completed) return;
 found++;
 const resultCandidates = rawLogs
 .filter(log => classifyLog(log) === completed.type)
@@ -1730,7 +1734,7 @@ const placedLog = placedCandidates[0] || null;
 if (!placedLog) return;
 const id = String(placedLog.id);
 usedPlacedIds.add(id);
-const fingerprint = `mybets|${gameId}|${String(resultLog?.id || '')}|${completed.type}|${completed.stake}|${completed.odds}|${normalizeScoreTeamName(completed.selection)}`;
+const fingerprint = `mybets|${gameId}|${String(resultLog?.id || '')}|${completed.type}|${completed.stake}|${completed.odds}|${normalizeScoreTeamName(completed.selection)}|${completed.market.toLowerCase()}`;
 if (statsLinks[id]?.sourceFingerprint === fingerprint) return;
 saveBetStatsLink(id, {
 ...(statsLinks[id] || {}),
@@ -1746,7 +1750,7 @@ statsLinks = loadBetStatsLinks();
 captured++;
 });
 });
-if (captured) lastLoadStatus = `Captured ${captured} completed 3-Way Football bet${captured === 1 ? '' : 's'} from My Bets.`;
+if (captured) lastLoadStatus = `Captured market details for ${captured} completed Bookie bet${captured === 1 ? '' : 's'} from My Bets.`;
 return { found, captured };
 }
 function loadMyBetsOpenSnapshot() {
@@ -1829,7 +1833,7 @@ localStorage.setItem(MY_BETS_SNAPSHOT_KEY, JSON.stringify({ capturedAt: Date.now
 if (previousEntries === nextEntries && !completedCapture.captured) return false;
 buildBookieData();
 lastLoadStatus = completedCapture.captured
-? `Synced ${entries.length} open and captured ${completedCapture.captured} completed 3-Way Football bet${completedCapture.captured === 1 ? '' : 's'} from My Bets.`
+? `Synced ${entries.length} open and captured market details for ${completedCapture.captured} completed Bookie bet${completedCapture.captured === 1 ? '' : 's'} from My Bets.`
 : `Synced ${entries.length} open bet${entries.length === 1 ? '' : 's'} from My Bets.`;
 render();
 return true;
@@ -2721,13 +2725,14 @@ const colorStyles = {
 green: 'border-left:6px solid #28a745;',
 yellow: 'border-left:6px solid #d4ad00;',
 orange: 'border-left:6px solid #e87800;',
-other: 'border-left:6px solid #777;'
+other: 'border-left:6px solid #777;',
+non3way: 'border-left:6px solid #4da3ff;'
 };
 body.innerHTML = `
 <div class="tbp-muted" style="margin-bottom:8px;">${lastLoadStatus}</div>
-<div class="tbp-muted" style="margin-bottom:8px;">Color Stats include classified 3-Way Football bets placed from ${escapeHtml(stats.fromDate)} through today. Other Bookie activity remains in Daily and is counted separately here.</div>
+<div class="tbp-muted" style="margin-bottom:8px;">Stats include captured Bookie bets with market details from ${escapeHtml(stats.fromDate)} through today. Green, Yellow, Orange, and All Other 3-Way use the Football rules; other markets appear in the fifth box.</div>
 <button class="tbp-btn tbp-btn-primary" id="tbp-measure-stats-btn" style="width:100%; margin-bottom:8px;">Refresh Outcome Audit</button>
-<div class="tbp-row" style="margin:0 2px 4px;"><span>Classified 3-Way Football</span><span>${stats.trackedPlaced}</span></div>
+<div class="tbp-row" style="margin:0 2px 4px;"><span>Captured with market details</span><span>${stats.trackedPlaced}</span></div>
 <div class="tbp-row" style="margin:0 2px 4px;"><span>Settled / Open / Refunded</span><span>${stats.total.settled} / ${stats.total.open} / ${stats.total.refunds}</span></div>
 <div class="tbp-row" style="margin:0 2px 9px;"><span>Other/unclassified Bookie bets</span><span>${stats.excludedUntracked}</span></div>
 ${stats.excludedUntracked ? '<div class="tbp-muted" style="margin-bottom:9px;">Other/unclassified can include other sports, other markets, and older bets without captured fixture details. Their outcomes and money still count in Daily; they are only excluded from the colored Football records below.</div>' : ''}
@@ -2749,7 +2754,7 @@ ${(stats.before.classifiedPlaced || stats.before.missingFixture) ? `
 <div class="tbp-card" style="border-left:6px solid #4da3ff;">
 <div style="font-weight:bold; font-size:13px;">Before ${escapeHtml(stats.fromDate)}</div>
 <div class="tbp-muted" style="margin:2px 0 5px;">Captured history outside the selected Stats date range; kept separate from the totals above.</div>
-<div class="tbp-row"><span>Classified 3-Way Football</span><span>${stats.before.classifiedPlaced}</span></div>
+<div class="tbp-row"><span>Captured with market details</span><span>${stats.before.classifiedPlaced}</span></div>
 <div class="tbp-row"><span>Other/unclassified Bookie bets</span><span>${stats.before.missingFixture}</span></div>
 <div class="tbp-row"><span>Record</span><span>${stats.before.total.wins}-${stats.before.total.losses}</span></div>
 <div class="tbp-row"><span>Open / Refunded</span><span>${stats.before.total.open} / ${stats.before.total.refunds}</span></div>
