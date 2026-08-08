@@ -5,7 +5,7 @@
 // @author       TheQwan
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
-// @connect      toqggxqintcityrvfxuc.supabase.co
+// @connect      api.torn.com
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/Bookie/qwantum-bookie.meta.js
 // @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/Bookie/qwantum-bookie.user.js
 // ==/UserScript==
@@ -46,8 +46,11 @@
     const MAX_REASONABLE_OPEN_STAKE = 50000000;
     const MAX_CLUSTER_GAP_SECONDS = 8 * 60 * 60;
 
-    const SUPABASE_URL = "https://toqggxqintcityrvfxuc.supabase.co";
-    const SUPABASE_ANON_KEY = "sb_publishable_WunM8ONFcASsy57QkrD1_w_YTl_wFx-";
+    const CACHE_DB_NAME = 'tbp_bookie_history';
+    const CACHE_DB_VERSION = 1;
+    const CACHE_STORE_NAME = 'logs';
+    const MAX_API_PAGES_PER_SCAN = 50;
+    const API_PAGE_DELAY_MS = 1100;
 
     const styles = `
         #tbp-container { position:fixed; top:20px; right:20px; width:390px; background:#1a1a1a; color:#eee; border:1px solid #444; z-index:999999!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
@@ -107,44 +110,78 @@
         return Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
     }
 
-function supabaseUpsert(table, rows, onConflict) {
-    if (!rows || rows.length === 0) return Promise.resolve(true);
+    function openCacheDb() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(CACHE_DB_NAME, CACHE_DB_VERSION);
 
-    return new Promise(resolve => {
-        GM_xmlhttpRequest({
-            method: "POST",
-            url: `${SUPABASE_URL}/rest/v1/${table}?on_conflict=${encodeURIComponent(onConflict)}`,
-            headers: {
-                "apikey": SUPABASE_ANON_KEY,
-                "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-                "Content-Type": "application/json",
-                "Prefer": "resolution=merge-duplicates,return=minimal"
-            },
-            data: JSON.stringify(rows),
-            onload: res => {
-                if (res.status < 200 || res.status >= 300) {
-                    console.error("SUPABASE UPSERT FAILED", {
-                        table,
-                        status: res.status,
-                        response: res.responseText,
-                        sampleRow: rows[0]
-                    });
-                    alert(`Supabase upload failed for ${table}. Status ${res.status}. Check console.`);
-                    resolve(false);
-                    return;
-                }
+            request.onupgradeneeded = () => {
+                const db = request.result;
+                const store = db.createObjectStore(CACHE_STORE_NAME, { keyPath: 'cacheId' });
+                store.createIndex('owner', 'owner', { unique: false });
+            };
 
-                console.log(`Supabase upsert OK: ${table}`, rows.length);
-                resolve(true);
-            },
-            onerror: err => {
-                console.error("SUPABASE NETWORK ERROR", err);
-                alert(`Supabase network error for ${table}. Check console.`);
-                resolve(false);
-            }
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
         });
-    });
-}
+    }
+
+    async function getCacheOwner() {
+        if (!apiKey) return '';
+
+        const bytes = new TextEncoder().encode(apiKey);
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        return Array.from(new Uint8Array(digest))
+            .slice(0, 12)
+            .map(value => value.toString(16).padStart(2, '0'))
+            .join('');
+    }
+
+    async function loadCachedLogs() {
+        const owner = await getCacheOwner();
+        if (!owner) return [];
+
+        const db = await openCacheDb();
+        try {
+            return await new Promise((resolve, reject) => {
+                const request = db
+                    .transaction(CACHE_STORE_NAME, 'readonly')
+                    .objectStore(CACHE_STORE_NAME)
+                    .index('owner')
+                    .getAll(owner);
+
+                request.onsuccess = () => resolve(request.result.map(({ cacheId, owner: ignored, ...log }) => log));
+                request.onerror = () => reject(request.error);
+            });
+        } finally {
+            db.close();
+        }
+    }
+
+    async function storeCachedLogs(logs) {
+        if (!logs.length) return;
+
+        const owner = await getCacheOwner();
+        if (!owner) return;
+
+        const db = await openCacheDb();
+        try {
+            await new Promise((resolve, reject) => {
+                const transaction = db.transaction(CACHE_STORE_NAME, 'readwrite');
+                const store = transaction.objectStore(CACHE_STORE_NAME);
+
+                logs.forEach(log => store.put({ ...log, owner, cacheId: `${owner}:${log.id}` }));
+                transaction.oncomplete = () => resolve();
+                transaction.onerror = () => reject(transaction.error);
+                transaction.onabort = () => reject(transaction.error);
+            });
+        } finally {
+            db.close();
+        }
+    }
+
+    function delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
 
     function safeJson(value) {
         try {
@@ -363,57 +400,6 @@ function supabaseUpsert(table, rows, onConflict) {
         openBets = foundOpen.sort((a, b) => b.timestamp - a.timestamp);
     }
 
-    async function pushBetLogsToSupabase() {
-    const rows = rawLogs
-        .map(log => {
-            const type = classifyLog(log);
-            if (type === "other" || type === "deposit" || type === "withdraw") return null;
-
-            const key = getSelectionKey(log);
-            const parts = key ? key.split("/") : [];
-
-            const stake = getBetAmount(log);
-            const odds = getOdds(log);
-            const winnings = getWinnings(log);
-
-            let net = 0;
-            if (type === "win") net = (winnings || stake) - stake;
-            if (type === "loss") net = -stake;
-
-            return {
-                log_id: String(log.id),
-                timestamp_unix: log.timestamp,
-                log_type: type,
-                event_id: parts[0] || null,
-                outcome_id: parts[1] || null,
-                betting_offer_id: parts[2] || null,
-                stake,
-                odds,
-                winnings,
-                net,
-                raw_json: log.raw
-            };
-        })
-        .filter(Boolean);
-
-    console.log("Bookie rows prepared for Supabase:", rows.length);
-
-    const chunkSize = 250;
-
-    for (let i = 0; i < rows.length; i += chunkSize) {
-        const chunk = rows.slice(i, i + chunkSize);
-        const ok = await supabaseUpsert("bookie_bet_logs", chunk, "log_id");
-
-        if (!ok) {
-            console.error("Stopped upload at chunk", i, chunk);
-            return false;
-        }
-    }
-
-    console.log("Bookie bet log upload complete:", rows.length);
-    return true;
-}
-
     function buildDailyTotals() {
         const map = new Map();
 
@@ -520,7 +506,11 @@ function supabaseUpsert(table, rows, onConflict) {
                         const data = JSON.parse(res.responseText);
 
                         if (data.error) {
-                            resolve({ error: data.error.error || data.error.code, logs: [] });
+                            resolve({
+                                error: data.error.error || data.error.code,
+                                errorCode: Number(data.error.code || 0),
+                                logs: []
+                            });
                             return;
                         }
 
@@ -539,21 +529,32 @@ function supabaseUpsert(table, rows, onConflict) {
         });
     }
 
-    async function fetchLogs() {
-        if (!apiKey) return false;
+    async function fetchLogs(fullRescan = false) {
+        if (!apiKey) {
+            alert('Add a Torn API key in Settings first.');
+            return false;
+        }
 
-        const from = getScanFromUnix();
-        const pageLimit = scanMode === 'date' ? 999 : maxPages;
+        const cachedNewest = rawLogs.length ? Math.max(...rawLogs.map(log => log.timestamp)) : 0;
+        const configuredFrom = getScanFromUnix();
+        const from = fullRescan || !cachedNewest
+            ? configuredFrom
+            : Math.max(configuredFrom, cachedNewest);
+        const pageLimit = Math.max(1, Math.min(Number(maxPages) || 5, MAX_API_PAGES_PER_SCAN));
         const seen = new Set();
-        const all = [];
+        const fetched = [];
         let to = null;
+        let stopReason = '';
 
         for (let page = 1; page <= pageLimit; page++) {
             const result = await requestLogPage(from, to);
 
             if (result.error) {
-                alert(`Torn API Error: ${result.error}`);
-                return false;
+                stopReason = result.errorCode === 5
+                    ? 'Torn rate limit reached; the scan stopped and retained all completed pages.'
+                    : `Torn API Error: ${result.error}`;
+                alert(stopReason);
+                break;
             }
 
             const pageLogs = result.logs
@@ -563,9 +564,10 @@ function supabaseUpsert(table, rows, onConflict) {
             let added = 0;
 
             pageLogs.forEach(log => {
-                if (!seen.has(log.id)) {
-                    seen.add(log.id);
-                    all.push(log);
+                const id = String(log.id);
+                if (!seen.has(id)) {
+                    seen.add(id);
+                    fetched.push(log);
                     added++;
                 }
             });
@@ -577,18 +579,56 @@ function supabaseUpsert(table, rows, onConflict) {
             if (scanMode !== 'pages' && (!oldest || oldest <= from)) break;
 
             to = oldest - 1;
+            if (page < pageLimit) await delay(API_PAGE_DELAY_MS);
         }
 
-        rawLogs = all.sort((a, b) => b.timestamp - a.timestamp);
+        if (!fetched.length && stopReason) return false;
+
+        const previousIds = new Set(rawLogs.map(log => String(log.id)));
+        const merged = new Map(rawLogs.map(log => [String(log.id), log]));
+        fetched.forEach(log => merged.set(String(log.id), log));
+        rawLogs = Array.from(merged.values()).sort((a, b) => b.timestamp - a.timestamp);
+
+        await storeCachedLogs(fetched);
         buildBookieData();
-        await pushBetLogsToSupabase();
 
         const oldest = rawLogs.length ? Math.min(...rawLogs.map(l => l.timestamp)) : 0;
         const newest = rawLogs.length ? Math.max(...rawLogs.map(l => l.timestamp)) : 0;
+        const newCount = fetched.filter(log => !previousIds.has(String(log.id))).length;
 
-        lastLoadStatus = `${rawLogs.length} logs loaded. Range: ${formatDate(oldest)} to ${formatDate(newest)}.`;
+        lastLoadStatus = `${rawLogs.length} cached logs (${newCount} new). Range: ${formatDate(oldest)} to ${formatDate(newest)}.`;
+        if (stopReason) lastLoadStatus += ` ${stopReason}`;
 
         return true;
+    }
+
+    async function hydrateFromCache() {
+        if (!apiKey) {
+            lastLoadStatus = 'Add an API key in Settings, then run a manual scan.';
+            render();
+            return;
+        }
+
+        lastLoadStatus = 'Loading locally cached history...';
+        render();
+
+        try {
+            rawLogs = (await loadCachedLogs()).sort((a, b) => b.timestamp - a.timestamp);
+            buildBookieData();
+
+            if (rawLogs.length) {
+                const oldest = Math.min(...rawLogs.map(log => log.timestamp));
+                const newest = Math.max(...rawLogs.map(log => log.timestamp));
+                lastLoadStatus = `${rawLogs.length} cached logs. Range: ${formatDate(oldest)} to ${formatDate(newest)}.`;
+            } else {
+                lastLoadStatus = 'No local history yet. Use Full Rescan once to build it.';
+            }
+        } catch (error) {
+            console.error('Could not load local bookie history.', error);
+            lastLoadStatus = 'Could not load local history. Check the console for details.';
+        }
+
+        render();
     }
 
     function render() {
@@ -625,8 +665,9 @@ function supabaseUpsert(table, rows, onConflict) {
 
             <div class="tbp-content" id="tbp-body"></div>
 
-            <div style="padding:10px; border-top:1px solid #333;">
-                <button class="tbp-btn tbp-btn-primary" id="tbp-refresh-btn" style="width:100%;">Refresh Bookie Data</button>
+            <div class="tbp-btn-row" style="padding:10px; margin-top:0; border-top:1px solid #333;">
+                <button class="tbp-btn tbp-btn-primary" id="tbp-refresh-btn">Check for New Data</button>
+                <button class="tbp-btn" id="tbp-full-rescan-btn">Full Rescan</button>
             </div>
         `;
 
@@ -833,13 +874,24 @@ ${safeJson(log.raw)}
             <input type="date" id="tbp-scan-start-date" class="tbp-input" value="${scanStartDate}">
 
             <label class="tbp-muted">MAX API PAGES TO LOAD</label>
-            <input type="number" id="tbp-max-pages" class="tbp-input" value="${maxPages}" min="1" max="999">
+            <input type="number" id="tbp-max-pages" class="tbp-input" value="${maxPages}" min="1" max="${MAX_API_PAGES_PER_SCAN}">
 
             <div class="tbp-card">
                 <div class="tbp-muted">
                     Date + Page Limit uses both and stops when either limit is reached.
-                    Date Only ignores max pages.
-                    Page Limit Only ignores the scan date.
+                    Date Only starts at the configured date and still honors the page safety limit.
+                    Page Limit Only ignores the configured scan date. Full Rescan always requires a separate confirmation.
+                </div>
+            </div>
+
+            <div class="tbp-card">
+                <div style="font-weight:bold; margin-bottom:6px;">API usage and privacy</div>
+                <div class="tbp-muted">
+                    <strong>Data storage:</strong> Persistent, only in this browser's IndexedDB.<br>
+                    <strong>Data sharing:</strong> Nobody. No records or API keys are sent to Supabase or another third party.<br>
+                    <strong>Purpose:</strong> Personal bookie history, totals, open-bet estimates, and incremental refreshes.<br>
+                    <strong>Key handling:</strong> Stored locally and sent only to api.torn.com.<br>
+                    <strong>Required access:</strong> Custom access to user → log, restricted to category 195 (Bookie), or Full Access.
                 </div>
             </div>
 
@@ -872,24 +924,45 @@ ${safeJson(log.raw)}
 
         document.getElementById('tbp-refresh-btn').onclick = async () => {
             const btn = document.getElementById('tbp-refresh-btn');
-            btn.innerText = 'Loading pages...';
+            const fullBtn = document.getElementById('tbp-full-rescan-btn');
+            btn.innerText = 'Checking...';
             btn.disabled = true;
+            fullBtn.disabled = true;
             await fetchLogs();
             btn.disabled = false;
-            btn.innerText = 'Refresh Bookie Data';
+            fullBtn.disabled = false;
+            btn.innerText = 'Check for New Data';
+            render();
+        };
+
+        document.getElementById('tbp-full-rescan-btn').onclick = async () => {
+            if (!confirm(`Full rescan may request up to ${Math.min(maxPages, MAX_API_PAGES_PER_SCAN)} API pages. Continue?`)) return;
+
+            const btn = document.getElementById('tbp-full-rescan-btn');
+            const refreshBtn = document.getElementById('tbp-refresh-btn');
+            btn.innerText = 'Rescanning...';
+            btn.disabled = true;
+            refreshBtn.disabled = true;
+            await fetchLogs(true);
+            btn.disabled = false;
+            refreshBtn.disabled = false;
+            btn.innerText = 'Full Rescan';
             render();
         };
 
         const saveSettingsBtn = document.getElementById('tbp-save-settings');
         if (saveSettingsBtn) {
-            saveSettingsBtn.onclick = () => {
+            saveSettingsBtn.onclick = async () => {
                 apiKey = document.getElementById('tbp-api-key').value.trim();
                 scanMode = document.getElementById('tbp-scan-mode').value;
                 scanStartDate = document.getElementById('tbp-scan-start-date').value || defaultScanStartDate();
-                maxPages = Number(document.getElementById('tbp-max-pages').value || 20);
+                maxPages = Math.max(1, Math.min(
+                    Number(document.getElementById('tbp-max-pages').value || 5),
+                    MAX_API_PAGES_PER_SCAN
+                ));
                 showDebug = document.getElementById('tbp-show-debug').checked;
                 saveData();
-                render();
+                await hydrateFromCache();
             };
         }
 
@@ -981,10 +1054,6 @@ document.addEventListener('click', async e => {
 }, true);
 
     render();
-
-    if (apiKey) fetchLogs().then(render);
-
-// Auto-refresh disabled to avoid Torn API rate limits.
-// Use the Refresh Bookie Data button manually.
+    hydrateFromCache();
 
 })();
