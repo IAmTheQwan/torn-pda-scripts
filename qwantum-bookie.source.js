@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.9.4
+// @version      1.9.5
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -1358,84 +1358,21 @@
         };
     }
 
-    function getColorBetStats() {
-        const categories = {
+    function createColorStatCategories() {
+        return {
             green: { key: 'green', label: 'Green Home', rule: `Home Win Odds: ${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}-${FOOTBALL_HOME_ODDS_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
             yellow: { key: 'yellow', label: 'Yellow Home', rule: `Home Win Odds: ${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}-${(FOOTBALL_HOME_GREEN_MIN - 0.01).toFixed(2)}`, wins: 0, losses: 0, net: 0 },
             orange: { key: 'orange', label: 'Orange Away', rule: `Away Win Odds: ${FOOTBALL_AWAY_ODDS_MIN.toFixed(2)}-${FOOTBALL_AWAY_ODDS_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
             other: { key: 'other', label: 'All Others', rule: 'Captured 3-Way bets outside the colored ranges', wins: 0, losses: 0, net: 0 }
         };
-        const links = loadBetStatsLinks();
-        const pendingBySelection = new Map();
-        const fromTimestamp = dateToUnixStart(scanStartDate || defaultScanStartDate());
-        const logs = [...rawLogs].sort((a, b) => a.timestamp - b.timestamp);
-        let trackedPlaced = 0;
-        let excludedUntracked = 0;
+    }
 
-        logs.forEach(log => {
-            if (Number(log.timestamp || 0) < fromTimestamp) return;
-            const type = classifyLog(log);
-            const key = getSelectionKey(log);
-            if (!key) return;
+    function hasColorStatsFixtureEvidence(link) {
+        return Boolean(link?.homeTeam && link?.awayTeam && link?.placedSelection);
+    }
 
-            if (type === 'placed') {
-                const bet = getBetAmount(log);
-                const odds = getOdds(log);
-                let link = links[String(log.id)] || null;
-                let category = link ? getFixtureStatsCategory(link, odds) : '';
-                if (!link) {
-                    const fixture = findFixtureForOpenBet(log, bet, odds);
-                    category = getFixtureStatsCategory(fixture, odds);
-                    if (fixture) {
-                        saveBetStatsLink(log.id, fixture, log.timestamp, { stake: bet, odds });
-                        link = loadBetStatsLinks()[String(log.id)] || fixture;
-                    }
-                }
-                if (!link) {
-                    excludedUntracked++;
-                    return;
-                }
-                if (!categories[category]) category = 'other';
-                trackedPlaced++;
-                if (!pendingBySelection.has(key)) pendingBySelection.set(key, []);
-                pendingBySelection.get(key).push({ log, bet, category });
-                return;
-            }
-
-            if (!['win', 'loss', 'refund'].includes(type)) return;
-            const pending = pendingBySelection.get(key) || [];
-            if (!pending.length) return;
-            const resultBet = getBetAmount(log);
-            let matchIndex = resultBet
-                ? pending.findIndex(candidate => Math.abs(Number(candidate.bet || 0) - resultBet) < 1)
-                : -1;
-            if (matchIndex < 0) matchIndex = 0;
-            const [placed] = pending.splice(matchIndex, 1);
-            if (!pending.length) pendingBySelection.delete(key);
-            if (type === 'refund') return;
-
-            const row = categories[placed.category] || categories.other;
-            if (type === 'win') {
-                row.wins++;
-                row.net += (getWinnings(log) || resultBet || placed.bet) - (resultBet || placed.bet);
-            } else {
-                row.losses++;
-                row.net -= resultBet || placed.bet;
-            }
-        });
-
-        pendingBySelection.forEach(pending => {
-            pending.forEach(placed => {
-                const providerResult = links[String(placed.log.id)] || {};
-                if (!['win', 'loss'].includes(providerResult.providerOutcome)) return;
-                const row = categories[placed.category] || categories.other;
-                if (providerResult.providerOutcome === 'win') row.wins++;
-                else row.losses++;
-                row.net += Number(providerResult.providerNet || 0);
-            });
-        });
-
-        const rows = Object.values(categories).map(row => {
+    function finishColorStatsScope(scope) {
+        const rows = Object.values(scope.categories).map(row => {
             const settled = row.wins + row.losses;
             return {
                 ...row,
@@ -1452,7 +1389,99 @@
         total.settled = total.wins + total.losses;
         total.winPct = total.settled ? total.wins / total.settled * 100 : 0;
         total.lossPct = total.settled ? total.losses / total.settled * 100 : 0;
-        return { rows, total, fromDate: scanStartDate || defaultScanStartDate(), trackedPlaced, excludedUntracked };
+        total.refunds = scope.refunds;
+        total.open = Math.max(0, scope.classifiedPlaced - total.settled - scope.refunds);
+        return { ...scope, rows, total };
+    }
+
+    function getColorBetStats() {
+        const links = loadBetStatsLinks();
+        const pendingBySelection = new Map();
+        const fromTimestamp = dateToUnixStart(scanStartDate || defaultScanStartDate());
+        const logs = [...rawLogs].sort((a, b) => a.timestamp - b.timestamp);
+        const scopes = {
+            current: { categories: createColorStatCategories(), classifiedPlaced: 0, missingFixture: 0, refunds: 0 },
+            before: { categories: createColorStatCategories(), classifiedPlaced: 0, missingFixture: 0, refunds: 0 }
+        };
+
+        logs.forEach(log => {
+            const type = classifyLog(log);
+            const key = getSelectionKey(log);
+            if (!key) return;
+
+            if (type === 'placed') {
+                const scopeKey = Number(log.timestamp || 0) < fromTimestamp ? 'before' : 'current';
+                const scope = scopes[scopeKey];
+                const bet = getBetAmount(log);
+                const odds = getOdds(log);
+                let link = links[String(log.id)] || null;
+                let category = link ? getFixtureStatsCategory(link, odds) : '';
+                if (!link) {
+                    const fixture = findFixtureForOpenBet(log, bet, odds);
+                    category = getFixtureStatsCategory(fixture, odds);
+                    if (fixture) {
+                        saveBetStatsLink(log.id, fixture, log.timestamp, { stake: bet, odds });
+                        link = loadBetStatsLinks()[String(log.id)] || fixture;
+                    }
+                }
+                if (!hasColorStatsFixtureEvidence(link)) {
+                    scope.missingFixture++;
+                    return;
+                }
+                if (!scope.categories[category]) category = 'other';
+                scope.classifiedPlaced++;
+                if (!pendingBySelection.has(key)) pendingBySelection.set(key, []);
+                pendingBySelection.get(key).push({ log, bet, category, scopeKey });
+                return;
+            }
+
+            if (!['win', 'loss', 'refund'].includes(type)) return;
+            const pending = pendingBySelection.get(key) || [];
+            if (!pending.length) return;
+            const resultBet = getBetAmount(log);
+            let matchIndex = resultBet
+                ? pending.findIndex(candidate => Math.abs(Number(candidate.bet || 0) - resultBet) < 1)
+                : -1;
+            if (matchIndex < 0) matchIndex = 0;
+            const [placed] = pending.splice(matchIndex, 1);
+            if (!pending.length) pendingBySelection.delete(key);
+            const scope = scopes[placed.scopeKey];
+            if (type === 'refund') {
+                scope.refunds++;
+                return;
+            }
+
+            const row = scope.categories[placed.category] || scope.categories.other;
+            if (type === 'win') {
+                row.wins++;
+                row.net += (getWinnings(log) || resultBet || placed.bet) - (resultBet || placed.bet);
+            } else {
+                row.losses++;
+                row.net -= resultBet || placed.bet;
+            }
+        });
+
+        pendingBySelection.forEach(pending => {
+            pending.forEach(placed => {
+                const providerResult = links[String(placed.log.id)] || {};
+                if (!['win', 'loss'].includes(providerResult.providerOutcome)) return;
+                const scope = scopes[placed.scopeKey];
+                const row = scope.categories[placed.category] || scope.categories.other;
+                if (providerResult.providerOutcome === 'win') row.wins++;
+                else row.losses++;
+                row.net += Number(providerResult.providerNet || 0);
+            });
+        });
+
+        const current = finishColorStatsScope(scopes.current);
+        const before = finishColorStatsScope(scopes.before);
+        return {
+            ...current,
+            fromDate: scanStartDate || defaultScanStartDate(),
+            trackedPlaced: current.classifiedPlaced,
+            excludedUntracked: current.missingFixture,
+            before
+        };
     }
 
     function getSettledPlacedBetIds(fromTimestamp) {
@@ -1666,7 +1695,7 @@
         }
 
         const usage = getSportsDbUsage();
-        lastLoadStatus = `Stats database audit: ${alreadySettled} measured from Torn, ${measured} from TheSportsDB, ${unresolved} missing fixture evidence. ${requests} requests, ${cacheHits} cached; ${usage.remaining}/${usage.limit} calls remain this minute.`;
+        lastLoadStatus = `Stats audit: ${alreadySettled} outcomes settled by Torn logs, ${measured} resolved by TheSportsDB, ${unresolved} open or missing provider-ready fixture details. ${requests} requests, ${cacheHits} cached; ${usage.remaining}/${usage.limit} calls remain this minute.`;
     }
 
     function getFootballFixtureDetails(item, href = '') {
@@ -3043,8 +3072,9 @@ ${safeJson(log.raw)}
             <div class="tbp-muted" style="margin-bottom:8px;">${lastLoadStatus}</div>
             <div class="tbp-muted" style="margin-bottom:8px;">Tracked Football bets from ${escapeHtml(stats.fromDate)} through today. Color is determined from the captured home/away side and original odds. Legacy bets without captured fixture evidence are excluded.</div>
             <button class="tbp-btn tbp-btn-primary" id="tbp-measure-stats-btn" style="width:100%; margin-bottom:8px;">Measure Tracked Database</button>
-            <div class="tbp-row" style="margin:0 2px 9px;"><span>Tracked / Untracked excluded</span><span>${stats.trackedPlaced} / ${stats.excludedUntracked}</span></div>
-            ${stats.excludedUntracked ? '<div class="tbp-muted" style="margin-bottom:9px;">To recover older Football bets, open My Bets and scroll through the completed rows so they load. The panel captures each visible 3-Way result automatically. Torn Events remains a fallback for older rows no longer shown there; then press Measure Tracked Database.</div>' : ''}
+            <div class="tbp-row" style="margin:0 2px 4px;"><span>Color-classified / Missing team data</span><span>${stats.trackedPlaced} / ${stats.excludedUntracked}</span></div>
+            <div class="tbp-row" style="margin:0 2px 9px;"><span>Classified: settled / open / refunded</span><span>${stats.total.settled} / ${stats.total.open} / ${stats.total.refunds}</span></div>
+            ${stats.excludedUntracked ? '<div class="tbp-muted" style="margin-bottom:9px;">Missing team data means the Torn bet and its outcome still count in Daily, but it cannot safely be assigned Green, Yellow, Orange, or All Others yet. Open My Bets and scroll through completed rows to recover the home team, away team, selection, and original odds.</div>' : ''}
             <div class="tbp-summary-grid">
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Total Record</div><div class="tbp-summary-value">${total.wins}-${total.losses}</div></div>
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Win / Loss</div><div class="tbp-summary-value" style="font-size:13px;">${total.winPct.toFixed(1)}% / ${total.lossPct.toFixed(1)}%</div></div>
@@ -3059,6 +3089,16 @@ ${safeJson(log.raw)}
                     <div class="tbp-row"><span>Net</span><span class="${row.net >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(row.net)}</span></div>
                 </div>
             `).join('')}
+            ${(stats.before.classifiedPlaced || stats.before.missingFixture) ? `
+                <div class="tbp-card" style="border-left:6px solid #4da3ff;">
+                    <div style="font-weight:bold; font-size:13px;">Before ${escapeHtml(stats.fromDate)}</div>
+                    <div class="tbp-muted" style="margin:2px 0 5px;">Captured history outside the selected Stats date range; kept separate from the totals above.</div>
+                    <div class="tbp-row"><span>Color-classified / Missing team data</span><span>${stats.before.classifiedPlaced} / ${stats.before.missingFixture}</span></div>
+                    <div class="tbp-row"><span>Record</span><span>${stats.before.total.wins}-${stats.before.total.losses}</span></div>
+                    <div class="tbp-row"><span>Open / Refunded</span><span>${stats.before.total.open} / ${stats.before.total.refunds}</span></div>
+                    <div class="tbp-row"><span>Net</span><span class="${stats.before.total.net >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(stats.before.total.net)}</span></div>
+                </div>
+            ` : ''}
             ${total.settled === 0 ? '<div class="tbp-muted">No settled, tracked bets with captured home/away evidence were found in this date range yet.</div>' : ''}
         `;
     }
