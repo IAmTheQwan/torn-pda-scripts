@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.3.3
+// @version      1.4.0
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -60,9 +60,13 @@
     const FOOTBALL_AWAY_ODDS_MIN = 1.2;
     const FOOTBALL_AWAY_ODDS_MAX = 1.7;
     const FOOTBALL_ODDS_HISTORY_KEY = 'tbp_football_odds_history';
+    const FOOTBALL_FIXTURE_RECORDS_KEY = 'tbp_football_fixture_records';
     const MAX_ODDS_HISTORY_GAMES = 100;
     const MAX_ODDS_OBSERVATIONS_PER_SELECTION = 20;
     const MAX_GUIDED_FOOTBALL_GAMES = 20;
+    const MAX_FOOTBALL_FIXTURE_RECORDS = 200;
+    const FOOTBALL_FIXTURE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+    const FOOTBALL_BET_LINK_WINDOW_MS = 10 * 60 * 1000;
 
     const styles = `
         #tbp-container { position:fixed; top:20px; right:20px; width:390px; background:#1a1a1a; color:#eee; border:1px solid #444; z-index:999999!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
@@ -429,6 +433,7 @@
 
             clusterStarted = true;
             lastClusterTimestamp = log.timestamp;
+            const fixture = findFixtureForOpenBet(log, bet, odds);
 
             foundOpen.push({
                 id: log.id,
@@ -438,7 +443,8 @@
                 odds,
                 potentialProfit: odds > 0 ? bet * (odds - 1) : 0,
                 potentialReturn: odds > 0 ? bet * odds : 0,
-                selection: key
+                selection: key,
+                fixture
             });
         }
 
@@ -790,6 +796,15 @@
         }) || null;
     }
 
+    function escapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
     function findFootballItemForHref(href) {
         if (location.hash === href) {
             const activeItem = document.querySelector('li.c-pointer.active');
@@ -801,14 +816,169 @@
         return link?.closest('li.c-pointer') || null;
     }
 
-    function recordFootballOddsForItem(item) {
+    function getFootballGameId(item, href = '') {
+        const candidates = [
+            href,
+            item?.classList.contains('active') ? location.hash : '',
+            item?.querySelector('a[href*="#/football/"]')?.getAttribute('href') || ''
+        ];
+        for (const candidate of candidates) {
+            const gameId = String(candidate || '').match(/#\/football\/(\d+)/i)?.[1];
+            if (gameId) return gameId;
+        }
+        return '';
+    }
+
+    function parseFootballFixtureTitle(matchTitle) {
+        const title = String(matchTitle || '').replace(/\s+/g, ' ').trim();
+        const versus = title.match(/\s+v\s+/i);
+        if (!versus || versus.index === undefined) {
+            return { homeTeam: '', awayTeam: '', competition: '' };
+        }
+
+        const homeTeam = title.slice(0, versus.index).trim();
+        const remainder = title.slice(versus.index + versus[0].length).trim();
+        const competitionIndex = remainder.indexOf(' - ');
+        return {
+            homeTeam,
+            awayTeam: (competitionIndex >= 0 ? remainder.slice(0, competitionIndex) : remainder).trim(),
+            competition: (competitionIndex >= 0 ? remainder.slice(competitionIndex + 3) : '').trim()
+        };
+    }
+
+    function getFootballFixtureDetails(item, href = '') {
+        const matchElement = item?.querySelector('.matchName p, .pop-game .name p');
+        const matchTitle = String(matchElement?.title || matchElement?.textContent || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        return {
+            gameId: getFootballGameId(item, href),
+            matchTitle,
+            ...parseFootballFixtureTitle(matchTitle),
+            startTimestamp: parseFootballStartTimestamp(item)
+        };
+    }
+
+    function loadFootballFixtureRecords() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(FOOTBALL_FIXTURE_RECORDS_KEY) || '[]');
+            const records = Array.isArray(parsed) ? parsed : [];
+            const now = Date.now();
+            return records.filter(record => {
+                const expiryBase = Number(record.startTimestamp || record.updatedAt || record.reviewedAt || 0);
+                return expiryBase && expiryBase + FOOTBALL_FIXTURE_RETENTION_MS > now;
+            });
+        } catch {
+            return [];
+        }
+    }
+
+    function saveFootballFixtureRecord(record) {
+        if (!record?.gameId) return null;
+        const records = loadFootballFixtureRecords();
+        const index = records.findIndex(candidate => candidate.gameId === record.gameId);
+        const existing = index >= 0 ? records[index] : {};
+        const merged = {
+            ...existing,
+            ...record,
+            betClicks: Array.isArray(record.betClicks)
+                ? record.betClicks.slice(-5)
+                : Array.isArray(existing.betClicks) ? existing.betClicks.slice(-5) : [],
+            updatedAt: Date.now()
+        };
+        if (index >= 0) records[index] = merged;
+        else records.push(merged);
+
+        const limited = records
+            .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+            .slice(0, MAX_FOOTBALL_FIXTURE_RECORDS);
+        try {
+            localStorage.setItem(FOOTBALL_FIXTURE_RECORDS_KEY, JSON.stringify(limited));
+        } catch (error) {
+            console.error('Could not save Football fixture details.', error);
+        }
+        return merged;
+    }
+
+    function getThreeWayRows(market) {
+        return Array.from(market?.querySelectorAll(':scope > li.bets') || []).filter(row => {
+            return row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal');
+        }).map(row => ({
+            row,
+            selection: String(row.querySelector('.bet-cell.result')?.textContent || '').replace(/\s+/g, ' ').trim(),
+            odds: parseDecimalMultiplier(row.querySelector('.bet-cell.odds.decimal')?.textContent)
+        }));
+    }
+
+    function captureReviewedFootballFixture(item, href, market, matchType = null) {
+        const details = getFootballFixtureDetails(item, href);
+        if (!details.gameId || !details.homeTeam || !details.awayTeam) return null;
+        const rows = getThreeWayRows(market);
+        const home = rows.find(entry => entry.selection.toLowerCase() === details.homeTeam.toLowerCase());
+        const away = rows.find(entry => entry.selection.toLowerCase() === details.awayTeam.toLowerCase());
+        const draw = rows.find(entry => /^(draw|tie)$/i.test(entry.selection));
+        const recommendedSelection = matchType?.startsWith('home-')
+            ? details.homeTeam
+            : matchType === 'away-orange' ? details.awayTeam : '';
+        const recommendedOdds = matchType?.startsWith('home-')
+            ? Number(home?.odds || 0)
+            : matchType === 'away-orange' ? Number(away?.odds || 0) : 0;
+
+        const record = {
+            ...details,
+            market: '3-Way Ordinary time',
+            homeOdds: Number(home?.odds || 0),
+            drawOdds: Number(draw?.odds || 0),
+            awayOdds: Number(away?.odds || 0),
+            reviewedAt: Date.now()
+        };
+        if (matchType) {
+            record.matchType = matchType;
+            record.recommendedSelection = recommendedSelection;
+            record.recommendedOdds = recommendedOdds;
+        }
+        return saveFootballFixtureRecord(record);
+    }
+
+    function parseVisibleStake(row) {
+        const value = String(row?.querySelector('input.amount[type="text"]')?.value || '');
+        const parsed = Number(value.replace(/[^\d.-]/g, ''));
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function captureManualFootballBet(item, row, market) {
+        const href = location.hash;
+        const fixture = captureReviewedFootballFixture(item, href, market, null);
+        if (!fixture) return;
+        const selection = String(row.querySelector('.bet-cell.result')?.textContent || '').replace(/\s+/g, ' ').trim();
+        const odds = parseDecimalMultiplier(row.querySelector('.bet-cell.odds.decimal')?.textContent);
+        const betClicks = Array.isArray(fixture.betClicks) ? [...fixture.betClicks] : [];
+        betClicks.push({ selection, odds, stake: parseVisibleStake(row), clickedAt: Date.now() });
+        saveFootballFixtureRecord({ ...fixture, betClicks });
+    }
+
+    function findFixtureForOpenBet(log, stake, odds) {
+        const placedAt = Number(log.timestamp || 0) * 1000;
+        let best = null;
+        loadFootballFixtureRecords().forEach(fixture => {
+            (fixture.betClicks || []).forEach(click => {
+                const timeGap = Math.abs(placedAt - Number(click.clickedAt || 0));
+                const oddsMatch = Math.abs(Number(click.odds || 0) - Number(odds || 0)) <= 0.011;
+                const stakeMatch = !Number(click.stake || 0) || Math.abs(Number(click.stake) - Number(stake || 0)) < 1;
+                if (timeGap > FOOTBALL_BET_LINK_WINDOW_MS || !oddsMatch || !stakeMatch) return;
+                if (!best || timeGap < best.timeGap) best = { fixture, click, timeGap };
+            });
+        });
+        return best ? { ...best.fixture, placedSelection: best.click.selection, linkedBy: 'bet-click' } : null;
+    }
+
+    function recordFootballOddsForItem(item, href = '') {
         if (!footballOddsHistoryEnabled || document.visibilityState !== 'visible' || !isFootballBookiePage()) return 0;
 
         const market = getThreeWayMarket(item);
         if (!market) return 0;
 
-        const link = item.querySelector('a[href*="#/football/"]');
-        const gameId = String(link?.getAttribute('href') || '').match(/#\/football\/(\d+)/i)?.[1] || '';
+        const gameId = getFootballGameId(item, href);
         if (!gameId) return 0;
 
         const matchElement = item.querySelector('.matchName p, .pop-game .name p');
@@ -891,9 +1061,9 @@
             const item = findFootballItemForHref(href);
             const info = item?.querySelector('.info-wrap');
             if (!item?.classList.contains('active') || info?.style?.display === 'none' || !getThreeWayMarket(item)) return false;
-            if (footballOddsHistoryEnabled) recordFootballOddsForItem(item);
+            if (footballOddsHistoryEnabled) recordFootballOddsForItem(item, href);
             if (footballScanEnabled || guidedFootballSession.active) {
-                const scanResult = scanFootballItem(item);
+                const scanResult = scanFootballItem(item, href);
                 recordGuidedFootballResult(href, scanResult);
             }
 
@@ -923,7 +1093,7 @@
         }, 10000);
     }
 
-    function scanFootballItem(item) {
+    function scanFootballItem(item, href = '') {
         if (item.classList.contains('disabled')) return { scanned: 0, matched: 0 };
 
         const sport = String(item.querySelector('li.game')?.title || '').trim().toLowerCase();
@@ -933,15 +1103,14 @@
         const matchTitle = String(matchElement?.title || matchElement?.textContent || '').replace(/\s+/g, ' ').trim();
         if (!matchTitle) return { scanned: 0, matched: 0 };
 
-        const homeName = String(
-            matchElement.querySelector('b')?.textContent
-            || matchTitle.split(/\s+v\s+/i)[0]
-            || ''
+        const fixtureDetails = getFootballFixtureDetails(item, href);
+        const homeName = fixtureDetails.homeTeam || String(
+            matchElement.querySelector('b')?.textContent || matchTitle.split(/\s+v\s+/i)[0] || ''
         ).replace(/\s+/g, ' ').trim();
 
         const market = getThreeWayMarket(item);
         if (!market) return { scanned: 0, matched: 0 };
-        if (!market.querySelector('[data-tbp-observed-at]')) recordFootballOddsForItem(item);
+        if (!market.querySelector('[data-tbp-observed-at]')) recordFootballOddsForItem(item, href);
 
         const rows = Array.from(market.querySelectorAll(':scope > li.bets')).filter(row => {
             return row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal');
@@ -955,9 +1124,7 @@
             return result.toLowerCase() === homeName.toLowerCase();
         }) || rows[0];
 
-        const awayName = String(matchTitle.split(/\s+v\s+/i)[1] || '')
-            .replace(/\s+/g, ' ')
-            .trim();
+        const awayName = fixtureDetails.awayTeam;
         const awayRow = rows.find(row => {
             const result = String(row.querySelector('.bet-cell.result')?.textContent || '')
                 .replace(/\s+/g, ' ')
@@ -1004,6 +1171,7 @@
             badgeTitle = `${awayName || 'Away team'} — 3-Way Ordinary time`;
         }
 
+        captureReviewedFootballFixture(item, href, market, matchType);
         if (!matchType) return { scanned: 1, matched: 0, matchType: null };
 
         item.classList.add('tbp-football-match', `tbp-football-${matchType}`);
@@ -1251,9 +1419,18 @@
         openBets.forEach(b => {
             const row = document.createElement('div');
             row.className = 'tbp-card';
-            row.innerHTML = `
+            const fixture = b.fixture;
+            const fixtureDetails = fixture ? `
+                <div style="font-weight:bold; font-size:13px; margin-bottom:2px;">${escapeHtml(fixture.homeTeam)} v ${escapeHtml(fixture.awayTeam)}</div>
+                ${fixture.competition ? `<div class="tbp-muted" style="margin-bottom:7px;">${escapeHtml(fixture.competition)}</div>` : ''}
+                <div class="tbp-row"><span>Pick</span><span>${escapeHtml(fixture.placedSelection || fixture.recommendedSelection || '')}</span></div>
+                ${fixture.startTimestamp ? `<div class="tbp-row"><span>Kickoff</span><span>${escapeHtml(formatDate(Math.floor(fixture.startTimestamp / 1000)))}</span></div>` : ''}
+            ` : `
                 <div style="font-weight:bold; font-size:12px;">Selection</div>
-                <div class="tbp-muted">${b.selection}</div>
+                <div class="tbp-muted">${escapeHtml(b.selection)}</div>
+            `;
+            row.innerHTML = `
+                ${fixtureDetails}
                 <div class="tbp-row"><span>Date</span><span>${formatDate(b.timestamp)}</span></div>
                 <div class="tbp-row"><span>Stake</span><span>${money(b.stake)}</span></div>
                 <div class="tbp-row"><span>Odds</span><span>x${num(b.odds)}</span></div>
@@ -1429,9 +1606,9 @@ ${safeJson(log.raw)}
             <div class="tbp-card">
                 <div style="font-weight:bold; margin-bottom:6px;">API usage and privacy</div>
                 <div class="tbp-muted">
-                    <strong>Data storage:</strong> Persistent, only in this browser's IndexedDB.<br>
+                    <strong>Data storage:</strong> Bookie logs in this browser's IndexedDB; viewed Football fixture and manual bet-click details in local storage.<br>
                     <strong>Data sharing:</strong> Nobody. No records or API keys are sent to Supabase or another third party.<br>
-                    <strong>Purpose:</strong> Personal bookie history, totals, open-bet estimates, and incremental refreshes.<br>
+                    <strong>Purpose:</strong> Personal bookie history, totals, named open-bet estimates, Football review, and incremental refreshes.<br>
                     <strong>Key handling:</strong> Stored locally and sent only to api.torn.com.<br>
                     <strong>Required access:</strong> Custom access to user → log, restricted to category 195 (Bookie), or Full Access.
                 </div>
@@ -1716,6 +1893,23 @@ document.addEventListener('click', async e => {
         }, 1500);
     }
 }, true);
+
+    document.addEventListener('click', event => {
+        if (!guidedFootballSession.active || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+        const target = event.target instanceof Element ? event.target : null;
+        const button = target?.closest('button');
+        const row = button?.closest('li.bets');
+        const market = row?.closest('ul.bets-wrap');
+        const item = row?.closest('li.c-pointer.active');
+        if (!button || !row || !market || !item || button.disabled || button.classList.contains('disabled')) return;
+
+        const marketName = String(market.querySelector('.market-name-cell .bold')?.textContent || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        if (!/^3-Way Ordinary time$/i.test(marketName)) return;
+        if (!row.querySelector('.bet-cell.result') || !row.querySelector('.bet-cell.odds.decimal')) return;
+        captureManualFootballBet(item, row, market);
+    }, true);
 
     document.addEventListener('click', event => {
         if ((!footballOddsHistoryEnabled && !footballScanEnabled && !guidedFootballSession.active) || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
