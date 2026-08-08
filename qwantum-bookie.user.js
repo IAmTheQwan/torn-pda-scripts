@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.12.0
+// @version      1.13.0
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -90,6 +90,7 @@ const BET_STATS_LINKS_KEY = 'tbp_bet_stats_links';
 let footballAutoScoreTimer = null;
 let footballAutoScoreRunning = false;
 let footballAutoScoreNextAt = 0;
+let footballDisplayClockTimer = null;
 const styles = `
 #tbp-container { position:fixed; top:20px; right:20px; width:390px; background:#1a1a1a; color:#eee; border:1px solid #444; z-index:999999!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
 #tbp-container.minimized { width:38px; height:38px; cursor:pointer; display:flex; align-items:center; justify-content:center; background:#007bff; border:1px solid #0056b3; border-radius:4px; font-weight:bold; font-size:20px; }
@@ -326,9 +327,49 @@ return {};
 }
 function saveFootballScoreMatches(matches) {
 const limited = Object.entries(matches)
-.sort((a, b) => Number(b[1]?.checkedAt || 0) - Number(a[1]?.checkedAt || 0))
+.sort((a, b) => Math.max(Number(b[1]?.checkedAt || 0), Number(b[1]?.restoredAt || 0)) - Math.max(Number(a[1]?.checkedAt || 0), Number(a[1]?.restoredAt || 0)))
 .slice(0, 300);
 localStorage.setItem(FOOTBALL_SCORE_MATCHES_KEY, JSON.stringify(Object.fromEntries(limited)));
+}
+function findFootballScoreForBet(bet, matches = loadFootballScoreMatches()) {
+const betId = String(bet?.id || '');
+if (betId && matches[betId]) return matches[betId];
+const fixture = bet?.fixture || {};
+const gameId = String(fixture.gameId || '');
+const homeTeam = fixture.homeTeam || '';
+const awayTeam = fixture.awayTeam || '';
+const kickoff = Number(fixture.startTimestamp || 0);
+const candidates = Object.values(matches).filter(score => {
+if (!score || typeof score !== 'object') return false;
+if (gameId && String(score.tornGameId || '') === gameId) return true;
+if (!homeTeam || !awayTeam || !score.homeTeam || !score.awayTeam) return false;
+const teamsMatch = scoreTeamSimilarity(homeTeam, score.homeTeam) >= 0.82
+&& scoreTeamSimilarity(awayTeam, score.awayTeam) >= 0.82;
+const scoreKickoff = Number(score.kickoff || 0);
+return teamsMatch && (!kickoff || !scoreKickoff || Math.abs(kickoff - scoreKickoff) <= 6 * 60 * 60 * 1000);
+}).sort((a, b) => {
+const aGame = gameId && String(a.tornGameId || '') === gameId ? 1 : 0;
+const bGame = gameId && String(b.tornGameId || '') === gameId ? 1 : 0;
+return bGame - aGame || Number(b.checkedAt || 0) - Number(a.checkedAt || 0);
+});
+return candidates[0] || null;
+}
+function restoreFootballScoresForOpenBets(matches = loadFootballScoreMatches()) {
+let changed = false;
+openBets.forEach(bet => {
+const betId = String(bet.id);
+if (matches[betId]) return;
+const score = findFootballScoreForBet(bet, matches);
+if (!score) return;
+matches[betId] = {
+...score,
+tornGameId: score.tornGameId || bet.fixture?.gameId || '',
+restoredAt: Date.now()
+};
+changed = true;
+});
+if (changed) saveFootballScoreMatches(matches);
+return matches;
 }
 function normalizeScoreTeamName(value) {
 return String(value || '')
@@ -474,12 +515,14 @@ else requests++;
 if (!result.event) {
 scoreMatches[String(bet.id)] = {
 provider: 'sportsdb',
+tornGameId: fixture.gameId || '',
 homeTeam: fixture.homeTeam,
 awayTeam: fixture.awayTeam,
 homeGoals: null,
 awayGoals: null,
 statusShort: 'No API match',
 statusLong: 'No API match',
+kickoff: Number(fixture.startTimestamp || 0),
 unmatched: true,
 checkedAt: Date.now()
 };
@@ -489,6 +532,7 @@ continue;
 const event = result.event;
 scoreMatches[String(bet.id)] = {
 provider: 'sportsdb',
+tornGameId: fixture.gameId || '',
 providerFixtureId: event.idEvent,
 homeTeam: event.strHomeTeam || fixture.homeTeam,
 awayTeam: event.strAwayTeam || fixture.awayTeam,
@@ -566,6 +610,7 @@ resolve({ error: 'Could not reach the score API.', fixture: null, usage });
 function apiFootballScoreRecord(provider, fallback = {}, confidence = 0) {
 return {
 provider: 'api-football',
+tornGameId: fallback.tornGameId || fallback.gameId || '',
 providerFixtureId: provider.fixture?.id || fallback.providerFixtureId,
 homeTeam: provider.teams?.home?.name || fallback.homeTeam || '',
 awayTeam: provider.teams?.away?.name || fallback.awayTeam || '',
@@ -647,12 +692,14 @@ const candidate = findProviderFixture(fixture, fixturesByDate[dateKey] || []);
 if (!candidate) {
 scoreMatches[String(bet.id)] = {
 provider: 'api-football',
+tornGameId: fixture.gameId || '',
 homeTeam: fixture.homeTeam,
 awayTeam: fixture.awayTeam,
 homeGoals: null,
 awayGoals: null,
 statusShort: 'No API match',
 statusLong: 'No API match',
+kickoff: Number(fixture.startTimestamp || 0),
 unmatched: true,
 checkedAt: Date.now()
 };
@@ -677,7 +724,7 @@ if (!kickoff || now < kickoff || now - kickoff > FOOTBALL_ACTIVE_FIXTURE_WINDOW_
 return true;
 }
 function getActiveApiFootballFixtures(now = Date.now()) {
-const scoreMatches = loadFootballScoreMatches();
+const scoreMatches = restoreFootballScoresForOpenBets(loadFootballScoreMatches());
 const byFixtureId = new Map();
 openBets.forEach(bet => {
 const betId = String(bet.id);
@@ -836,8 +883,48 @@ if (score.unmatched) return 'No API match';
 const status = score.statusShort || score.statusLong || 'Scheduled';
 const hasScore = score.homeGoals !== null && score.homeGoals !== undefined
 && score.awayGoals !== null && score.awayGoals !== undefined;
-const liveSuffix = score.elapsed && !['FT', 'AET', 'PEN'].includes(status) ? ` ${score.elapsed}'` : '';
-return `${hasScore ? `${score.homeGoals}-${score.awayGoals} ` : ''}${status}${liveSuffix}`;
+return `${hasScore ? `${score.homeGoals}-${score.awayGoals} ` : ''}${status}`;
+}
+function footballDisplayClock(score, now = Date.now()) {
+const kickoff = Number(score?.kickoff || 0);
+if (!kickoff || now < kickoff) return { visible: false, text: '' };
+const status = String(score.statusShort || score.statusLong || '').toUpperCase();
+if (['CANC', 'PST', 'ABD', 'WO', 'AW'].includes(status)) return { visible: false, text: '' };
+if (['FT', 'AET', 'AP', 'PEN', 'FINISHED', 'MATCH FINISHED'].includes(status)) return { visible: true, text: status === 'MATCH FINISHED' ? 'FT' : status };
+if (status === 'HT' || /HALF\s*TIME/.test(status)) return { visible: true, text: 'HT' };
+const hasApiElapsed = score.elapsed !== null && score.elapsed !== undefined && score.elapsed !== '' && Number.isFinite(Number(score.elapsed));
+const apiElapsed = Number(score.elapsed);
+const checkedAt = Number(score.checkedAt || now);
+let minute = hasApiElapsed && apiElapsed >= 0
+? apiElapsed + Math.max(0, Math.floor((now - checkedAt) / 60000))
+: Math.max(0, Math.floor((now - kickoff) / 60000));
+const phaseCap = ['1H', 'FIRST HALF'].includes(status) ? 45
+: ['2H', 'SECOND HALF'].includes(status) ? 90
+: ['ET', 'BT', 'P'].includes(status) ? 120 : 90;
+const beyondCap = minute > phaseCap;
+minute = Math.min(minute, phaseCap);
+return { visible: true, text: `${minute}${beyondCap ? '+' : ''}'` };
+}
+function footballClockSourceForBet(bet, score) {
+const fixtureKickoff = Number(bet?.fixture?.startTimestamp || 0);
+if (score) return { ...score, kickoff: Number(score.kickoff || fixtureKickoff) };
+return fixtureKickoff ? { kickoff: fixtureKickoff, checkedAt: fixtureKickoff, statusShort: '' } : null;
+}
+function refreshFootballDisplayClocks() {
+if (isMinimized || activeTab !== 'open') return;
+const matches = restoreFootballScoresForOpenBets(loadFootballScoreMatches());
+const betsById = new Map(openBets.map(bet => [String(bet.id), bet]));
+document.querySelectorAll('[data-tbp-football-clock-bet-id]').forEach(element => {
+const bet = betsById.get(element.dataset.tbpFootballClockBetId || '');
+const score = findFootballScoreForBet(bet, matches);
+const clock = footballDisplayClock(footballClockSourceForBet(bet, score));
+element.textContent = clock.visible ? ` ⚽ ${clock.text}` : '';
+element.style.display = clock.visible ? 'inline' : 'none';
+});
+}
+function startFootballDisplayClock() {
+if (footballDisplayClockTimer) return;
+footballDisplayClockTimer = setInterval(refreshFootballDisplayClocks, 15000);
 }
 function safeJson(value) {
 try {
@@ -2809,7 +2896,7 @@ const totalProfit = openBets.reduce((s, b) => s + b.potentialProfit, 0);
 const totalReturn = openBets.reduce((s, b) => s + b.potentialReturn, 0);
 const pendingCaptures = getPendingFootballBetCaptures();
 const pendingManual = getPendingManualCapture();
-const footballScores = loadFootballScoreMatches();
+const footballScores = restoreFootballScoresForOpenBets(loadFootballScoreMatches());
 const pendingManualBet = pendingManual
 ? openBets.find(bet => String(bet.id) === String(pendingManual.betId))
 : null;
@@ -2858,8 +2945,10 @@ openBets.forEach(b => {
 const row = document.createElement('div');
 row.className = 'tbp-card';
 const fixture = b.fixture;
-const footballScore = footballScores[String(b.id)];
+const footballScore = findFootballScoreForBet(b, footballScores);
 const footballScoreText = footballScore ? formatFootballScore(footballScore) : 'Not checked yet';
+const footballClock = footballDisplayClock(footballClockSourceForBet(b, footballScore));
+const displayedKickoff = Number(footballScore?.kickoff || fixture?.startTimestamp || 0);
 const footballScoreClass = footballScore?.unmatched
 ? 'tbp-loss'
 : footballScore && isFinalFootballStatus(footballScore.statusShort) ? 'tbp-win' : 'tbp-blue';
@@ -2879,8 +2968,8 @@ ${fixture.competition ? `<div class="tbp-muted" style="margin-bottom:7px;">${esc
 <div class="tbp-row"><span>Pick</span><span>${escapeHtml(fixture.placedSelection || fixture.recommendedSelection || 'Names captured manually')}</span></div>
 ${(fixture.market || fixture.recommendedMarket) ? `<div class="tbp-row"><span>Market</span><span>${escapeHtml(fixture.placedSelection ? fixture.market : fixture.recommendedMarket || fixture.market)}</span></div>` : ''}
 ${fixture.linkedBy === 'unique-reviewed-odds' ? '<div class="tbp-muted" style="margin-bottom:5px;">Auto-matched from uniquely matching reviewed odds</div>' : ''}
-${fixture.startTimestamp ? `<div class="tbp-row"><span>Kickoff</span><span>${escapeHtml(formatDate(Math.floor(fixture.startTimestamp / 1000)))}</span></div>` : ''}
-${footballScoreEnabled ? `<div style="margin:8px 0 3px; padding:7px 8px; background:#172633; border:1px solid #3b82a8; border-radius:4px;"><div class="tbp-row" style="margin-top:0;"><span style="font-weight:bold; color:#7fc8f1;">Score</span><span class="${footballScoreClass}" style="font-size:13px;">${escapeHtml(footballScoreText)}</span></div></div>` : ''}
+${displayedKickoff ? `<div class="tbp-row"><span>Kickoff</span><span>${escapeHtml(formatDate(Math.floor(displayedKickoff / 1000)))}</span></div>` : ''}
+${footballScoreEnabled ? `<div style="margin:8px 0 3px; padding:7px 8px; background:#172633; border:1px solid #3b82a8; border-radius:4px;"><div class="tbp-row" style="margin-top:0;"><span style="font-weight:bold; color:#7fc8f1;">Score<span data-tbp-football-clock-bet-id="${escapeHtml(String(b.id))}" style="display:${footballClock.visible ? 'inline' : 'none'}; color:#f2f2f2; font-weight:normal;">${footballClock.visible ? ` ⚽ ${escapeHtml(footballClock.text)}` : ''}</span></span><span class="${footballScoreClass}" style="font-size:13px;">${escapeHtml(footballScoreText)}</span></div></div>` : ''}
 ` : `
 <div style="font-weight:bold; font-size:12px;">Selection</div>
 <div class="tbp-muted">${escapeHtml(b.selection)}</div>
@@ -2897,6 +2986,7 @@ ${oddsComparison}
 `;
 list.appendChild(row);
 });
+refreshFootballDisplayClocks();
 }
 function renderToday(body) {
 body.innerHTML = `
@@ -3511,6 +3601,7 @@ render();
 hydrateFromCache();
 scheduleMyBetsSnapshotCapture();
 startVisibleFootballResultCapture();
+startFootballDisplayClock();
 if (footballOddsHistoryEnabled) scheduleFootballHistoryExpiry(loadFootballOddsHistory());
 } catch (error) {
 console.error('Bookie Panel failed to start.', error);
