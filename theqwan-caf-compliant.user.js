@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.5.1
-// @description  Foreground-only Auction House history, filters, and a local snapshot watch bar
+// @version      1.6.0
+// @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
@@ -19,9 +19,11 @@
   const RESULTS_ID = "theqwan-caf-clean-results";
   const FILTERED_RESULTS_ID = "theqwan-caf-clean-filtered-results";
   const WATCH_BAR_ID = "theqwan-caf-clean-watch-bar";
+  const MARKET_PANEL_ID = "theqwan-caf-clean-market";
   const ANALYSIS_CLASS = "caf-clean-analysis";
   const SETTINGS_KEY = "cafCleanHistorySettings";
   const FILTER_SETTINGS_KEY = "cafCleanFilterSettings";
+  const MARKET_SETTINGS_KEY = "cafCleanMarketSettings";
   const CACHE_KEY = "cafCleanHistoryCache";
   const COLLECTION_KEY = "cafCleanGuidedCollection";
   const COLLECTOR_COLLAPSED_KEY = "cafCleanCollectorCollapsed";
@@ -33,6 +35,14 @@
   const WATCH_TARGET_KEY = "cafCleanPendingWatchTarget";
   const SUPABASE_URL = "https://btrmmuuoofbonmuwrkzg.supabase.co";
   const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0cm1tdXVvb2Zib25tdXdya3pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg4NTEzMTgsImV4cCI6MjA4NDQyNzMxOH0.E-s0k46BORXLICAvxtEpqoM3Qmh4-TRLaJAwXO6wJTY";
+  const MARKET_SELECTORS = {
+    container: "[class*='sellerList___']",
+    row: "[class*='rowWrapper___']",
+    price: "[class*='price___']",
+    thumbnail: "[class*='thumbnail___'] img[alt]",
+    itemTitleName: "[class*='itemTile___'] [class*='name___']",
+    buyButton: "[aria-label*='Buy item']"
+  };
 
   const BONUS_IDS = {
     "achilles": 50, "assassinate": 72, "backstab": 52, "berserk": 54,
@@ -47,7 +57,14 @@
     "revitalize": 41, "slow": 44, "smash": 104, "specialist": 71,
     "spray": 35, "stun": 58, "sure shot": 78, "throttle": 48,
     "toxin": 103, "warlord": 81, "weaken": 46, "wind-up": 76,
-    "wither": 42, "home run": 83, "homerun": 83
+    "wither": 42, "home run": 83, "homerun": 83,
+    "blindfire": 33, "cripple": 45, "cupid": 47, "freeze": 38,
+    "immutable": 115, "impassable": 26, "impenetrable": 17,
+    "imperviable": 22, "impregnable": 15, "insurmountable": 92,
+    "invulnerable": 91, "irrepressible": 121, "kinetokinesis": 112,
+    "paralyze": 59, "puncture": 66, "radiation protection": 90,
+    "roshambo": 43, "shock": 120, "storage": 37, "stricken": 20,
+    "suppress": 60, "smurf": 73
   };
 
   const BONUS_NAMES = {};
@@ -59,8 +76,10 @@
 
   const itemById = new Map();
   const cardById = new Map();
+  const marketItemByRow = new WeakMap();
   let collectionCaptureTimer = null;
   let watchLocateTimer = null;
+  let marketRefreshTimer = null;
 
   const style = document.createElement("style");
   style.textContent = `
@@ -456,6 +475,121 @@
     .caf-clean-results .caf-clean-watch:not(.is-watched) {
       grid-column: 1 / -1;
     }
+    #${MARKET_PANEL_ID} {
+      margin: 10px 0;
+      padding: 10px;
+      color: #eee;
+      background: #202020;
+      border: 1px solid #555;
+      border-radius: 8px;
+      box-sizing: border-box;
+      font-size: 12px;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-title {
+      font-size: 14px;
+      font-weight: 700;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-note,
+    #${MARKET_PANEL_ID} .caf-clean-market-status {
+      margin-top: 5px;
+      color: #aaa;
+      line-height: 1.35;
+    }
+    #${MARKET_PANEL_ID} .caf-clean-market-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 6px;
+      margin-top: 8px;
+    }
+    #${MARKET_PANEL_ID} label {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      min-width: 0;
+      color: #aaa;
+      font-size: 10px;
+    }
+    #${MARKET_PANEL_ID} select,
+    #${MARKET_PANEL_ID} input,
+    #${MARKET_PANEL_ID} button {
+      width: 100%;
+      min-width: 0;
+      min-height: 34px;
+      padding: 6px;
+      color: #8ecbff;
+      background: #151515;
+      border: 1px solid #555;
+      border-radius: 5px;
+      box-sizing: border-box;
+    }
+    #${MARKET_PANEL_ID} button:disabled { color: #777; opacity: .75; }
+    #${MARKET_PANEL_ID} .caf-clean-market-disclosure {
+      margin-top: 7px;
+      color: #999;
+      font-size: 10px;
+      line-height: 1.3;
+    }
+    .caf-clean-market-hidden { display: none !important; }
+    .caf-clean-market-row {
+      position: relative;
+      box-sizing: border-box;
+      transition: box-shadow .15s ease, background-color .15s ease;
+    }
+    .caf-clean-market-row.caf-clean-market-steal {
+      box-shadow: inset 4px 0 #00e676, inset 0 0 0 1px #00e676, 0 0 8px rgba(0,230,118,.4);
+      background-color: rgba(0,230,118,.08) !important;
+    }
+    .caf-clean-market-row.caf-clean-market-good {
+      box-shadow: inset 4px 0 #5ee27a, inset 0 0 0 1px #5ee27a;
+      background-color: rgba(94,226,122,.07) !important;
+    }
+    .caf-clean-market-row.caf-clean-market-fair {
+      box-shadow: inset 3px 0 #ffd166;
+    }
+    .caf-clean-market-row.caf-clean-market-high {
+      box-shadow: inset 3px 0 #ff7b89;
+    }
+    .caf-clean-market-tools {
+      display: block !important;
+      flex: 1 0 100%;
+      grid-column: 1 / -1;
+      width: 100%;
+      min-width: 0;
+      margin-top: 5px;
+      padding: 6px;
+      color: #ddd;
+      background: rgba(20,20,20,.96);
+      border-top: 1px solid #444;
+      box-sizing: border-box;
+      font-size: 11px;
+    }
+    .caf-clean-market-tools .caf-clean-market-tool-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .caf-clean-market-tools .caf-clean-market-bonus {
+      flex: 1 1 auto;
+      min-width: 0;
+      color: #caa8ff;
+      overflow-wrap: anywhere;
+    }
+    .caf-clean-market-tools .caf-clean-history {
+      flex: 0 0 auto;
+      min-height: 30px;
+      padding: 5px 8px;
+      color: #8ecbff;
+      background: #151515;
+      border: 1px solid #555;
+      border-radius: 5px;
+    }
+    .caf-clean-market-deal-badge {
+      flex: 0 0 auto;
+      padding: 3px 6px;
+      border: 1px solid currentColor;
+      border-radius: 4px;
+      font-weight: 700;
+    }
   `;
   document.head.appendChild(style);
 
@@ -551,6 +685,11 @@
 
   function isAuctionPage() {
     return /\/amarket\.php$/i.test(location.pathname);
+  }
+
+  function isItemMarketPage() {
+    const params = new URLSearchParams(location.search);
+    return /\/page\.php$/i.test(location.pathname) && params.get("sid") === "ItemMarket";
   }
 
   function loadWatchList() {
@@ -1009,7 +1148,7 @@
     return String(value || "")
       .replace(/^(?:image|picture|thumbnail)\s+(?:of\s+)?/i, "")
       .replace(/\s+(?:image|picture|thumbnail)$/i, "")
-      .replace(/\s*\((?:common|uncommon|rare|yellow|orange|red)\s+\d+\)\.?\s*$/i, "")
+      .replace(/\s*\((?:common|uncommon|rare|yellow|orange|red)(?:\s+\d+)?\)\.?\s*$/i, "")
       .trim();
   }
 
@@ -1125,6 +1264,17 @@
     ).join(" / ") || "No bonus";
   }
 
+  function itemMatchesBonusRange(item, minimum, maximum) {
+    if (minimum === "" && maximum === "") return true;
+    const min = minimum === "" ? -Infinity : Number(minimum);
+    const max = maximum === "" ? Infinity : Number(maximum);
+    return (item.bonuses || []).some(bonus => bonus.value !== null
+      && bonus.value !== undefined
+      && Number.isFinite(Number(bonus.value))
+      && Number(bonus.value) >= min
+      && Number(bonus.value) <= max);
+  }
+
   function defaultFilterSettings() {
     return {
       name: "",
@@ -1136,6 +1286,8 @@
       color: "",
       bonus1: "",
       bonus2: "",
+      bonusMin: "",
+      bonusMax: "",
       doubleOnly: false
     };
   }
@@ -1162,6 +1314,8 @@
       color: document.getElementById("caf-clean-filter-color")?.value || "",
       bonus1: document.getElementById("caf-clean-filter-bonus1")?.value || "",
       bonus2: document.getElementById("caf-clean-filter-bonus2")?.value || "",
+      bonusMin: document.getElementById("caf-clean-filter-bonus-min")?.value || "",
+      bonusMax: document.getElementById("caf-clean-filter-bonus-max")?.value || "",
       doubleOnly: !!document.getElementById("caf-clean-filter-double")?.checked
     };
   }
@@ -1187,6 +1341,7 @@
       && (!filter.color || (filter.color === "none" ? !item.color : item.color === filter.color))
       && (!filter.bonus1 || itemBonusIds.includes(filter.bonus1))
       && (!filter.bonus2 || itemBonusIds.includes(filter.bonus2))
+      && itemMatchesBonusRange(item, filter.bonusMin, filter.bonusMax)
       && (!filter.doubleOnly || itemBonusIds.length >= 2);
   }
 
@@ -1233,6 +1388,8 @@
     document.getElementById("caf-clean-filter-color").value = defaults.color;
     document.getElementById("caf-clean-filter-bonus1").value = defaults.bonus1;
     document.getElementById("caf-clean-filter-bonus2").value = defaults.bonus2;
+    document.getElementById("caf-clean-filter-bonus-min").value = defaults.bonusMin;
+    document.getElementById("caf-clean-filter-bonus-max").value = defaults.bonusMax;
     document.getElementById("caf-clean-filter-double").checked = defaults.doubleOnly;
     setStatus("Filtered list cleared. Compiled results were kept.");
   }
@@ -1670,7 +1827,7 @@
   }
 
   function historyBody(item) {
-    const current = settings();
+    const current = item.historySettings || settings();
     const body = {
       limit: 100,
       offset: 0,
@@ -1719,7 +1876,7 @@
     let total = null;
 
     for (let offset = 0; offset < maxScanned; offset += pageSize) {
-      if (!isActiveView()) throw new Error("History stopped because the Auction House page lost focus");
+      if (!isActiveView()) throw new Error("History stopped because the Torn page is no longer visible");
       const result = await historyRequest({ ...body, limit: pageSize, offset });
       const sales = Array.isArray(result.auctions) ? result.auctions : [];
       all = all.concat(sales);
@@ -1789,7 +1946,7 @@
     const prices = sales.map(sale => Number(sale.price || 0)).filter(Boolean);
     if (!prices.length) {
       box.innerHTML = `<span class="caf-clean-muted">No finished sales found for parsed item “${escapeHtml(normalizeItemName(item.name))}”.</span>`;
-      return;
+      return null;
     }
 
     const low = Math.min(...prices);
@@ -1808,7 +1965,7 @@
 
     box.innerHTML = `
       <div class="caf-clean-summary">
-        <span class="${dealClass}">Bid ${money(item.bid)} — ${dealLabel}</span>
+        <span class="${dealClass}">${item.marketListing ? "Ask" : "Bid"} ${money(item.bid)} — ${dealLabel}</span>
         <span class="caf-clean-muted"> | </span>
         <span style="color:#7ee787">L ${money(low)}</span>
         <span class="caf-clean-muted"> | </span>
@@ -1817,7 +1974,9 @@
         <span style="color:#ff8b8b">H ${money(high)}</span>
         <span class="caf-clean-muted"> | ${sales.length} sale(s)</span>
       </div>
-      <div class="caf-clean-advice">Price comparison only. The current auction can still rise before it closes.</div>
+      <div class="caf-clean-advice">${item.marketListing
+        ? "Price comparison only. Stats, bonus strength, market supply, and sale age can materially affect value."
+        : "Price comparison only. The current auction can still rise before it closes."}</div>
       ${usedBroadFallback ? `<div class="caf-clean-advice">No exact bonus match was found, so this shows broader history for the same item.</div>` : ""}
       <button class="caf-clean-toggle" style="width:100%;margin-top:5px">Previous Sales ▼</button>
       <div class="caf-clean-sales">
@@ -1854,16 +2013,19 @@
       salesBox.style.display = open ? "none" : "block";
       toggle.textContent = open ? "Previous Sales ▼" : "Previous Sales ▲";
     });
+    return { low, middle, high, dealClass, dealLabel, salesCount: sales.length, usedBroadFallback };
   }
 
   async function runHistory(item, scope) {
     const button = scope.querySelector(".caf-clean-history");
     const box = scope.querySelector(".caf-clean-history-box");
-    if (!box) return;
+    if (!box || !button) return null;
+    const idleLabel = button.dataset.idleLabel || button.textContent || "History + Price Check";
+    button.dataset.idleLabel = idleLabel;
 
     if (!isActiveView()) {
-      box.innerHTML = `<span class="caf-clean-high">Keep this Auction House page visible and focused while checking history.</span>`;
-      return;
+      box.innerHTML = `<span class="caf-clean-high">Keep this Torn page visible while checking history.</span>`;
+      return null;
     }
 
     button.disabled = true;
@@ -1888,14 +2050,357 @@
         usedBroadFallback = sales.length > 0;
       }
 
-      if (!isActiveView()) throw new Error("History stopped because the Auction House page lost focus");
-      renderHistory(item, sales, box, usedBroadFallback);
+      if (!isActiveView()) throw new Error("History stopped because the Torn page is no longer visible");
+      return renderHistory(item, sales, box, usedBroadFallback);
     } catch (error) {
       box.innerHTML = `<span class="caf-clean-high">History error: ${escapeHtml(error.message)}</span>`;
+      return null;
     } finally {
       button.disabled = false;
-      button.textContent = "History + Price Check";
+      button.textContent = idleLabel;
     }
+  }
+
+  function defaultMarketSettings() {
+    return {
+      bonus1: "",
+      bonus2: "",
+      bonusMin: "",
+      bonusMax: "",
+      historyCount: 25,
+      matchBonuses: true
+    };
+  }
+
+  function loadMarketSettings() {
+    try {
+      return {
+        ...defaultMarketSettings(),
+        ...JSON.parse(localStorage.getItem(MARKET_SETTINGS_KEY) || "{}")
+      };
+    } catch {
+      return defaultMarketSettings();
+    }
+  }
+
+  function marketSettingsFromControls() {
+    const panel = document.getElementById(MARKET_PANEL_ID);
+    if (!panel) return loadMarketSettings();
+    return {
+      bonus1: panel.querySelector("#caf-clean-market-bonus1")?.value || "",
+      bonus2: panel.querySelector("#caf-clean-market-bonus2")?.value || "",
+      bonusMin: panel.querySelector("#caf-clean-market-bonus-min")?.value || "",
+      bonusMax: panel.querySelector("#caf-clean-market-bonus-max")?.value || "",
+      historyCount: Number(panel.querySelector("#caf-clean-market-history-count")?.value || 25),
+      matchBonuses: !!panel.querySelector("#caf-clean-market-match-bonuses")?.checked
+    };
+  }
+
+  function saveMarketSettings() {
+    const current = marketSettingsFromControls();
+    localStorage.setItem(MARKET_SETTINGS_KEY, JSON.stringify(current));
+    return current;
+  }
+
+  function setMarketStatus(message, isError = false) {
+    const status = document.querySelector(`#${MARKET_PANEL_ID} .caf-clean-market-status`);
+    if (!status) return;
+    if (status.textContent !== message) status.textContent = message;
+    status.style.color = isError ? "#ff8b8b" : "#aaa";
+  }
+
+  function marketRows() {
+    if (!isItemMarketPage()) return [];
+    return [...document.querySelectorAll(MARKET_SELECTORS.row)].filter(row =>
+      !row.closest(`#${MARKET_PANEL_ID}`)
+      && !!row.querySelector(MARKET_SELECTORS.price)
+    );
+  }
+
+  function marketListingSource(row) {
+    const clone = row.cloneNode(true);
+    clone.querySelectorAll(".caf-clean-market-tools").forEach(element => element.remove());
+    const attributes = [...clone.querySelectorAll("[aria-label], [title], [data-item-name], [data-bonus], [data-bonus-name], [data-bonus-value]")]
+      .flatMap(element => [
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+        element.getAttribute("data-item-name"),
+        element.getAttribute("data-bonus"),
+        element.getAttribute("data-bonus-name"),
+        element.getAttribute("data-bonus-value")
+      ])
+      .filter(Boolean)
+      .join("\n");
+    return `${clone.innerText || clone.textContent || ""}\n${attributes}\n${clone.outerHTML || ""}`;
+  }
+
+  function marketItemName(row, source) {
+    const explicit =
+      row.querySelector("[data-item-name]")?.getAttribute("data-item-name")
+      || row.getAttribute("data-item-name")
+      || row.querySelector(MARKET_SELECTORS.thumbnail)?.getAttribute("alt")
+      || document.querySelector(MARKET_SELECTORS.itemTitleName)?.textContent
+      || "";
+    const normalized = normalizeItemName(explicit);
+    if (normalized) return normalized;
+
+    const buyLabel = row.querySelector(MARKET_SELECTORS.buyButton)?.getAttribute("aria-label") || "";
+    const fromBuyLabel = normalizeItemName(buyLabel
+      .replace(/^buy\s+(?:this\s+)?item\s*[:,-]?\s*/i, "")
+      .replace(/\s+(?:for|at)\s+\$[\d,.]+.*$/i, ""));
+    if (fromBuyLabel && !/^for\b/i.test(fromBuyLabel)) return fromBuyLabel;
+
+    return normalizeItemName((source.match(/(?:weapon|armor|armour|equipment|item)\s*[:,-]\s*([^\n|,]+)/i) || [])[1]) || "Unknown item";
+  }
+
+  function parseMarketListing(row, index = 0) {
+    const source = marketListingSource(row);
+    const priceText = row.querySelector(MARKET_SELECTORS.price)?.textContent || "";
+    const priceMatch = priceText.match(/\$?\s*([\d,]+(?:\.\d+)?)/) || source.match(/\$\s*([\d,]+(?:\.\d+)?)/);
+    const price = priceMatch ? Number(String(priceMatch[1]).replace(/,/g, "")) : 0;
+    const parsedBonuses = bonusDetails(source);
+    const bonuses = parsedBonuses.filter(bonus => bonus.value !== null
+      || new RegExp(`bonus[^\n]{0,80}${String(bonus.name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(source));
+    const damage = numberFrom((source.match(/Damage\s*[:=-]\s*([\d.]+)/i) || [])[1]) || 0;
+    const accuracy = numberFrom((source.match(/Accuracy\s*[:=-]\s*([\d.]+)/i) || [])[1]) || 0;
+    const quality = numberFrom((source.match(/Quality\s*[:=-]\s*([\d.]+)/i) || [])[1]);
+    const name = marketItemName(row, source);
+    const identityMatch = (row.outerHTML || "").match(/(?:itemUID|itemUid|uid|listingID|listingId|itemID|itemId)["'=:\s-]+(\d+)/i);
+
+    return {
+      id: identityMatch?.[1] || `market|${index}|${name}|${price}|${bonuses.map(bonus => `${bonus.id}:${bonus.value ?? ""}`).join(",")}`,
+      name,
+      damage,
+      accuracy,
+      quality,
+      bid: price,
+      bonuses,
+      color: cardColor(row),
+      marketListing: true,
+      historySettings: {
+        count: Number(loadMarketSettings().historyCount || 25),
+        matchBonuses: loadMarketSettings().matchBonuses !== false,
+        doubleOnly: false
+      }
+    };
+  }
+
+  function marketItemMatches(item, filter) {
+    const bonusIds = (item.bonuses || []).map(bonus => String(bonus.id));
+    return bonusIds.length > 0
+      && (!filter.bonus1 || bonusIds.includes(String(filter.bonus1)))
+      && (!filter.bonus2 || bonusIds.includes(String(filter.bonus2)))
+      && itemMatchesBonusRange(item, filter.bonusMin, filter.bonusMax);
+  }
+
+  function clearMarketDeal(row) {
+    row.classList.remove(
+      "caf-clean-market-steal",
+      "caf-clean-market-good",
+      "caf-clean-market-fair",
+      "caf-clean-market-high"
+    );
+    row.querySelector(".caf-clean-market-deal-badge")?.remove();
+  }
+
+  function applyMarketDeal(row, summary) {
+    clearMarketDeal(row);
+    const head = row.querySelector(".caf-clean-market-tool-head");
+    if (!head || !summary) return;
+
+    const badge = document.createElement("span");
+    badge.className = `caf-clean-market-deal-badge ${summary.usedBroadFallback ? "caf-clean-muted" : summary.dealClass}`;
+    if (summary.usedBroadFallback) {
+      badge.textContent = `BROAD ${summary.dealLabel}`;
+      badge.title = "This is based on broader same-item history because no exact bonus match was found; the row is not highlighted as a deal.";
+    } else {
+      badge.textContent = summary.dealLabel;
+      const rowClass = {
+        STEAL: "caf-clean-market-steal",
+        GOOD: "caf-clean-market-good",
+        FAIR: "caf-clean-market-fair",
+        HIGH: "caf-clean-market-high"
+      }[summary.dealLabel];
+      if (rowClass) row.classList.add(rowClass);
+    }
+    head.prepend(badge);
+  }
+
+  function ensureMarketTools(row, item) {
+    const identity = `${item.id}|${item.name}|${item.bid}|${itemBonusText(item)}`;
+    let tools = row.querySelector(":scope > .caf-clean-market-tools");
+    if (tools && tools.dataset.identity !== identity) {
+      tools.remove();
+      tools = null;
+      clearMarketDeal(row);
+    }
+    if (tools) return tools;
+
+    tools = document.createElement("div");
+    tools.className = "caf-clean-market-tools";
+    tools.dataset.identity = identity;
+    tools.innerHTML = `
+      <div class="caf-clean-market-tool-head">
+        <span class="caf-clean-market-bonus">${escapeHtml(itemBonusText(item))} · Ask ${money(item.bid)}</span>
+        <button class="caf-clean-history" data-idle-label="History + Deal">History + Deal</button>
+      </div>
+      <div class="caf-clean-history-box"></div>
+    `;
+    row.appendChild(tools);
+    tools.querySelector(".caf-clean-history").addEventListener("click", async event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const currentItem = marketItemByRow.get(row);
+      if (!currentItem) return;
+      const summary = await runHistory(currentItem, tools);
+      applyMarketDeal(row, summary);
+    });
+    return tools;
+  }
+
+  function applyMarketFilters({ announce = true } = {}) {
+    if (!isItemMarketPage() || !isActiveView()) return [];
+    const filter = saveMarketSettings();
+    const rows = marketRows();
+    const parsedRows = rows.map((row, index) => ({ row, item: parseMarketListing(row, index) }));
+    const bonusCount = parsedRows.filter(entry => entry.item.bonuses.length).length;
+    let matchCount = 0;
+
+    if (rows.length && !bonusCount) {
+      rows.forEach(row => row.classList.remove("caf-clean-market-hidden"));
+      setMarketStatus("CAF found the loaded seller rows, but their bonus details are not currently exposed in the page. Nothing was hidden; open an equipment/weapon listing or expand its details and try again.", true);
+      return [];
+    }
+
+    parsedRows.forEach(({ row, item }) => {
+      item.historySettings = {
+        count: filter.historyCount,
+        matchBonuses: filter.matchBonuses,
+        doubleOnly: false
+      };
+      marketItemByRow.set(row, item);
+      row.classList.add("caf-clean-market-row");
+      const matches = marketItemMatches(item, filter);
+      row.classList.toggle("caf-clean-market-hidden", !matches);
+      if (matches) {
+        matchCount += 1;
+        ensureMarketTools(row, item);
+      }
+    });
+
+    if (announce) {
+      const range = filter.bonusMin || filter.bonusMax
+        ? ` in the ${filter.bonusMin || "0"}–${filter.bonusMax || "∞"}% range`
+        : "";
+      setMarketStatus(`Showing ${matchCount} matching bonus listing(s)${range}; ${bonusCount} of ${rows.length} loaded listing(s) contain a parsed bonus.`);
+    }
+    return rows.filter(row => !row.classList.contains("caf-clean-market-hidden"));
+  }
+
+  async function analyzeVisibleMarketDeals() {
+    const rows = applyMarketFilters();
+    const button = document.getElementById("caf-clean-market-analyze");
+    if (!button || !rows.length) {
+      setMarketStatus("No matching bonus listings are currently loaded to analyze.", true);
+      return;
+    }
+
+    button.disabled = true;
+    try {
+      for (let index = 0; index < rows.length; index++) {
+        if (!isActiveView() || !isItemMarketPage()) {
+          setMarketStatus("Deal analysis stopped because the Item Market page is no longer visible. Existing results were kept.", true);
+          return;
+        }
+        const row = rows[index];
+        if (!row.isConnected) continue;
+        const item = marketItemByRow.get(row);
+        const tools = row.querySelector(":scope > .caf-clean-market-tools");
+        if (!item || !tools) continue;
+        setMarketStatus(`Checking deal ${index + 1} of ${rows.length}: ${item.name}`);
+        const summary = await runHistory(item, tools);
+        applyMarketDeal(row, summary);
+        await delay(150);
+      }
+      setMarketStatus(`Deal checks complete for ${rows.length} visible bonus listing(s). Green rows are below exact-match historical median; bright green rows are below the historical low.`);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function resetMarketFilters() {
+    const panel = document.getElementById(MARKET_PANEL_ID);
+    if (!panel) return;
+    const defaults = defaultMarketSettings();
+    panel.querySelector("#caf-clean-market-bonus1").value = defaults.bonus1;
+    panel.querySelector("#caf-clean-market-bonus2").value = defaults.bonus2;
+    panel.querySelector("#caf-clean-market-bonus-min").value = defaults.bonusMin;
+    panel.querySelector("#caf-clean-market-bonus-max").value = defaults.bonusMax;
+    panel.querySelector("#caf-clean-market-history-count").value = String(defaults.historyCount);
+    panel.querySelector("#caf-clean-market-match-bonuses").checked = defaults.matchBonuses;
+    localStorage.removeItem(MARKET_SETTINGS_KEY);
+    marketRows().forEach(clearMarketDeal);
+    applyMarketFilters();
+  }
+
+  function injectMarketPanel() {
+    if (!isItemMarketPage() || document.getElementById(MARKET_PANEL_ID) || !document.body) return;
+    const current = loadMarketSettings();
+    const panel = document.createElement("div");
+    panel.id = MARKET_PANEL_ID;
+    panel.innerHTML = `
+      <div class="caf-clean-market-title">CAF Clean — Bonus Equipment Market</div>
+      <div class="caf-clean-market-note">Filters only the Item Market listings Torn has already loaded on this page. Non-bonus items are hidden.</div>
+      <div class="caf-clean-market-grid">
+        <label>Bonus 1<select id="caf-clean-market-bonus1">${bonusFilterOptions(String(current.bonus1 || ""), "Any Bonus 1")}</select></label>
+        <label>Bonus 2<select id="caf-clean-market-bonus2">${bonusFilterOptions(String(current.bonus2 || ""), "Any Bonus 2")}</select></label>
+        <label>Minimum bonus %<input id="caf-clean-market-bonus-min" type="number" min="0" step="0.01" placeholder="No minimum" value="${escapeAttr(current.bonusMin)}"></label>
+        <label>Maximum bonus %<input id="caf-clean-market-bonus-max" type="number" min="0" step="0.01" placeholder="No maximum" value="${escapeAttr(current.bonusMax)}"></label>
+        <label>History sales<select id="caf-clean-market-history-count">${[12, 25, 50, 100].map(count => `<option value="${count}" ${Number(current.historyCount) === count ? "selected" : ""}>${count}</option>`).join("")}</select></label>
+        <label style="justify-content:flex-end"><span><input id="caf-clean-market-match-bonuses" type="checkbox" style="width:auto;min-height:auto" ${current.matchBonuses !== false ? "checked" : ""}> Match listing bonus types</span></label>
+        <button id="caf-clean-market-apply">Apply to Loaded Listings</button>
+        <button id="caf-clean-market-analyze">Analyze Visible Deals</button>
+        <button id="caf-clean-market-reset" style="grid-column:1 / -1">Reset Filters & Deal Marks</button>
+      </div>
+      <details class="caf-clean-market-disclosure">
+        <summary>Deal colors and data use</summary>
+        <div>STEAL is below the historical low; GOOD is below the median; FAIR is at or below the historical high; HIGH is above it. This is a price-only signal, not a guarantee. History checks send the visible item's name, stats, price, and bonuses to the external Supabase history service. No Torn credentials or API key are sent.</div>
+      </details>
+      <div class="caf-clean-market-status">Waiting for Item Market listings...</div>
+    `;
+    document.body.prepend(panel);
+    panel.querySelector("#caf-clean-market-apply").addEventListener("click", () => applyMarketFilters());
+    panel.querySelector("#caf-clean-market-analyze").addEventListener("click", analyzeVisibleMarketDeals);
+    panel.querySelector("#caf-clean-market-reset").addEventListener("click", resetMarketFilters);
+    panel.querySelectorAll("select, input").forEach(element => element.addEventListener("change", () => {
+      saveMarketSettings();
+      applyMarketFilters();
+    }));
+    applyMarketFilters();
+  }
+
+  function scheduleMarketRefresh() {
+    clearTimeout(marketRefreshTimer);
+    if (!isItemMarketPage()) {
+      document.getElementById(MARKET_PANEL_ID)?.remove();
+      document.querySelectorAll(".caf-clean-market-row").forEach(row => {
+        row.classList.remove(
+          "caf-clean-market-row",
+          "caf-clean-market-hidden",
+          "caf-clean-market-steal",
+          "caf-clean-market-good",
+          "caf-clean-market-fair",
+          "caf-clean-market-high"
+        );
+        row.querySelector(":scope > .caf-clean-market-tools")?.remove();
+      });
+      return;
+    }
+    if (!isActiveView()) return;
+    marketRefreshTimer = setTimeout(() => {
+      injectMarketPanel();
+      applyMarketFilters({ announce: true });
+    }, 180);
   }
 
   async function analyzeAllVisibleHistory() {
@@ -2019,6 +2524,8 @@
             <span>Bonus 2</span>
             <select id="caf-clean-filter-bonus2">${bonusFilterOptions(String(filter.bonus2 || ""), "Any Bonus 2")}</select>
           </label>
+          <input id="caf-clean-filter-bonus-min" type="number" min="0" step="0.01" placeholder="Minimum bonus %" value="${escapeAttr(filter.bonusMin)}">
+          <input id="caf-clean-filter-bonus-max" type="number" min="0" step="0.01" placeholder="Maximum bonus %" value="${escapeAttr(filter.bonusMax)}">
           <label style="grid-column:1 / -1"><input id="caf-clean-filter-double" type="checkbox" ${filter.doubleOnly ? "checked" : ""}> Double-bonus items only</label>
           <button id="caf-clean-filter-generate">Generate New List</button>
           <button id="caf-clean-filter-clear">Clear Filtered List</button>
@@ -2077,7 +2584,22 @@
   function initialize() {
     renderWatchBar();
     injectPanel();
+    injectMarketPanel();
     schedulePendingWatchLocate();
+    scheduleMarketRefresh();
+    window.addEventListener("hashchange", scheduleMarketRefresh);
+    window.addEventListener("popstate", scheduleMarketRefresh);
+    window.addEventListener("focus", scheduleMarketRefresh);
+    document.addEventListener("visibilitychange", scheduleMarketRefresh);
+    if (document.body) {
+      const marketObserver = new MutationObserver(records => {
+        const hasMarketPageMutation = records.some(record =>
+          !record.target.closest?.(`#${MARKET_PANEL_ID}, .caf-clean-market-tools`)
+        );
+        if (hasMarketPageMutation) scheduleMarketRefresh();
+      });
+      marketObserver.observe(document.body, { childList: true, subtree: true });
+    }
   }
 
   if (document.readyState === "loading") {
