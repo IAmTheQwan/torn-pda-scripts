@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.4.3
-// @description  Foreground-only Auction House history and price guidance for the actively viewed page
+// @version      1.5.0
+// @description  Foreground-only Auction House history, filters, and a local snapshot watch bar
 // @author       TheQwan [3485263]
-// @match        https://www.torn.com/amarket.php*
+// @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      btrmmuuoofbonmuwrkzg.supabase.co
 // @license      MIT
@@ -18,6 +18,7 @@
   const PANEL_ID = "theqwan-caf-clean";
   const RESULTS_ID = "theqwan-caf-clean-results";
   const FILTERED_RESULTS_ID = "theqwan-caf-clean-filtered-results";
+  const WATCH_BAR_ID = "theqwan-caf-clean-watch-bar";
   const ANALYSIS_CLASS = "caf-clean-analysis";
   const SETTINGS_KEY = "cafCleanHistorySettings";
   const FILTER_SETTINGS_KEY = "cafCleanFilterSettings";
@@ -25,6 +26,10 @@
   const COLLECTION_KEY = "cafCleanGuidedCollection";
   const COLLECTOR_COLLAPSED_KEY = "cafCleanCollectorCollapsed";
   const FILTER_COLLAPSED_KEY = "cafCleanFilterCollapsed";
+  const WATCHLIST_KEY = "cafCleanWatchList";
+  const WATCH_COLLAPSED_KEY = "cafCleanWatchCollapsed";
+  const WATCH_REMOVE_MODE_KEY = "cafCleanWatchRemoveMode";
+  const WATCH_TARGET_KEY = "cafCleanPendingWatchTarget";
   const SUPABASE_URL = "https://btrmmuuoofbonmuwrkzg.supabase.co";
   const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0cm1tdXVvb2Zib25tdXdya3pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg4NTEzMTgsImV4cCI6MjA4NDQyNzMxOH0.E-s0k46BORXLICAvxtEpqoM3Qmh4-TRLaJAwXO6wJTY";
 
@@ -54,6 +59,7 @@
   const itemById = new Map();
   const cardById = new Map();
   let collectionCaptureTimer = null;
+  let watchLocateTimer = null;
 
   const style = document.createElement("style");
   style.textContent = `
@@ -311,6 +317,130 @@
       line-height: 1.15;
       overflow-wrap: anywhere;
     }
+    #${WATCH_BAR_ID} {
+      position: fixed;
+      left: 8px;
+      right: 8px;
+      bottom: 43px;
+      z-index: 999989;
+      color: #fff;
+      background: #181818;
+      border: 1px solid #555;
+      border-radius: 9px 9px 0 0;
+      box-shadow: 0 -2px 10px rgba(0,0,0,.55);
+      font-size: 10px;
+      overflow: hidden;
+    }
+    #${WATCH_BAR_ID} button {
+      border: 1px solid #555;
+      border-radius: 5px;
+      color: #ddd;
+      background: #151515;
+      font: inherit;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+      padding: 4px 6px;
+      background: #252525;
+      box-sizing: border-box;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-title {
+      flex: 0 0 auto;
+      padding: 4px 7px;
+      color: #fff;
+      font-weight: 700;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-nearest {
+      flex: 1 1 auto;
+      min-width: 0;
+      padding: 4px 6px;
+      color: #ffcf70;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-remove {
+      flex: 0 0 auto;
+      padding: 4px 7px;
+      color: #bbb;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-remove.is-active {
+      color: #ff8a8a;
+      background: #551111;
+      border-color: #884444;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-items {
+      display: flex;
+      align-items: stretch;
+      gap: 6px;
+      padding: 6px;
+      overflow-x: auto;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-item {
+      display: grid;
+      grid-template-columns: 34px minmax(66px, 1fr);
+      grid-template-rows: auto auto;
+      gap: 1px 5px;
+      align-items: center;
+      flex: 0 0 auto;
+      min-width: 118px;
+      max-width: 160px;
+      padding: 4px 6px;
+      text-align: left;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-item.is-remove-mode {
+      border-color: #994444;
+      box-shadow: inset 0 0 0 1px #662222;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-thumb {
+      display: flex;
+      grid-row: 1 / 3;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 27px;
+      color: #ddd;
+      background: #0f0f0f;
+      border: 2px solid #777;
+      border-radius: 5px;
+      box-sizing: border-box;
+      font-size: 9px;
+      font-weight: 700;
+      overflow: hidden;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-thumb.yellow { border-color: #d8d800; }
+    #${WATCH_BAR_ID} .caf-clean-watch-thumb.orange { border-color: #ff8c00; }
+    #${WATCH_BAR_ID} .caf-clean-watch-thumb.red { border-color: #d94444; }
+    #${WATCH_BAR_ID} .caf-clean-watch-thumb img {
+      max-width: 28px;
+      max-height: 23px;
+      object-fit: contain;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-name {
+      min-width: 0;
+      color: #8ecbff;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #${WATCH_BAR_ID} .caf-clean-watch-time { color: #ffcf70; }
+    #${WATCH_BAR_ID} .caf-clean-watch-empty {
+      padding: 4px;
+      color: #999;
+    }
+    .caf-clean-results .caf-clean-watch.is-watched {
+      grid-column: 1 / -1;
+      color: #8cffb0;
+      background: #1f4d2e;
+      border-color: #3d7650;
+    }
+    .caf-clean-results .caf-clean-watch:not(.is-watched) {
+      grid-column: 1 / -1;
+    }
   `;
   document.head.appendChild(style);
 
@@ -393,9 +523,338 @@
 
   function tickCountdowns() {
     if (!isActiveView()) return;
+    let watchedItemJustEnded = false;
     document.querySelectorAll(".caf-clean-countdown[data-ends-at]").forEach(element => {
-      element.textContent = countdownText(element.getAttribute("data-ends-at"));
+      const nextText = `${element.dataset.prefix || ""}${countdownText(element.getAttribute("data-ends-at"))}`;
+      if (element.closest(`#${WATCH_BAR_ID}`) && element.textContent !== nextText && nextText.endsWith("Ended")) {
+        watchedItemJustEnded = true;
+      }
+      element.textContent = nextText;
     });
+    if (watchedItemJustEnded) renderWatchBar();
+  }
+
+  function isAuctionPage() {
+    return /\/amarket\.php$/i.test(location.pathname);
+  }
+
+  function loadWatchList() {
+    try {
+      const list = JSON.parse(localStorage.getItem(WATCHLIST_KEY) || "[]");
+      return Array.isArray(list) ? list.filter(item => item && item.id) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveWatchList(list) {
+    try {
+      localStorage.setItem(WATCHLIST_KEY, JSON.stringify(list));
+      return true;
+    } catch {
+      setStatus("The watch list could not be saved on this device.", true);
+      return false;
+    }
+  }
+
+  function watchItemId(item) {
+    return String(item?.id || collectionItemKey(item || {}));
+  }
+
+  function isWatched(item) {
+    const id = watchItemId(item);
+    return loadWatchList().some(watched => watched.id === id);
+  }
+
+  function safeAuctionUrl(value, sourceStart = 0) {
+    try {
+      const url = new URL(value || "", location.origin);
+      if (url.origin === location.origin && /\/amarket\.php$/i.test(url.pathname)) {
+        return url.href;
+      }
+    } catch {}
+
+    return `${location.origin}/amarket.php#itemtab=weapons&start=${Math.max(0, Number(sourceStart || 0))}`;
+  }
+
+  function captureWatchImage(item) {
+    if (String(item?.imageDataUrl || "").startsWith("data:image/png;base64,")) return item.imageDataUrl;
+    const card = cardById.get(watchItemId(item));
+    const image = card?.querySelector("img");
+    if (!image?.complete || !image.naturalWidth || !image.naturalHeight) return "";
+
+    try {
+      const scale = Math.min(1, 72 / image.naturalWidth, 52 / image.naturalHeight);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      canvas.getContext("2d")?.drawImage(image, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL("image/png");
+    } catch {
+      return "";
+    }
+  }
+
+  function watchSnapshot(item) {
+    // Compliance boundary: this is a local snapshot of data already parsed
+    // from the visible Auction House page. It is never refreshed off-page.
+    const sourceUrl = safeAuctionUrl(item?.sourceUrl || (isAuctionPage() ? location.href : ""), item?.sourceStart);
+    const parsedStart = auctionStartFromUrl(sourceUrl);
+    const quality = item?.quality === null || item?.quality === undefined ? null : Number(item.quality);
+
+    return {
+      id: watchItemId(item),
+      name: normalizeItemName(item?.name) || "Unknown item",
+      damage: Number(item?.damage || 0),
+      accuracy: Number(item?.accuracy || 0),
+      quality: Number.isFinite(quality) ? quality : null,
+      bid: Number(item?.bid || 0),
+      bonuses: (item?.bonuses || []).slice(0, 2).map(bonus => ({
+        id: String(bonus.id),
+        name: String(bonus.name || BONUS_NAMES[bonus.id] || `Bonus ${bonus.id}`),
+        value: bonus.value === null || bonus.value === undefined ? null : Number(bonus.value)
+      })),
+      color: String(item?.color || ""),
+      timeText: String(item?.timeText || ""),
+      endsAtMs: Number(item?.endsAtMs || 0),
+      sourceStart: Number.isFinite(parsedStart) ? parsedStart : Number(item?.sourceStart || 0),
+      sourceUrl,
+      observedAt: Number(item?.observedAt || Date.now()),
+      imageDataUrl: captureWatchImage(item)
+    };
+  }
+
+  function syncWatchButtons() {
+    const watchedIds = new Set(loadWatchList().map(item => item.id));
+    document.querySelectorAll(".caf-clean-watch[data-watch-id]").forEach(button => {
+      const watched = watchedIds.has(button.dataset.watchId || "");
+      button.classList.toggle("is-watched", watched);
+      button.textContent = watched ? "Watching ✓" : "Watch";
+    });
+  }
+
+  function toggleWatch(item) {
+    const id = watchItemId(item);
+    const list = loadWatchList();
+    const existingIndex = list.findIndex(watched => watched.id === id);
+
+    if (existingIndex >= 0) {
+      list.splice(existingIndex, 1);
+      setStatus(`${normalizeItemName(item.name)} removed from the local watch list.`);
+    } else {
+      list.push(watchSnapshot(item));
+      setStatus(`${normalizeItemName(item.name)} added to the local watch list. Its countdown is an estimate from the last visible page.`);
+    }
+
+    if (!saveWatchList(list)) return;
+    renderWatchBar();
+    syncWatchButtons();
+  }
+
+  function watchInitials(name) {
+    const words = String(name || "?").trim().split(/\s+/).filter(Boolean);
+    return (words.length > 1 ? `${words[0][0]}${words[1][0]}` : words[0]?.slice(0, 2) || "?").toUpperCase();
+  }
+
+  function sortedWatchList(list) {
+    const now = Date.now();
+    return [...list].sort((left, right) => {
+      const leftEnd = Number(left.endsAtMs || 0);
+      const rightEnd = Number(right.endsAtMs || 0);
+      const leftSort = leftEnd > now ? leftEnd : Number.MAX_SAFE_INTEGER;
+      const rightSort = rightEnd > now ? rightEnd : Number.MAX_SAFE_INTEGER;
+      return leftSort - rightSort || String(left.name).localeCompare(String(right.name));
+    });
+  }
+
+  function renderWatchItem(item, removeMode) {
+    const safeImage = String(item.imageDataUrl || "").startsWith("data:image/png;base64,")
+      ? `<img src="${escapeAttr(item.imageDataUrl)}" alt="">`
+      : `<span>${escapeHtml(watchInitials(item.name))}</span>`;
+    const timeHtml = item.endsAtMs
+      ? `<span class="caf-clean-watch-time caf-clean-countdown" data-prefix="Est. " data-ends-at="${Number(item.endsAtMs)}">Est. ${escapeHtml(countdownText(item.endsAtMs))}</span>`
+      : `<span class="caf-clean-watch-time">Time unknown</span>`;
+
+    return `
+      <button class="caf-clean-watch-item${removeMode ? " is-remove-mode" : ""}" data-watch-id="${escapeAttr(item.id)}" title="${escapeAttr(removeMode ? `Remove ${item.name}` : `Open ${item.name} on its saved auction page`)}">
+        <span class="caf-clean-watch-thumb ${escapeAttr(item.color)}">${safeImage}</span>
+        <span class="caf-clean-watch-name">${escapeHtml(item.name)}</span>
+        ${timeHtml}
+      </button>
+    `;
+  }
+
+  function renderWatchBar() {
+    if (!document.body) return;
+    let bar = document.getElementById(WATCH_BAR_ID);
+    if (!bar) {
+      bar = document.createElement("aside");
+      bar.id = WATCH_BAR_ID;
+      document.body.appendChild(bar);
+    }
+
+    const list = sortedWatchList(loadWatchList());
+    const closest = list.find(item => Number(item.endsAtMs || 0) > Date.now()) || list[0] || null;
+    const collapsed = localStorage.getItem(WATCH_COLLAPSED_KEY) === "true";
+    const removeMode = localStorage.getItem(WATCH_REMOVE_MODE_KEY) === "true";
+    const closestHtml = closest
+      ? `${escapeHtml(closest.name)} | ${closest.endsAtMs
+        ? `<span class="caf-clean-countdown" data-prefix="Est. " data-ends-at="${Number(closest.endsAtMs)}">Est. ${escapeHtml(countdownText(closest.endsAtMs))}</span>`
+        : "Time unknown"}`
+      : "No watched items";
+
+    bar.innerHTML = `
+      <div class="caf-clean-watch-header">
+        <button class="caf-clean-watch-title">CAF ${collapsed ? "▶" : "▼"} ${list.length}</button>
+        <button class="caf-clean-watch-nearest" ${closest ? "" : "disabled"}>${closestHtml}</button>
+        <button class="caf-clean-watch-remove${removeMode ? " is-active" : ""}" ${list.length ? "" : "disabled"}>${removeMode ? "Cancel" : "Remove"}</button>
+      </div>
+      <div class="caf-clean-watch-items" style="display:${collapsed ? "none" : "flex"}">
+        ${list.length ? list.map(item => renderWatchItem(item, removeMode)).join("") : `<span class="caf-clean-watch-empty">Add items from a compiled or generated CAF list.</span>`}
+      </div>
+    `;
+
+    bar.querySelector(".caf-clean-watch-title")?.addEventListener("click", event => {
+      event.preventDefault();
+      localStorage.setItem(WATCH_COLLAPSED_KEY, collapsed ? "false" : "true");
+      localStorage.setItem(WATCH_REMOVE_MODE_KEY, "false");
+      renderWatchBar();
+    });
+
+    bar.querySelector(".caf-clean-watch-nearest")?.addEventListener("click", event => {
+      event.preventDefault();
+      if (closest) navigateToWatchedItem(closest);
+    });
+
+    bar.querySelector(".caf-clean-watch-remove")?.addEventListener("click", event => {
+      event.preventDefault();
+      localStorage.setItem(WATCH_REMOVE_MODE_KEY, removeMode ? "false" : "true");
+      localStorage.setItem(WATCH_COLLAPSED_KEY, "false");
+      renderWatchBar();
+    });
+
+    bar.querySelectorAll(".caf-clean-watch-item").forEach(button => {
+      button.addEventListener("click", event => {
+        event.preventDefault();
+        const id = button.dataset.watchId || "";
+        const watched = loadWatchList().find(item => item.id === id);
+        if (!watched) return;
+
+        if (localStorage.getItem(WATCH_REMOVE_MODE_KEY) === "true") {
+          saveWatchList(loadWatchList().filter(item => item.id !== id));
+          localStorage.setItem(WATCH_REMOVE_MODE_KEY, "false");
+          renderWatchBar();
+          syncWatchButtons();
+          setStatus(`${watched.name} removed from the local watch list.`);
+          return;
+        }
+
+        navigateToWatchedItem(watched);
+      });
+    });
+  }
+
+  function navigateToWatchedItem(item) {
+    if (!isActiveView()) return;
+    const targetUrl = safeAuctionUrl(item.sourceUrl, item.sourceStart);
+    localStorage.setItem(WATCH_TARGET_KEY, JSON.stringify({
+      ...item,
+      requestedAt: Date.now()
+    }));
+
+    if (isAuctionPage() && targetUrl === location.href) {
+      schedulePendingWatchLocate(0);
+      return;
+    }
+
+    window.location.assign(targetUrl);
+  }
+
+  function loadPendingWatchTarget() {
+    try {
+      const target = JSON.parse(localStorage.getItem(WATCH_TARGET_KEY) || "null");
+      return target?.id ? target : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function bonusSnapshotKey(item) {
+    return (item?.bonuses || [])
+      .map(bonus => `${bonus.id}:${bonus.value ?? ""}`)
+      .sort()
+      .join("|");
+  }
+
+  function matchesWatchTarget(candidate, target) {
+    if (watchItemId(candidate) === String(target.id)) return true;
+    if (normalizeItemName(candidate.name).toLowerCase() !== normalizeItemName(target.name).toLowerCase()) return false;
+    if (Math.abs(Number(candidate.damage || 0) - Number(target.damage || 0)) > 0.05) return false;
+    if (Math.abs(Number(candidate.accuracy || 0) - Number(target.accuracy || 0)) > 0.05) return false;
+    if (candidate.quality !== null && target.quality !== null && target.quality !== undefined
+      && Math.abs(Number(candidate.quality) - Number(target.quality)) > 0.05) return false;
+    return !target.bonuses?.length || bonusSnapshotKey(candidate) === bonusSnapshotKey(target);
+  }
+
+  function locatePendingWatchedItem() {
+    watchLocateTimer = null;
+    const target = loadPendingWatchTarget();
+    if (!target || !isAuctionPage() || !isActiveView()) return;
+
+    const cards = auctionCards();
+    const parsed = cards.map((card, index) => ({ card, item: parseCard(card, index) }));
+    const found = parsed.find(entry => matchesWatchTarget(entry.item, target));
+
+    if (found) {
+      const list = loadWatchList();
+      const existingIndex = list.findIndex(item => item.id === target.id);
+      if (existingIndex >= 0) {
+        cardById.set(target.id, found.card);
+        const refreshed = watchSnapshot({
+          ...found.item,
+          id: target.id,
+          sourceUrl: location.href,
+          sourceStart: auctionStartFromUrl(location.href) || 0,
+          observedAt: Date.now(),
+          imageDataUrl: list[existingIndex].imageDataUrl
+        });
+        refreshed.imageDataUrl = refreshed.imageDataUrl || list[existingIndex].imageDataUrl || "";
+        list[existingIndex] = refreshed;
+        saveWatchList(list);
+      }
+
+      localStorage.removeItem(WATCH_TARGET_KEY);
+      found.card.scrollIntoView({ behavior: "smooth", block: "center" });
+      const oldOutline = found.card.style.outline;
+      const oldShadow = found.card.style.boxShadow;
+      found.card.style.outline = "4px solid #00ff6a";
+      found.card.style.boxShadow = "0 0 18px #00ff6a";
+      setTimeout(() => {
+        if (!found.card.isConnected) return;
+        found.card.style.outline = oldOutline;
+        found.card.style.boxShadow = oldShadow;
+      }, 3500);
+      renderWatchBar();
+      syncWatchButtons();
+      setStatus(`Located ${target.name} on its saved Torn page and refreshed its visible snapshot.`);
+      return;
+    }
+
+    const age = Date.now() - Number(target.requestedAt || Date.now());
+    if (cards.length && age >= 30000) {
+      localStorage.removeItem(WATCH_TARGET_KEY);
+      setStatus(`${target.name} was not found on its saved page. Manually browse and compile pages again to update its location.`, true);
+      return;
+    }
+
+    schedulePendingWatchLocate(900);
+  }
+
+  function schedulePendingWatchLocate(delayMs = 250) {
+    // This timer only inspects the foreground DOM after a manual navigation.
+    // It must never initiate a Torn request or cycle to another page.
+    if (!loadPendingWatchTarget() || watchLocateTimer) return;
+    watchLocateTimer = setTimeout(locatePendingWatchedItem, delayMs);
   }
 
   function numberFrom(value) {
@@ -602,7 +1061,10 @@
       bonuses,
       color: cardColor(card),
       timeText,
-      endsAtMs: cardEndTimestamp(card, source, timeText)
+      endsAtMs: cardEndTimestamp(card, source, timeText),
+      sourceStart: auctionStartFromUrl(location.href) || 0,
+      sourceUrl: location.href,
+      observedAt: Date.now()
     };
 
     item.id = cardIdentifier(card, item, index);
@@ -790,6 +1252,7 @@
           <div class="caf-clean-item-actions">
             <button class="caf-clean-history">History + Price Check</button>
             <button class="caf-clean-locate" ${sourceCard ? "" : "disabled"}>${sourceCard ? "Show Original" : `Saved Page ${sourcePage || "?"}`}</button>
+            <button class="caf-clean-watch${isWatched(item) ? " is-watched" : ""}" data-watch-id="${escapeAttr(watchItemId(item))}">${isWatched(item) ? "Watching ✓" : "Watch"}</button>
           </div>
         </div>
         <div class="${ANALYSIS_CLASS}">
@@ -830,6 +1293,12 @@
           sourceCard.style.outline = oldOutline;
           sourceCard.style.boxShadow = oldShadow;
         }, 2500);
+      });
+
+      result.querySelector(".caf-clean-watch").addEventListener("click", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleWatch(item);
       });
 
       body.appendChild(result);
@@ -1450,7 +1919,7 @@
   }
 
   function injectPanel() {
-    if (document.getElementById(PANEL_ID) || !document.body) return;
+    if (!isAuctionPage() || document.getElementById(PANEL_ID) || !document.body) return;
     const current = settings();
     const savedCollection = loadCollection();
     const collectionTarget = Number(savedCollection?.target || 5);
@@ -1524,7 +1993,7 @@
       </div>
       <details class="caf-clean-disclosure">
         <summary>Data use</summary>
-        <div>History sends visible item details to the external Supabase history service. No Torn password, session cookie, or API key is sent. Results are cached locally for five minutes.</div>
+        <div>History sends visible item details to the external Supabase history service. No Torn password, session cookie, or API key is sent. Results are cached locally for five minutes. Watched items remain only in this device's local browser storage and are not refreshed in the background.</div>
       </details>
       <div id="caf-clean-status">Ready. This build makes no scripted requests to Torn.</div>
     `;
@@ -1547,19 +2016,35 @@
 
     document.addEventListener("click", markManualCollectionNavigation, true);
     window.addEventListener("hashchange", handleAuctionPageChange);
-    window.addEventListener("focus", schedulePendingCollectionCapture);
-    document.addEventListener("visibilitychange", schedulePendingCollectionCapture);
+    window.addEventListener("focus", () => {
+      schedulePendingCollectionCapture();
+      schedulePendingWatchLocate();
+    });
+    document.addEventListener("visibilitychange", () => {
+      schedulePendingCollectionCapture();
+      schedulePendingWatchLocate();
+    });
 
-    const observer = new MutationObserver(schedulePendingCollectionCapture);
+    const observer = new MutationObserver(() => {
+      schedulePendingCollectionCapture();
+      schedulePendingWatchLocate();
+    });
     observer.observe(document.body, { childList: true, subtree: true });
     updateTopNextPageLink();
     restoreCollection();
+    schedulePendingWatchLocate();
+  }
+
+  function initialize() {
+    renderWatchBar();
+    injectPanel();
+    schedulePendingWatchLocate();
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", injectPanel, { once: true });
+    document.addEventListener("DOMContentLoaded", initialize, { once: true });
   } else {
-    injectPanel();
+    initialize();
   }
   setInterval(tickCountdowns, 1000);
 })();

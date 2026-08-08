@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.4.3
-// @description  Foreground-only Auction House history and price guidance for the actively viewed page
+// @version      1.5.0
+// @description  Foreground-only Auction House history, filters, and a local snapshot watch bar
 // @author       TheQwan [3485263]
-// @match        https://www.torn.com/amarket.php*
+// @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      btrmmuuoofbonmuwrkzg.supabase.co
 // @license      MIT
