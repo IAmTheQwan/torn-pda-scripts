@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.5.2
+// @version      1.6.0
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      api.torn.com
+// @connect      v3.football.api-sports.io
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/Bookie/qwantum-bookie.meta.js
 // @downloadURL  https://github.com/IAmTheQwan/torn-pda-scripts/raw/refs/heads/Bookie/qwantum-bookie.user.js
@@ -32,6 +33,8 @@ let showDebug = JSON.parse(localStorage.getItem('tbp_show_debug') || 'false');
 let footballScanEnabled = JSON.parse(localStorage.getItem('tbp_football_scan_enabled') || 'false');
 let footballOddsHistoryEnabled = JSON.parse(localStorage.getItem('tbp_football_odds_history_enabled') || 'false');
 let guidedFootballReviewEnabled = JSON.parse(localStorage.getItem('tbp_guided_football_review_enabled') || 'false');
+let footballScoreEnabled = JSON.parse(localStorage.getItem('tbp_football_score_enabled') || 'false');
+let footballScoreApiKey = localStorage.getItem('tbp_football_score_api_key') || '';
 let batches = JSON.parse(localStorage.getItem('tbp_batches') || '[]');
 let selectedBatchId = localStorage.getItem('tbp_selected_batch_id') || '';
 let rawLogs = [];
@@ -65,6 +68,11 @@ const FOOTBALL_PENDING_BET_VISIBLE_MS = 30 * 60 * 1000;
 const MANUAL_CAPTURE_TTL_MS = 30 * 60 * 1000;
 const MY_BETS_SNAPSHOT_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_CLUSTER_GAP_SECONDS = 8 * 60 * 60;
+const FOOTBALL_SCORE_USAGE_KEY = 'tbp_football_score_usage';
+const FOOTBALL_SCORE_CACHE_KEY = 'tbp_football_score_date_cache';
+const FOOTBALL_SCORE_MATCHES_KEY = 'tbp_football_score_matches';
+const FOOTBALL_SCORE_DAILY_LIMIT = 100;
+const FOOTBALL_SCORE_CACHE_MS = 10 * 60 * 1000;
 const styles = `
 #tbp-container { position:fixed; top:20px; right:20px; width:390px; background:#1a1a1a; color:#eee; border:1px solid #444; z-index:999999!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
 #tbp-container.minimized { width:38px; height:38px; cursor:pointer; display:flex; align-items:center; justify-content:center; background:#007bff; border:1px solid #0056b3; border-radius:4px; font-weight:bold; font-size:20px; }
@@ -154,6 +162,8 @@ localStorage.setItem('tbp_show_debug', JSON.stringify(showDebug));
 localStorage.setItem('tbp_football_scan_enabled', JSON.stringify(footballScanEnabled));
 localStorage.setItem('tbp_football_odds_history_enabled', JSON.stringify(footballOddsHistoryEnabled));
 localStorage.setItem('tbp_guided_football_review_enabled', JSON.stringify(guidedFootballReviewEnabled));
+localStorage.setItem('tbp_football_score_enabled', JSON.stringify(footballScoreEnabled));
+localStorage.setItem('tbp_football_score_api_key', footballScoreApiKey);
 localStorage.setItem('tbp_batches', JSON.stringify(batches));
 localStorage.setItem('tbp_selected_batch_id', selectedBatchId);
 }
@@ -222,6 +232,227 @@ db.close();
 }
 function delay(ms) {
 return new Promise(resolve => setTimeout(resolve, ms));
+}
+function utcDateKey(value = Date.now()) {
+return new Date(value).toISOString().slice(0, 10);
+}
+function loadFootballScoreUsage() {
+const today = utcDateKey();
+try {
+const stored = JSON.parse(localStorage.getItem(FOOTBALL_SCORE_USAGE_KEY) || '{}');
+if (stored.date === today) {
+const limit = Math.max(1, Number(stored.limit || FOOTBALL_SCORE_DAILY_LIMIT));
+const used = Math.max(0, Number(stored.used || 0));
+return { ...stored, date: today, limit, used, remaining: Math.max(0, Number.isFinite(Number(stored.remaining)) ? Number(stored.remaining) : limit - used) };
+}
+} catch {
+// Start a clean counter if local storage was incomplete.
+}
+return { date: today, limit: FOOTBALL_SCORE_DAILY_LIMIT, used: 0, remaining: FOOTBALL_SCORE_DAILY_LIMIT, lastRequestAt: 0 };
+}
+function saveFootballScoreUsage(usage) {
+localStorage.setItem(FOOTBALL_SCORE_USAGE_KEY, JSON.stringify(usage));
+return usage;
+}
+function parseResponseHeaders(rawHeaders) {
+const headers = {};
+String(rawHeaders || '').split(/\r?\n/).forEach(line => {
+const separator = line.indexOf(':');
+if (separator < 1) return;
+headers[line.slice(0, separator).trim().toLowerCase()] = line.slice(separator + 1).trim();
+});
+return headers;
+}
+function countFootballScoreRequest(rawHeaders = '') {
+const usage = loadFootballScoreUsage();
+const headers = parseResponseHeaders(rawHeaders);
+const headerLimit = Number(headers['x-ratelimit-requests-limit']);
+const headerRemaining = Number(headers['x-ratelimit-requests-remaining']);
+if (Number.isFinite(headerLimit) && headerLimit > 0) usage.limit = headerLimit;
+if (Number.isFinite(headerRemaining) && headerRemaining >= 0) {
+usage.remaining = headerRemaining;
+usage.used = Math.max(0, usage.limit - headerRemaining);
+usage.source = 'provider';
+} else {
+usage.used += 1;
+usage.remaining = Math.max(0, usage.limit - usage.used);
+usage.source = 'local';
+}
+usage.lastRequestAt = Date.now();
+return saveFootballScoreUsage(usage);
+}
+function loadFootballScoreCache() {
+try {
+const parsed = JSON.parse(localStorage.getItem(FOOTBALL_SCORE_CACHE_KEY) || '{}');
+return parsed && typeof parsed === 'object' ? parsed : {};
+} catch {
+return {};
+}
+}
+function saveFootballScoreCache(cache) {
+const limited = Object.entries(cache)
+.sort((a, b) => Number(b[1]?.cachedAt || 0) - Number(a[1]?.cachedAt || 0))
+.slice(0, 30);
+localStorage.setItem(FOOTBALL_SCORE_CACHE_KEY, JSON.stringify(Object.fromEntries(limited)));
+}
+function loadFootballScoreMatches() {
+try {
+const parsed = JSON.parse(localStorage.getItem(FOOTBALL_SCORE_MATCHES_KEY) || '{}');
+return parsed && typeof parsed === 'object' ? parsed : {};
+} catch {
+return {};
+}
+}
+function saveFootballScoreMatches(matches) {
+const limited = Object.entries(matches)
+.sort((a, b) => Number(b[1]?.checkedAt || 0) - Number(a[1]?.checkedAt || 0))
+.slice(0, 300);
+localStorage.setItem(FOOTBALL_SCORE_MATCHES_KEY, JSON.stringify(Object.fromEntries(limited)));
+}
+function normalizeScoreTeamName(value) {
+return String(value || '')
+.normalize('NFD')
+.replace(/[\u0300-\u036f]/g, '')
+.toLowerCase()
+.replace(/\b(fc|cf|sc|afc|club|fk|bk|ac|cd)\b/g, ' ')
+.replace(/[^a-z0-9]+/g, ' ')
+.replace(/\s+/g, ' ')
+.trim();
+}
+function scoreTeamSimilarity(left, right) {
+const a = normalizeScoreTeamName(left);
+const b = normalizeScoreTeamName(right);
+if (!a || !b) return 0;
+if (a === b) return 1;
+if (a.includes(b) || b.includes(a)) return Math.min(a.length, b.length) / Math.max(a.length, b.length);
+const aTokens = new Set(a.split(' '));
+const bTokens = new Set(b.split(' '));
+const intersection = [...aTokens].filter(token => bTokens.has(token)).length;
+return intersection / Math.max(aTokens.size, bTokens.size);
+}
+function requestFootballFixtures(dateKey) {
+return new Promise(resolve => {
+GM_xmlhttpRequest({
+method: 'GET',
+url: `https://v3.football.api-sports.io/fixtures?date=${encodeURIComponent(dateKey)}&timezone=UTC`,
+headers: { 'x-apisports-key': footballScoreApiKey },
+onload: res => {
+const usage = countFootballScoreRequest(res.responseHeaders);
+try {
+const data = JSON.parse(res.responseText);
+const providerError = data.errors && (Array.isArray(data.errors) ? data.errors.length : Object.keys(data.errors).length);
+if (res.status < 200 || res.status >= 300 || providerError) {
+resolve({ error: `Score API error (${res.status || 'response'}). Check the key and account quota.`, fixtures: [], usage });
+return;
+}
+resolve({ error: null, fixtures: Array.isArray(data.response) ? data.response : [], usage });
+} catch {
+resolve({ error: 'Could not read the score API response.', fixtures: [], usage });
+}
+},
+onerror: () => {
+const usage = countFootballScoreRequest();
+resolve({ error: 'Could not reach the score API.', fixtures: [], usage });
+}
+});
+});
+}
+async function getFootballFixturesForDate(dateKey) {
+const cache = loadFootballScoreCache();
+const cached = cache[dateKey];
+if (cached && Date.now() - Number(cached.cachedAt || 0) < FOOTBALL_SCORE_CACHE_MS) {
+return { fixtures: cached.fixtures || [], cached: true, error: null };
+}
+if (loadFootballScoreUsage().remaining <= 0) {
+return { fixtures: [], cached: false, error: 'The daily score request allowance is exhausted.' };
+}
+const result = await requestFootballFixtures(dateKey);
+if (!result.error) {
+cache[dateKey] = { cachedAt: Date.now(), fixtures: result.fixtures };
+saveFootballScoreCache(cache);
+}
+return { ...result, cached: false };
+}
+function findProviderFixture(fixture, providerFixtures) {
+const kickoff = Number(fixture.startTimestamp || 0);
+const candidates = providerFixtures.map(provider => {
+const homeSimilarity = scoreTeamSimilarity(fixture.homeTeam, provider.teams?.home?.name);
+const awaySimilarity = scoreTeamSimilarity(fixture.awayTeam, provider.teams?.away?.name);
+const providerKickoff = Number(provider.fixture?.timestamp || 0) * 1000;
+const timeGap = kickoff && providerKickoff ? Math.abs(kickoff - providerKickoff) : 0;
+return { provider, homeSimilarity, awaySimilarity, timeGap, confidence: (homeSimilarity + awaySimilarity) / 2 };
+}).filter(candidate =>
+candidate.homeSimilarity >= 0.72
+&& candidate.awaySimilarity >= 0.72
+&& candidate.confidence >= 0.82
+&& (!kickoff || candidate.timeGap <= 6 * 60 * 60 * 1000)
+).sort((a, b) => b.confidence - a.confidence || a.timeGap - b.timeGap);
+if (!candidates.length) return null;
+if (candidates.length > 1 && candidates[0].confidence - candidates[1].confidence < 0.08) return null;
+return candidates[0];
+}
+async function checkOpenBetScores() {
+if (!footballScoreEnabled || !footballScoreApiKey) {
+alert('Enable Football scores and add an API-Football key in Settings first.');
+return;
+}
+const namedBets = openBets.filter(bet => bet.fixture?.homeTeam && bet.fixture?.awayTeam);
+if (!namedBets.length) {
+alert('No named open Football bets are available to match.');
+return;
+}
+const reviewedByGameId = new Map(loadFootballFixtureRecords().map(fixture => [String(fixture.gameId), fixture]));
+const fixtures = namedBets.map(bet => ({
+bet,
+fixture: { ...(reviewedByGameId.get(String(bet.fixture.gameId)) || {}), ...bet.fixture }
+}));
+const today = utcDateKey();
+const dates = [...new Set(fixtures.map(entry => entry.fixture.startTimestamp ? utcDateKey(entry.fixture.startTimestamp) : today))];
+const fixturesByDate = {};
+let requests = 0;
+let cacheHits = 0;
+for (const dateKey of dates) {
+const result = await getFootballFixturesForDate(dateKey);
+if (result.error) {
+alert(result.error);
+break;
+}
+fixturesByDate[dateKey] = result.fixtures;
+if (result.cached) cacheHits++;
+else requests++;
+}
+const scoreMatches = loadFootballScoreMatches();
+let matched = 0;
+fixtures.forEach(({ bet, fixture }) => {
+const dateKey = fixture.startTimestamp ? utcDateKey(fixture.startTimestamp) : today;
+const candidate = findProviderFixture(fixture, fixturesByDate[dateKey] || []);
+if (!candidate) return;
+const provider = candidate.provider;
+scoreMatches[String(bet.id)] = {
+providerFixtureId: provider.fixture?.id,
+homeTeam: provider.teams?.home?.name || fixture.homeTeam,
+awayTeam: provider.teams?.away?.name || fixture.awayTeam,
+homeGoals: provider.goals?.home,
+awayGoals: provider.goals?.away,
+statusShort: provider.fixture?.status?.short || '',
+statusLong: provider.fixture?.status?.long || '',
+elapsed: provider.fixture?.status?.elapsed,
+kickoff: Number(provider.fixture?.timestamp || 0) * 1000,
+confidence: candidate.confidence,
+checkedAt: Date.now()
+};
+matched++;
+});
+saveFootballScoreMatches(scoreMatches);
+lastLoadStatus = `Scores: matched ${matched} of ${namedBets.length} named open bets; ${requests} request${requests === 1 ? '' : 's'}, ${cacheHits} cached date${cacheHits === 1 ? '' : 's'}.`;
+}
+function formatFootballScore(score) {
+if (!score) return '';
+const status = score.statusShort || score.statusLong || 'Scheduled';
+const hasScore = score.homeGoals !== null && score.homeGoals !== undefined
+&& score.awayGoals !== null && score.awayGoals !== undefined;
+const liveSuffix = score.elapsed && !['FT', 'AET', 'PEN'].includes(status) ? ` ${score.elapsed}'` : '';
+return `${hasScore ? `${score.homeGoals}-${score.awayGoals} ` : ''}${status}${liveSuffix}`;
 }
 function safeJson(value) {
 try {
@@ -1551,6 +1782,7 @@ const totalProfit = openBets.reduce((s, b) => s + b.potentialProfit, 0);
 const totalReturn = openBets.reduce((s, b) => s + b.potentialReturn, 0);
 const pendingCaptures = getPendingFootballBetCaptures();
 const pendingManual = getPendingManualCapture();
+const footballScores = loadFootballScoreMatches();
 const pendingManualBet = pendingManual
 ? openBets.find(bet => String(bet.id) === String(pendingManual.betId))
 : null;
@@ -1582,6 +1814,9 @@ body.innerHTML = `
 <div class="tbp-summary-box"><div class="tbp-summary-label">Profit</div><div class="tbp-summary-value tbp-win">${money(totalProfit)}</div></div>
 <div class="tbp-summary-box"><div class="tbp-summary-label">Return</div><div class="tbp-summary-value tbp-blue">${money(totalReturn)}</div></div>
 </div>
+${footballScoreEnabled ? `
+<button class="tbp-btn tbp-btn-primary" id="tbp-check-scores-btn" style="width:100%; margin-bottom:8px;">Check Scores</button>
+` : ''}
 ${pendingCaptureDetails}
 ${pendingManualDetails}
 <div id="tbp-open-list"></div>
@@ -1595,6 +1830,7 @@ openBets.forEach(b => {
 const row = document.createElement('div');
 row.className = 'tbp-card';
 const fixture = b.fixture;
+const footballScore = footballScores[String(b.id)];
 const isCaptureArmed = pendingManual?.betId === String(b.id);
 const reviewedOdds = getReviewedOddsForFixtureSelection(fixture);
 const reviewedOddsDelta = reviewedOdds ? reviewedOdds - Number(b.odds || 0) : 0;
@@ -1611,6 +1847,7 @@ ${fixture.competition ? `<div class="tbp-muted" style="margin-bottom:7px;">${esc
 <div class="tbp-row"><span>Pick</span><span>${escapeHtml(fixture.placedSelection || fixture.recommendedSelection || 'Names captured manually')}</span></div>
 ${fixture.linkedBy === 'unique-reviewed-odds' ? '<div class="tbp-muted" style="margin-bottom:5px;">Auto-matched from uniquely matching reviewed odds</div>' : ''}
 ${fixture.startTimestamp ? `<div class="tbp-row"><span>Kickoff</span><span>${escapeHtml(formatDate(Math.floor(fixture.startTimestamp / 1000)))}</span></div>` : ''}
+${footballScore ? `<div class="tbp-row"><span>Score</span><span class="${['FT', 'AET', 'PEN'].includes(footballScore.statusShort) ? 'tbp-win' : 'tbp-blue'}">${escapeHtml(formatFootballScore(footballScore))}</span></div>` : ''}
 ` : `
 <div style="font-weight:bold; font-size:12px;">Selection</div>
 <div class="tbp-muted">${escapeHtml(b.selection)}</div>
@@ -1745,9 +1982,12 @@ ${safeJson(log.raw)}
 `;
 }
 function renderSettings(body) {
+const scoreUsage = loadFootballScoreUsage();
+const resetDate = new Date(`${scoreUsage.date}T00:00:00Z`);
+resetDate.setUTCDate(resetDate.getUTCDate() + 1);
 body.innerHTML = `
-<label class="tbp-muted">API KEY</label>
-<input type="password" id="tbp-api-key" class="tbp-input" value="${apiKey}" placeholder="Paste Torn API key">
+<label class="tbp-muted">TORN API KEY</label>
+<input type="password" id="tbp-api-key" class="tbp-input" value="${escapeHtml(apiKey)}" placeholder="Paste Torn API key">
 <label class="tbp-muted">SCAN MODE</label>
 <select id="tbp-scan-mode" class="tbp-select">
 <option value="both" ${scanMode === 'both' ? 'selected' : ''}>Date + Page Limit</option>
@@ -1769,9 +2009,9 @@ Page Limit Only ignores the configured scan date. Full Rescan always requires a 
 <div style="font-weight:bold; margin-bottom:6px;">API usage and privacy</div>
 <div class="tbp-muted">
 <strong>Data storage:</strong> Bookie logs in this browser's IndexedDB; viewed Football fixtures, manual bet clicks, and My Bets name links in local storage.<br>
-<strong>Data sharing:</strong> Nobody. No records or API keys are sent to Supabase or another third party.<br>
+<strong>Data sharing:</strong> Torn history stays local. When Football scores are enabled, only fixture-date requests are sent to API-Football; captured bet amounts and Torn history are never sent there.<br>
 <strong>Purpose:</strong> Personal bookie history, totals, named open-bet estimates, Football review, and incremental refreshes.<br>
-<strong>Key handling:</strong> Stored locally and sent only to api.torn.com.<br>
+<strong>Key handling:</strong> Both keys stay in this browser. The Torn key is sent only to api.torn.com, and the optional score key only to v3.football.api-sports.io.<br>
 <strong>Required access:</strong> Custom access to user → log, restricted to category 195 (Bookie), or Full Access.
 </div>
 </div>
@@ -1801,6 +2041,20 @@ Records home, draw, and away multipliers locally when you manually open a Footba
 <div class="tbp-muted" style="margin-top:7px;">
 Game Review opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. It counts qualifying straight-win odds, keeps each matching fixture bar color until End, and captures club details when you manually press a 3-Way BET button so they can appear in Open after an API refresh.
 </div>
+</div>
+<div class="tbp-card">
+<div class="tbp-row">
+<span>Enable Football scores</span>
+<input type="checkbox" id="tbp-football-score-enabled" ${footballScoreEnabled ? 'checked' : ''}>
+</div>
+<div class="tbp-muted" style="margin-top:7px;">Uses API-Football only when you press Check Scores. One cached date can update several named bets.</div>
+<label class="tbp-muted" style="display:block; margin-top:9px;">API-FOOTBALL KEY</label>
+<input type="password" id="tbp-football-score-api-key" class="tbp-input" value="${escapeHtml(footballScoreApiKey)}" placeholder="Paste API-Football key" style="margin-bottom:6px;">
+<div class="tbp-summary-grid" style="margin-top:7px; margin-bottom:7px;">
+<div class="tbp-summary-box"><div class="tbp-summary-label">Requests Used</div><div class="tbp-summary-value">${scoreUsage.used}</div></div>
+<div class="tbp-summary-box"><div class="tbp-summary-label">Remaining</div><div class="tbp-summary-value ${scoreUsage.remaining <= 10 ? 'tbp-loss' : 'tbp-win'}">${scoreUsage.remaining} / ${scoreUsage.limit}</div></div>
+</div>
+<div class="tbp-muted">Counter resets daily. Next reset: ${escapeHtml(resetDate.toLocaleString())}. ${scoreUsage.source === 'provider' ? 'Verified from API-Football.' : 'Locally counted until the provider returns quota headers.'} Cached checks do not use a request.</div>
 </div>
 <div class="tbp-card">
 <div class="tbp-row">
@@ -1871,6 +2125,15 @@ lastLoadStatus = armed
 render();
 };
 });
+const checkScoresBtn = document.getElementById('tbp-check-scores-btn');
+if (checkScoresBtn) {
+checkScoresBtn.onclick = async () => {
+checkScoresBtn.disabled = true;
+checkScoresBtn.textContent = 'Checking...';
+await checkOpenBetScores();
+render();
+};
+}
 const footballScanBtn = document.getElementById('tbp-football-scan-btn');
 if (footballScanBtn) {
 footballScanBtn.onclick = () => {
@@ -1942,6 +2205,8 @@ showDebug = document.getElementById('tbp-show-debug').checked;
 footballScanEnabled = document.getElementById('tbp-football-scan-enabled').checked;
 footballOddsHistoryEnabled = document.getElementById('tbp-football-odds-history-enabled').checked;
 guidedFootballReviewEnabled = document.getElementById('tbp-guided-football-review-enabled').checked;
+footballScoreEnabled = document.getElementById('tbp-football-score-enabled').checked;
+footballScoreApiKey = document.getElementById('tbp-football-score-api-key').value.trim();
 saveData();
 if (!footballScanEnabled) clearFootballHighlights();
 if (!footballOddsHistoryEnabled) {
