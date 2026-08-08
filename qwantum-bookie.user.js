@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.3.2
+// @version      1.3.3
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -790,6 +790,17 @@
         }) || null;
     }
 
+    function findFootballItemForHref(href) {
+        if (location.hash === href) {
+            const activeItem = document.querySelector('li.c-pointer.active');
+            if (activeItem) return activeItem;
+        }
+
+        const link = Array.from(document.querySelectorAll('a[href*="#/football/"]'))
+            .find(candidate => candidate.getAttribute('href') === href);
+        return link?.closest('li.c-pointer') || null;
+    }
+
     function recordFootballOddsForItem(item) {
         if (!footballOddsHistoryEnabled || document.visibilityState !== 'visible' || !isFootballBookiePage()) return 0;
 
@@ -877,9 +888,7 @@
         if (pendingFootballOddsSettleTimeout) clearTimeout(pendingFootballOddsSettleTimeout);
 
         const tryRecord = () => {
-            const link = Array.from(document.querySelectorAll('a[href*="#/football/"]'))
-                .find(candidate => candidate.getAttribute('href') === href);
-            const item = link?.parentElement;
+            const item = findFootballItemForHref(href);
             const info = item?.querySelector('.info-wrap');
             if (!item?.classList.contains('active') || info?.style?.display === 'none' || !getThreeWayMarket(item)) return false;
             if (footballOddsHistoryEnabled) recordFootballOddsForItem(item);
@@ -1070,9 +1079,7 @@
         if (!guidedFootballSession.active) return;
         Object.entries(guidedFootballSession.results).forEach(([href, matchType]) => {
             if (!matchType) return;
-            const link = Array.from(document.querySelectorAll('a[href*="#/football/"]'))
-                .find(candidate => candidate.getAttribute('href') === href);
-            link?.parentElement?.classList.add('tbp-football-match', `tbp-football-${matchType}`);
+            findFootballItemForHref(href)?.classList.add('tbp-football-match', `tbp-football-${matchType}`);
         });
     }
 
