@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.4.0
+// @version      1.4.1
 // @description  Foreground-only Auction House history and price guidance for the actively viewed page
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
@@ -494,6 +494,14 @@
     return [...new Set(cards)].filter(card => !card.closest(`#${PANEL_ID}`));
   }
 
+  function normalizeItemName(value) {
+    return String(value || "")
+      .replace(/^(?:image|picture|thumbnail)\s+(?:of\s+)?/i, "")
+      .replace(/\s+(?:image|picture|thumbnail)$/i, "")
+      .replace(/\s*\((?:common|uncommon|rare|yellow|orange|red)\s+\d+\)\.?\s*$/i, "")
+      .trim();
+  }
+
   function cardName(card, rawLabel) {
     const explicit =
       card.querySelector("[data-item-name]")?.getAttribute("data-item-name") ||
@@ -501,10 +509,7 @@
       card.querySelector("img[alt]")?.getAttribute("alt") ||
       "";
 
-    const cleanedExplicit = explicit
-      .replace(/^(?:image|picture|thumbnail)\s+(?:of\s+)?/i, "")
-      .replace(/\s+(?:image|picture|thumbnail)$/i, "")
-      .trim();
+    const cleanedExplicit = normalizeItemName(explicit);
 
     if (cleanedExplicit && cleanedExplicit.length <= 100 && !/^image$/i.test(cleanedExplicit)) {
       return cleanedExplicit;
@@ -515,14 +520,15 @@
       .replace(/[|,:\s-]+$/, "")
       .trim();
 
-    if (ariaPrefix && ariaPrefix.length <= 100) return ariaPrefix;
+    const cleanedAriaPrefix = normalizeItemName(ariaPrefix);
+    if (cleanedAriaPrefix && cleanedAriaPrefix.length <= 100) return cleanedAriaPrefix;
 
     const candidate = String(card.innerText || "")
       .split(/\r?\n/)
       .map(line => line.trim())
       .find(line => line && line.length <= 100 && !/(damage|accuracy|quality|bonus|bid|time left|\$)/i.test(line));
 
-    return candidate || "Unknown item";
+    return normalizeItemName(candidate) || "Unknown item";
   }
 
   function bonusDetails(source) {
@@ -758,7 +764,7 @@
       result.innerHTML = `
         <div class="caf-clean-image ${escapeAttr(item.color)}"></div>
         <div>
-          <div class="caf-clean-item-name">${escapeHtml(item.name)}</div>
+          <div class="caf-clean-item-name">${escapeHtml(normalizeItemName(item.name))}</div>
           ${item.quality === null ? "" : `<div class="caf-clean-quality">Quality: ${item.quality.toFixed(2)}%</div>`}
           <div class="caf-clean-item-line">Damage: ${item.damage.toFixed(2)} | Accuracy: ${item.accuracy.toFixed(2)}</div>
           <div class="caf-clean-item-line">Bonus: ${escapeHtml(itemBonusText(item))}</div>
@@ -1149,7 +1155,7 @@
       offset: 0,
       sort_by: "timestamp",
       sort_order: "desc",
-      item_name: item.name,
+      item_name: normalizeItemName(item.name),
       quality_min: 0,
       quality_max: 200,
       __visibleLimit: current.count,
@@ -1261,7 +1267,7 @@
   function renderHistory(item, sales, box, usedBroadFallback = false) {
     const prices = sales.map(sale => Number(sale.price || 0)).filter(Boolean);
     if (!prices.length) {
-      box.innerHTML = `<span class="caf-clean-muted">No finished sales found for parsed item “${escapeHtml(item.name)}”.</span>`;
+      box.innerHTML = `<span class="caf-clean-muted">No finished sales found for parsed item “${escapeHtml(normalizeItemName(item.name))}”.</span>`;
       return;
     }
 
@@ -1342,7 +1348,7 @@
     button.disabled = true;
     button.textContent = "Checking...";
     box.style.display = "block";
-    box.innerHTML = `<span class="caf-clean-muted">Checking history for ${escapeHtml(item.name)}...</span>`;
+    box.innerHTML = `<span class="caf-clean-muted">Checking history for ${escapeHtml(normalizeItemName(item.name))}...</span>`;
 
     try {
       const body = historyBody(item);
