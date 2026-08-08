@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.9.2
+// @version      1.9.3
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -1187,7 +1187,11 @@
             lastLoadStatus = 'Could not load local history. Check the console for details.';
         }
 
-        render();
+        if (/^#\/your-bets(?:\/|$)/i.test(location.hash)) {
+            captureVisibleMyBetsSnapshot();
+        } else {
+            render();
+        }
     }
 
     function isFootballBookiePage() {
@@ -1585,6 +1589,7 @@
     }
 
     async function measureTrackedStatsDatabase() {
+        captureCompletedMyBetsStats();
         captureVisibleFootballResultNames();
         buildBookieData();
         const fromTimestamp = dateToUnixStart(scanStartDate || defaultScanStartDate());
@@ -1835,6 +1840,103 @@
         };
     }
 
+    function parseCompletedMyBetTitle(value) {
+        const title = String(value || '').replace(/\s+/g, ' ').trim();
+        let match = title.match(/^Won\s+\$([\d,]+)\s+\(x([\d.]+)\)\s+from a\s+\$([\d,]+)\s+bet on\s+(.+?)\s+\((.+)\)$/i);
+        if (match) {
+            return {
+                type: 'win',
+                profit: Number(match[1].replace(/,/g, '')),
+                odds: Number(match[2]),
+                stake: Number(match[3].replace(/,/g, '')),
+                selection: match[4].trim(),
+                market: match[5].trim()
+            };
+        }
+        match = title.match(/^Lost\s+\$([\d,]+)\s+\(x([\d.]+)\)\s+bet on\s+(.+?)\s+\((.+)\)$/i);
+        if (match) {
+            return {
+                type: 'loss',
+                profit: -Number(match[1].replace(/,/g, '')),
+                odds: Number(match[2]),
+                stake: Number(match[1].replace(/,/g, '')),
+                selection: match[3].trim(),
+                market: match[4].trim()
+            };
+        }
+        return null;
+    }
+
+    function selectionKeyGameId(log) {
+        return String(getSelectionKey(log) || '').split('/')[0] || '';
+    }
+
+    function captureCompletedMyBetsStats(links = null) {
+        if (!/^#\/your-bets(?:\/|$)/i.test(location.hash) || !rawLogs.length) return { found: 0, captured: 0 };
+        const rows = links || Array.from(document.querySelectorAll('a[href^="#/your-bets/"]'));
+        let statsLinks = loadBetStatsLinks();
+        let found = 0;
+        let captured = 0;
+        const usedResultIds = new Set();
+        const usedPlacedIds = new Set();
+
+        rows.forEach(link => {
+            const href = link.getAttribute('href') || '';
+            const gameId = href.match(/^#\/your-bets\/(\d+)$/i)?.[1] || '';
+            const matchTitle = String(link.querySelector('.matchName p, .pop-game .name p')?.title || '')
+                .replace(/\s+/g, ' ')
+                .trim();
+            const details = parseFootballFixtureTitle(matchTitle);
+            if (!gameId || !details.homeTeam || !details.awayTeam) return;
+
+            Array.from(link.querySelectorAll('.stick .text[title]')).forEach(element => {
+                const completed = parseCompletedMyBetTitle(element.title);
+                if (!completed || !/^3-Way Ordinary time$/i.test(completed.market)) return;
+                found++;
+                const resultCandidates = rawLogs
+                    .filter(log => classifyLog(log) === completed.type)
+                    .filter(log => !usedResultIds.has(String(log.id)))
+                    .filter(log => selectionKeyGameId(log) === gameId)
+                    .filter(log => Math.abs(getBetAmount(log) - completed.stake) < 1)
+                    .filter(log => !getOdds(log) || Math.abs(getOdds(log) - completed.odds) <= 0.011)
+                    .sort((a, b) => b.timestamp - a.timestamp);
+                const resultLog = resultCandidates[0] || null;
+                if (resultLog) usedResultIds.add(String(resultLog.id));
+                const selectionKey = resultLog ? getSelectionKey(resultLog) : '';
+                const placedCandidates = rawLogs
+                    .filter(log => classifyLog(log) === 'placed')
+                    .filter(log => !usedPlacedIds.has(String(log.id)))
+                    .filter(log => selectionKeyGameId(log) === gameId)
+                    .filter(log => !selectionKey || getSelectionKey(log) === selectionKey)
+                    .filter(log => Math.abs(getBetAmount(log) - completed.stake) < 1)
+                    .filter(log => Math.abs(getOdds(log) - completed.odds) <= 0.011)
+                    .filter(log => !resultLog || Number(log.timestamp || 0) <= Number(resultLog.timestamp || 0))
+                    .sort((a, b) => b.timestamp - a.timestamp);
+                const placedLog = placedCandidates[0] || null;
+                if (!placedLog) return;
+                const id = String(placedLog.id);
+                usedPlacedIds.add(id);
+                const fingerprint = `mybets|${gameId}|${String(resultLog?.id || '')}|${completed.type}|${completed.stake}|${completed.odds}|${normalizeScoreTeamName(completed.selection)}`;
+                if (statsLinks[id]?.sourceFingerprint === fingerprint) return;
+                saveBetStatsLink(id, {
+                    ...(statsLinks[id] || {}),
+                    gameId,
+                    matchTitle,
+                    ...details,
+                    placedSelection: completed.selection,
+                    myBetsOdds: completed.odds,
+                    market: completed.market,
+                    linkedBy: 'completed-my-bets'
+                }, placedLog.timestamp, { stake: completed.stake, odds: completed.odds, sourceFingerprint: fingerprint });
+                statsLinks = loadBetStatsLinks();
+                captured++;
+            });
+        });
+
+        if (captured) lastLoadStatus = `Captured ${captured} completed 3-Way Football bet${captured === 1 ? '' : 's'} from My Bets.`;
+        return { found, captured };
+    }
+
     function loadMyBetsOpenSnapshot() {
         try {
             const snapshot = JSON.parse(localStorage.getItem(MY_BETS_SNAPSHOT_KEY) || 'null');
@@ -1896,6 +1998,7 @@
         if (!/^#\/your-bets(?:\/|$)/i.test(location.hash)) return false;
         const links = Array.from(document.querySelectorAll('a[href^="#/your-bets/"]'));
         if (!links.length) return false;
+        const completedCapture = captureCompletedMyBetsStats(links);
 
         const entries = [];
         links.forEach(link => {
@@ -1918,10 +2021,12 @@
         const previousEntries = JSON.stringify(previous?.entries || []);
         const nextEntries = JSON.stringify(entries);
         localStorage.setItem(MY_BETS_SNAPSHOT_KEY, JSON.stringify({ capturedAt: Date.now(), entries }));
-        if (previousEntries === nextEntries) return false;
+        if (previousEntries === nextEntries && !completedCapture.captured) return false;
 
         buildBookieData();
-        lastLoadStatus = `Synced ${entries.length} open bet${entries.length === 1 ? '' : 's'} from My Bets.`;
+        lastLoadStatus = completedCapture.captured
+            ? `Synced ${entries.length} open and captured ${completedCapture.captured} completed 3-Way Football bet${completedCapture.captured === 1 ? '' : 's'} from My Bets.`
+            : `Synced ${entries.length} open bet${entries.length === 1 ? '' : 's'} from My Bets.`;
         render();
         return true;
     }
@@ -2939,7 +3044,7 @@ ${safeJson(log.raw)}
             <div class="tbp-muted" style="margin-bottom:8px;">Tracked Football bets from ${escapeHtml(stats.fromDate)} through today. Color is determined from the captured home/away side and original odds. Legacy bets without captured fixture evidence are excluded.</div>
             <button class="tbp-btn tbp-btn-primary" id="tbp-measure-stats-btn" style="width:100%; margin-bottom:8px;">Measure Tracked Database</button>
             <div class="tbp-row" style="margin:0 2px 9px;"><span>Tracked / Untracked excluded</span><span>${stats.trackedPlaced} / ${stats.excludedUntracked}</span></div>
-            ${stats.excludedUntracked ? '<div class="tbp-muted" style="margin-bottom:9px;">To recover older Football bets, open Torn Events and scroll through the visible win/loss messages. Their picked team and home v away names will be captured locally; then press Measure Tracked Database.</div>' : ''}
+            ${stats.excludedUntracked ? '<div class="tbp-muted" style="margin-bottom:9px;">To recover older Football bets, open My Bets and scroll through the completed rows so they load. The panel captures each visible 3-Way result automatically. Torn Events remains a fallback for older rows no longer shown there; then press Measure Tracked Database.</div>' : ''}
             <div class="tbp-summary-grid">
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Total Record</div><div class="tbp-summary-value">${total.wins}-${total.losses}</div></div>
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Win / Loss</div><div class="tbp-summary-value" style="font-size:13px;">${total.winPct.toFixed(1)}% / ${total.lossPct.toFixed(1)}%</div></div>
@@ -3309,6 +3414,9 @@ document.addEventListener('click', async e => {
         visibleFootballResultCaptureTimer = setTimeout(() => {
             visibleFootballResultCaptureTimer = null;
             if (document.visibilityState !== 'visible') return;
+            if (/^#\/your-bets(?:\/|$)/i.test(location.hash)) {
+                captureVisibleMyBetsSnapshot();
+            }
             const result = captureVisibleFootballResultNames();
             if (result.captured && activeTab === 'batch' && !batchFeatureEnabled) render();
         }, 700);
