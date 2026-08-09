@@ -49,7 +49,7 @@ API-only automation is allowed subject to the API's access, rate, data-handling,
 | Watch list | Add an item only from data already collected on a foreground Auction House page and store the snapshot locally. |
 | Watch countdown | Subtract the current device time from the saved ending timestamp. Label it as estimated/stale; do not refresh Torn in the background. |
 | Open watched item | A direct player tap performs one navigation to the saved Auction House page. After that page is visibly loaded, CAF may locate and highlight the matching item in the DOM. |
-| Update watched item | A direct player tap performs one navigation to the saved Auction House page, then refreshes the local snapshot only after matching the item and reading its bid from the foreground DOM. An unreadable bid never overwrites the saved value. |
+| Update watched item | A direct player tap performs one navigation to the saved Auction House page, then refreshes the local snapshot only after matching the item and reading its fields from the foreground DOM. Missing image/color/quality fields preserve the prior snapshot, and an unreadable bid never overwrites the saved value. CAF does not make the legacy build's separate item-detail request to obtain missing quality. |
 | Watched-item updates | Refresh a saved snapshot only when its auction page is visibly open. |
 
 CAF Clean must not add background polling, hidden-page DOM or WebSocket observation, automatic multi-page searches, automatic bid tracking, ending-soon notifications, or automatic game actions.

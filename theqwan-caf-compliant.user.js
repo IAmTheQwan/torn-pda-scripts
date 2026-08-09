@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.23.0
+// @version      1.24.0
 // @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -100,6 +100,7 @@
   const BUY_NOW_THRESHOLD = 25_000_000;
   const COLLECTION_CAPTURE_POLL_MS = 250;
   const COLLECTION_CAPTURE_STABLE_MS = 400;
+  const WATCH_VISIBLE_ENRICHMENT_WAIT_MS = 6000;
   const TORN_AUCTION_PAGE_SIZE = 10;
   const MARKET_LOAD_RUNWAY_LIFETIME_MS = 3000;
   let collectionCaptureTimer = null;
@@ -472,7 +473,7 @@
     #${WATCH_BAR_ID} .caf-clean-watch-item {
       display: grid;
       grid-template-columns: 34px minmax(66px, 1fr);
-      grid-template-rows: auto auto;
+      grid-template-rows: auto auto auto;
       gap: 1px 5px;
       align-items: center;
       flex: 0 0 auto;
@@ -504,7 +505,7 @@
     }
     #${WATCH_BAR_ID} .caf-clean-watch-thumb {
       display: flex;
-      grid-row: 1 / 3;
+      grid-row: 1 / 4;
       align-items: center;
       justify-content: center;
       width: 32px;
@@ -547,6 +548,7 @@
       text-overflow: ellipsis;
     }
     #${WATCH_BAR_ID} .caf-clean-watch-bid { color: #8cffb0; font-weight: 700; }
+    #${WATCH_BAR_ID} .caf-clean-watch-quality { color: #c967ff; font-weight: 700; }
     #${WATCH_BAR_ID} .caf-clean-watch-time { color: #ffcf70; }
     #${WATCH_BAR_ID} .caf-clean-watch-empty {
       padding: 4px;
@@ -1249,6 +1251,8 @@
     const timeHtml = item.endsAtMs
       ? `<span class="caf-clean-watch-time caf-clean-countdown" data-prefix="Est. " data-ends-at="${Number(item.endsAtMs)}">Est. ${escapeHtml(countdownText(item.endsAtMs))}</span>`
       : `<span class="caf-clean-watch-time">Time unknown</span>`;
+    const quality = item.quality === null || item.quality === undefined ? null : Number(item.quality);
+    const qualityHtml = `<span class="caf-clean-watch-quality">Q ${Number.isFinite(quality) && quality > 0 ? quality.toFixed(2) : "?"}</span>`;
     const updateUrl = watchUpdateUrl(item);
 
     return `
@@ -1256,7 +1260,8 @@
         <button class="caf-clean-watch-item${removeMode ? " is-remove-mode" : ""}" data-watch-id="${escapeAttr(item.id)}" title="${escapeAttr(removeMode ? `Remove ${item.name}` : `Open ${item.name} on its saved auction page`)}">
           <span class="caf-clean-watch-thumb ${escapeAttr(item.color)}">${safeImage}</span>
           <span class="caf-clean-watch-name">${escapeHtml(item.name)}${buyNowBadgeHtml(item.bid)}</span>
-          <span class="caf-clean-watch-meta"><span class="caf-clean-watch-bid">${escapeHtml(item.bid > 0 ? money(item.bid) : "Bid ?")}</span> · ${timeHtml}</span>
+          <span class="caf-clean-watch-meta"><span class="caf-clean-watch-bid">${escapeHtml(item.bid > 0 ? money(item.bid) : "Bid ?")}</span> · ${qualityHtml}</span>
+          <span class="caf-clean-watch-meta">${timeHtml}</span>
         </button>
         <a class="caf-clean-watch-update" data-watch-id="${escapeAttr(item.id)}" href="${escapeAttr(updateUrl)}" aria-disabled="${removeMode ? "true" : "false"}" title="Update ${escapeAttr(item.name)} from its visible Torn auction listing">Update</a>
       </div>
@@ -1450,6 +1455,26 @@
     const found = parsed.find(entry => matchesWatchTarget(entry.item, target));
 
     if (found) {
+      const visibleImage = found.card.querySelector("img");
+      const imageIsPending = !!visibleImage && (!visibleImage.complete || !visibleImage.naturalWidth || !visibleImage.naturalHeight);
+      const visibleQualityMissing = found.item.quality === null
+        || found.item.quality === undefined
+        || Number(found.item.quality) <= 0;
+      const visibleColorMissing = !found.item.color;
+      if (target.updateRequested && (imageIsPending || visibleQualityMissing || visibleColorMissing)) {
+        const now = Date.now();
+        const visibleMatchAt = Number(target.visibleMatchAt || now);
+        if (!target.visibleMatchAt) {
+          target.visibleMatchAt = visibleMatchAt;
+          localStorage.setItem(WATCH_TARGET_KEY, JSON.stringify(target));
+        }
+        if (now - visibleMatchAt < WATCH_VISIBLE_ENRICHMENT_WAIT_MS) {
+          setStatus(`Matched ${target.name}. Waiting briefly for Torn to finish its visible image, quality, and color.`);
+          schedulePendingWatchLocate(600);
+          return;
+        }
+      }
+
       const list = loadWatchList();
       const existingIndex = list.findIndex(item => item.id === target.id);
       const previousBid = existingIndex >= 0 ? Number(list[existingIndex].bid || 0) : 0;
@@ -1458,15 +1483,27 @@
       if (existingIndex >= 0) {
         if (visibleBid > 0) {
           cardById.set(target.id, found.card);
+          const existing = list[existingIndex];
+          const liveQuality = Number(found.item.quality);
+          const visibleQuality = Number.isFinite(liveQuality) && liveQuality > 0
+            ? liveQuality
+            : existing.quality;
+          const visibleBonuses = found.item.bonuses?.length ? found.item.bonuses : existing.bonuses;
           const refreshed = watchSnapshot({
+            ...existing,
             ...found.item,
             id: target.id,
+            quality: visibleQuality,
+            bonuses: visibleBonuses,
+            color: found.item.color || existing.color || "",
+            timeText: found.item.timeText || existing.timeText || "",
+            endsAtMs: Number(found.item.endsAtMs || existing.endsAtMs || 0),
             sourceUrl: location.href,
             sourceStart: auctionStartFromUrl(location.href) || 0,
             observedAt: Date.now(),
-            imageDataUrl: list[existingIndex].imageDataUrl
+            imageDataUrl: ""
           });
-          refreshed.imageDataUrl = refreshed.imageDataUrl || list[existingIndex].imageDataUrl || "";
+          refreshed.imageDataUrl = refreshed.imageDataUrl || existing.imageDataUrl || "";
           list[existingIndex] = refreshed;
           refreshedBid = Number(refreshed.bid || 0);
           saveWatchList(list);
@@ -1487,13 +1524,20 @@
       renderWatchBar();
       syncWatchButtons();
       if (target.updateRequested) {
+        let updateMessage;
+        let updateIsError = false;
         if (visibleBid <= 0) {
-          setStatus(`Located ${target.name}, but its live bid was not readable. The saved bid was not changed.`, true);
+          updateMessage = `Located ${target.name}, but its live bid was not readable. The saved bid was not changed.`;
+          updateIsError = true;
         } else if (previousBid > 0 && previousBid === refreshedBid) {
-          setStatus(`Updated ${target.name}: watched bid confirmed at ${money(refreshedBid)}.`);
+          updateMessage = `Updated ${target.name}: watched bid confirmed at ${money(refreshedBid)}.`;
         } else {
-          setStatus(`Updated ${target.name}: watched bid ${previousBid > 0 ? money(previousBid) : "unknown"} → ${money(refreshedBid)}.`);
+          updateMessage = `Updated ${target.name}: watched bid ${previousBid > 0 ? money(previousBid) : "unknown"} → ${money(refreshedBid)}.`;
         }
+        if (visibleQualityMissing) {
+          updateMessage += " Torn did not expose quality on this auction page, so CAF kept the previously saved quality.";
+        }
+        setStatus(updateMessage, updateIsError);
       } else {
         setStatus(`Located ${target.name} on its saved Torn page and refreshed its visible snapshot.`);
       }
@@ -1518,7 +1562,9 @@
   }
 
   function numberFrom(value) {
-    const parsed = Number(String(value ?? "").replace(/[^\d.-]/g, ""));
+    const normalized = String(value ?? "").replace(/[^\d.-]/g, "");
+    if (!normalized || !/[\d]/.test(normalized)) return null;
+    const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed : null;
   }
 
@@ -1814,10 +1860,19 @@
   }
 
   function cardColor(card) {
-    const source = `${card.className || ""} ${card.outerHTML || ""}`.toLowerCase();
-    if (source.includes("red")) return "red";
-    if (source.includes("orange") || source.includes("ff9f00")) return "orange";
-    if (source.includes("yellow") || source.includes("ffff00")) return "yellow";
+    const source = [card, ...card.querySelectorAll("[class], [style], [data-color], [data-glow]")]
+      .slice(0, 80)
+      .map(element => [
+        element.getAttribute?.("class"),
+        element.getAttribute?.("style"),
+        element.getAttribute?.("data-color"),
+        element.getAttribute?.("data-glow")
+      ].filter(Boolean).join(" "))
+      .join(" ")
+      .toLowerCase();
+    if (/(?:^|[^a-z])red(?:[^a-z]|$)|#(?:d94444|ff0000)\b/.test(source)) return "red";
+    if (/(?:^|[^a-z])orange(?:[^a-z]|$)|#?ff9f00\b/.test(source)) return "orange";
+    if (/(?:^|[^a-z])yellow(?:[^a-z]|$)|#?ffff00\b/.test(source)) return "yellow";
     return "";
   }
 
