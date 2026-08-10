@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.14.4
+// @version      1.14.5
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -56,7 +56,7 @@
     let lastLoadStatus = 'Not loaded yet.';
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.14.4';
+    const SCRIPT_VERSION = '1.14.5';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -3900,6 +3900,14 @@ ${safeJson(log.raw)}
             render();
         };
 
+        document.querySelectorAll('[data-tbp-capture-bet-id]').forEach(button => {
+            button.onclick = event => {
+                event.preventDefault();
+                event.stopPropagation();
+                armManualCaptureFromButton(button);
+            };
+        });
+
         const checkScoresBtn = document.getElementById('tbp-check-scores-btn');
         if (checkScoresBtn) {
             checkScoresBtn.onclick = async () => {
@@ -4090,30 +4098,6 @@ ${safeJson(log.raw)}
         }
     }
     
-    let lastCaptureButtonInteractionAt = 0;
-
-    function handleCaptureButtonInteraction(event) {
-        const rawTarget = event.target;
-        // Avoid instanceof here: PDA can expose page nodes through a different
-        // JavaScript realm, causing a real Element to fail that check.
-        const target = typeof rawTarget?.closest === 'function' ? rawTarget : rawTarget?.parentElement;
-        const button = target?.closest?.('[data-tbp-capture-bet-id]');
-        if (!button) return;
-
-        event.preventDefault();
-        event.stopImmediatePropagation();
-
-        const now = Date.now();
-        if (now - lastCaptureButtonInteractionAt < 700) return;
-        lastCaptureButtonInteractionAt = now;
-        armManualCaptureFromButton(button);
-    }
-
-    // Torn PDA sometimes drops dynamically assigned onclick handlers. Keep these
-    // delegated listeners alive for the lifetime of the userscript instead.
-    document.addEventListener('touchend', handleCaptureButtonInteraction, { capture: true, passive: false });
-    document.addEventListener('click', handleCaptureButtonInteraction, true);
-
     // Also refresh panel when Torn/PDA refresh-style buttons are clicked.
 document.addEventListener('click', async e => {
     const btn = e.target.closest('button, a, [role="button"], input[type="button"], input[type="submit"]');
