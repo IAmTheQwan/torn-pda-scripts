@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.14.5
+// @version      1.14.6
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -49,7 +49,7 @@ let todaySummary = { bets: 0, wins: 0, losses: 0, refunds: 0, won: 0, lost: 0, n
 let overallBookieNet = 0;
 let lastLoadStatus = 'Not loaded yet.';
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.14.5';
+const SCRIPT_VERSION = '1.14.6';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -3499,11 +3499,29 @@ btn.innerText = 'Check for New Data';
 render();
 };
 document.querySelectorAll('[data-tbp-capture-bet-id]').forEach(button => {
-button.onclick = event => {
-event.preventDefault();
-event.stopPropagation();
+let handled = false;
+const armCapture = event => {
+if (handled) return;
+handled = true;
+event?.preventDefault?.();
+event?.stopPropagation?.();
+button.textContent = 'Arming…';
+button.style.color = '#ffd166';
+try {
 armManualCaptureFromButton(button);
+} catch (error) {
+handled = false;
+button.textContent = 'Error';
+button.style.color = '#ff6b6b';
+const reason = String(error?.message || error || 'unknown error');
+lastLoadStatus = `Capture error: ${reason}`;
+showManualCaptureNotice(`CAPTURE ERROR — ${reason}`);
+console.error('Bookie Panel capture button failed.', error);
+}
 };
+button.addEventListener('touchstart', armCapture, { passive: false });
+button.addEventListener('pointerdown', armCapture);
+button.onclick = armCapture;
 });
 const checkScoresBtn = document.getElementById('tbp-check-scores-btn');
 if (checkScoresBtn) {
