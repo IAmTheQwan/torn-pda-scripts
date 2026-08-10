@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.14.1
+// @version      1.14.2
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -49,6 +49,7 @@ let todaySummary = { bets: 0, wins: 0, losses: 0, refunds: 0, won: 0, lost: 0, n
 let overallBookieNet = 0;
 let lastLoadStatus = 'Not loaded yet.';
 const CACHE_DB_NAME = 'tbp_bookie_history';
+const SCRIPT_VERSION = '1.14.2';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -2092,6 +2093,22 @@ armedAt: Date.now()
 }));
 return true;
 }
+function armManualCaptureFromButton(button) {
+const betId = String(button?.getAttribute?.('data-tbp-capture-bet-id') || '');
+const bet = openBets.find(candidate => String(candidate.id) === betId);
+if (!bet) {
+showManualCaptureNotice('Capture could not find that Open bet. Refresh the Open tab and try again.');
+return;
+}
+const armed = setPendingManualCapture(bet);
+lastLoadStatus = armed
+? `Manual name capture armed for ${money(bet.stake)} at x${num(bet.odds)}. Open My Bets and let the matching game appear.`
+: 'Manual name capture cancelled.';
+showManualCaptureNotice(armed
+? `CAPTURE ARMED — ${money(bet.stake)} at x${num(bet.odds)}. Open My Bets; the matching visible game will be captured automatically.`
+: 'Manual capture cancelled.', false);
+render();
+}
 function parsePendingMyBetTitle(value) {
 const title = String(value || '').replace(/\s+/g, ' ').trim();
 const match = title.match(/^Pending\s+\$([\d,]+).*?\(x([\d.]+)\)\s+bet on\s+(.+?)\s+\((.+)\)$/i);
@@ -3006,7 +3023,7 @@ container.className = '';
 container.innerHTML = `
 <div class="tbp-header">
 <div class="tbp-header-title">
-<strong>Bookie Panel</strong>
+<strong>Bookie Panel</strong><span class="tbp-muted" style="font-size:9px;">v${SCRIPT_VERSION}</span>
 ${footballScanEnabled && !guidedFootballReviewEnabled ? '<button class="tbp-btn tbp-scan-btn" id="tbp-football-scan-btn">Scan Games</button>' : ''}
 ${guidedFootballReviewEnabled ? `<button class="tbp-btn tbp-guide-btn" id="tbp-football-guide-btn">${guidedFootballButtonText()}</button>` : ''}
 ${guidedFootballReviewEnabled && guidedFootballSession.active ? '<button class="tbp-btn tbp-btn-danger" id="tbp-football-end-guide-btn">End</button>' : ''}
@@ -3463,21 +3480,6 @@ fullBtn.disabled = false;
 btn.innerText = 'Check for New Data';
 render();
 };
-document.querySelectorAll('[data-tbp-capture-bet-id]').forEach(button => {
-button.onclick = event => {
-event.stopPropagation();
-const bet = openBets.find(candidate => String(candidate.id) === button.dataset.tbpCaptureBetId);
-if (!bet) return;
-const armed = setPendingManualCapture(bet);
-lastLoadStatus = armed
-? `Manual name capture armed for ${money(bet.stake)} at x${num(bet.odds)}. Open My Bets and let the matching game appear.`
-: 'Manual name capture cancelled.';
-showManualCaptureNotice(armed
-? `Capture armed for ${money(bet.stake)} at x${num(bet.odds)}. Open My Bets; the script will capture the matching visible game automatically.`
-: 'Manual capture cancelled.', false);
-render();
-};
-});
 const checkScoresBtn = document.getElementById('tbp-check-scores-btn');
 if (checkScoresBtn) {
 checkScoresBtn.onclick = async () => {
@@ -3646,6 +3648,23 @@ render();
 };
 }
 }
+let lastCaptureButtonInteractionAt = 0;
+function handleCaptureButtonInteraction(event) {
+const rawTarget = event.target;
+const target = rawTarget instanceof Element ? rawTarget : rawTarget?.parentElement;
+const button = target?.closest?.('[data-tbp-capture-bet-id]');
+if (!button) return;
+event.preventDefault();
+event.stopImmediatePropagation();
+const now = Date.now();
+if (now - lastCaptureButtonInteractionAt < 700) return;
+lastCaptureButtonInteractionAt = now;
+armManualCaptureFromButton(button);
+}
+// Torn PDA sometimes drops dynamically assigned onclick handlers. Keep these
+// delegated listeners alive for the lifetime of the userscript instead.
+document.addEventListener('touchend', handleCaptureButtonInteraction, { capture: true, passive: false });
+document.addEventListener('click', handleCaptureButtonInteraction, true);
 // Also refresh panel when Torn/PDA refresh-style buttons are clicked.
 document.addEventListener('click', async e => {
 const btn = e.target.closest('button, a, [role="button"], input[type="button"], input[type="submit"]');
