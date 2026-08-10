@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.13.1
+// @version      1.14.0
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -2349,6 +2349,56 @@
         };
     }
 
+    function getMyBetsGameId(linkOrHref) {
+        const href = typeof linkOrHref === 'string'
+            ? linkOrHref
+            : String(linkOrHref?.getAttribute?.('href') || linkOrHref?.href || '');
+        return href.match(/#\/your-bets\/(\d+)/i)?.[1] || '';
+    }
+
+    function getVisibleMyBetsLinks() {
+        return Array.from(document.querySelectorAll('a[href*="#/your-bets/"]'))
+            .filter(link => getMyBetsGameId(link));
+    }
+
+    function getMyBetsFixtureDetails(link) {
+        const row = link?.closest('li') || link?.parentElement || link;
+        const candidates = [
+            link?.querySelector('.matchName p, .pop-game .name p, .matchName, .team-names'),
+            row?.querySelector('.matchName p, .pop-game .name p, .matchName, .team-names'),
+            ...Array.from(row?.querySelectorAll('[title]') || [])
+        ].filter(Boolean);
+        for (const candidate of candidates) {
+            for (const value of [candidate.getAttribute?.('title'), candidate.getAttribute?.('aria-label'), candidate.textContent]) {
+                const matchTitle = String(value || '').replace(/\s+/g, ' ').trim();
+                const details = parseFootballFixtureTitle(matchTitle);
+                if (details.homeTeam && details.awayTeam) return { matchTitle, ...details };
+            }
+        }
+        return { matchTitle: '', homeTeam: '', awayTeam: '', competition: '' };
+    }
+
+    function getMyBetsTitleValues(link) {
+        const row = link?.closest('li') || link?.parentElement || link;
+        const values = [];
+        Array.from(row?.querySelectorAll('.stick .text, .stick [title], [title*="Pending"], [title*="Won"], [title*="Lost"], [title*="Refunded"]') || [])
+            .forEach(element => {
+                [element.getAttribute?.('title'), element.getAttribute?.('aria-label'), element.textContent].forEach(value => {
+                    const normalized = String(value || '').replace(/\r/g, '').trim();
+                    if (normalized && /\b(?:Pending|Won|Lost|Refunded)\b/i.test(normalized)) values.push(normalized);
+                });
+            });
+        return [...new Set(values)];
+    }
+
+    function findMyBetsLinkFromTarget(target) {
+        if (!(target instanceof Element)) return null;
+        const direct = target.closest('a[href*="#/your-bets/"]');
+        if (direct) return direct;
+        const row = target.closest('li, [data-gameid], [data-game-id], .c-pointer');
+        return row?.querySelector('a[href*="#/your-bets/"]') || null;
+    }
+
     function parseCompletedMyBetTitlePart(value) {
         const title = String(value || '').replace(/\s+/g, ' ').trim();
         let match = title.match(/^Won\s+\$([\d,]+)\s+\(x([\d.]+)\)\s+from a\s+\$([\d,]+)\s+bet on\s+(.+?)\s+\((.+)\)$/i);
@@ -2402,7 +2452,7 @@
 
     function captureCompletedMyBetsStats(links = null) {
         if (!/^#\/your-bets(?:\/|$)/i.test(location.hash) || !rawLogs.length) return { found: 0, captured: 0 };
-        const rows = links || Array.from(document.querySelectorAll('a[href^="#/your-bets/"]'));
+        const rows = links || getVisibleMyBetsLinks();
         let statsLinks = loadBetStatsLinks();
         let found = 0;
         let captured = 0;
@@ -2410,16 +2460,12 @@
         const usedPlacedIds = new Set();
 
         rows.forEach(link => {
-            const href = link.getAttribute('href') || '';
-            const gameId = href.match(/^#\/your-bets\/(\d+)$/i)?.[1] || '';
-            const matchTitle = String(link.querySelector('.matchName p, .pop-game .name p')?.title || '')
-                .replace(/\s+/g, ' ')
-                .trim();
-            const details = parseFootballFixtureTitle(matchTitle);
+            const gameId = getMyBetsGameId(link);
+            const { matchTitle, ...details } = getMyBetsFixtureDetails(link);
             if (!gameId || !details.homeTeam || !details.awayTeam) return;
 
-            Array.from(link.querySelectorAll('.stick .text[title]')).forEach(element => {
-                const completedBets = parseCompletedMyBetTitles(element.title);
+            getMyBetsTitleValues(link).forEach(titleValue => {
+                const completedBets = parseCompletedMyBetTitles(titleValue);
                 completedBets.forEach(completed => {
                     found++;
                     const resultCandidates = rawLogs
@@ -2526,22 +2572,18 @@
 
     function captureVisibleMyBetsSnapshot() {
         if (!/^#\/your-bets(?:\/|$)/i.test(location.hash)) return false;
-        const links = Array.from(document.querySelectorAll('a[href^="#/your-bets/"]'));
+        const links = getVisibleMyBetsLinks();
         if (!links.length) return false;
         const completedCapture = captureCompletedMyBetsStats(links);
 
         const entries = [];
         links.forEach(link => {
-            const href = link.getAttribute('href') || '';
-            const gameId = href.match(/^#\/your-bets\/(\d+)$/i)?.[1] || '';
-            const matchTitle = String(link.querySelector('.matchName p, .pop-game .name p')?.title || '')
-                .replace(/\s+/g, ' ')
-                .trim();
-            const details = parseFootballFixtureTitle(matchTitle);
+            const gameId = getMyBetsGameId(link);
+            const { matchTitle, ...details } = getMyBetsFixtureDetails(link);
             if (!gameId || !details.homeTeam || !details.awayTeam) return;
 
-            Array.from(link.querySelectorAll('.stick .text[title]')).forEach(element => {
-                const pendingBet = parsePendingMyBetTitle(element.title);
+            getMyBetsTitleValues(link).forEach(titleValue => {
+                const pendingBet = parsePendingMyBetTitle(titleValue);
                 if (!pendingBet) return;
                 entries.push({ gameId, matchTitle, ...details, ...pendingBet });
             });
@@ -2571,14 +2613,10 @@
         const pending = getPendingManualCapture();
         if (!pending || !link) return { captured: false, inactive: true };
 
-        const href = link.getAttribute('href') || '';
-        const gameId = href.match(/^#\/your-bets\/(\d+)$/i)?.[1] || '';
-        const matchTitle = String(link.querySelector('.matchName p, .pop-game .name p')?.title || '')
-            .replace(/\s+/g, ' ')
-            .trim();
-        const details = parseFootballFixtureTitle(matchTitle);
-        const pendingBets = Array.from(link.querySelectorAll('.stick .text[title]'))
-            .map(element => parsePendingMyBetTitle(element.title))
+        const gameId = getMyBetsGameId(link);
+        const { matchTitle, ...details } = getMyBetsFixtureDetails(link);
+        const pendingBets = getMyBetsTitleValues(link)
+            .map(parsePendingMyBetTitle)
             .filter(Boolean);
         const exactMatch = pendingBets.find(candidate => {
             const stakeMatches = Math.abs(candidate.stake - Number(pending.stake || 0)) < 1;
@@ -2646,12 +2684,37 @@
         setTimeout(render, 0);
     }
 
+    let armedMyBetsCaptureTimers = [];
+
+    function clearArmedMyBetsCaptureTimers() {
+        armedMyBetsCaptureTimers.forEach(clearTimeout);
+        armedMyBetsCaptureTimers = [];
+    }
+
+    function attemptArmedCaptureFromCurrentMyBetsRoute(showFailure = false) {
+        const pending = getPendingManualCapture();
+        const routeGameId = getMyBetsGameId(location.hash);
+        if (!pending || !routeGameId) return false;
+        const link = getVisibleMyBetsLinks().find(candidate => getMyBetsGameId(candidate) === routeGameId);
+        if (!link) return false;
+        const result = captureArmedBetFromMyBetsLink(link);
+        if (result.captured) {
+            clearArmedMyBetsCaptureTimers();
+            handleManualCaptureResult(result);
+            return true;
+        }
+        if (showFailure && !result.inactive) handleManualCaptureResult(result);
+        return false;
+    }
+
     function captureArmedBetFromCurrentMyBetsRoute() {
-        if (!getPendingManualCapture() || !/^#\/your-bets\/\d+$/i.test(location.hash)) return;
-        setTimeout(() => {
-            const link = document.querySelector(`a[href="${location.hash}"]`);
-            if (link) handleManualCaptureResult(captureArmedBetFromMyBetsLink(link));
-        }, 250);
+        clearArmedMyBetsCaptureTimers();
+        if (!getPendingManualCapture() || !getMyBetsGameId(location.hash)) return;
+        [250, 700, 1400, 2600, 4500].forEach((delayMs, index, delays) => {
+            armedMyBetsCaptureTimers.push(setTimeout(() => {
+                attemptArmedCaptureFromCurrentMyBetsRoute(index === delays.length - 1);
+            }, delayMs));
+        });
     }
 
     function findFixtureForOpenBet(log, stake, odds) {
@@ -3966,12 +4029,14 @@ document.addEventListener('click', async e => {
 }, true);
 
     document.addEventListener('click', event => {
-        if (document.visibilityState !== 'visible' || !getPendingManualCapture()) return;
+        if (!getPendingManualCapture()) return;
         const target = event.target instanceof Element ? event.target : null;
-        const link = target?.closest('a[href*="#/your-bets/"]');
+        const link = findMyBetsLinkFromTarget(target);
         if (!link) return;
 
-        handleManualCaptureResult(captureArmedBetFromMyBetsLink(link));
+        const result = captureArmedBetFromMyBetsLink(link);
+        if (result.captured) clearArmedMyBetsCaptureTimers();
+        handleManualCaptureResult(result);
     }, true);
 
     document.addEventListener('click', event => {
