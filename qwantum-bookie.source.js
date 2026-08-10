@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.14.3
+// @version      1.14.4
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -56,7 +56,7 @@
     let lastLoadStatus = 'Not loaded yet.';
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.14.3';
+    const SCRIPT_VERSION = '1.14.4';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -2301,7 +2301,14 @@
 
     function saveManualBetLink(betId, fixture, betData = {}) {
         const links = loadManualBetLinks();
-        links[String(betId)] = { ...fixture, capturedAt: Date.now(), linkedBy: 'manual-my-bets' };
+        links[String(betId)] = {
+            ...fixture,
+            linkedBetId: String(betId),
+            linkedStake: Number(betData.stake || 0),
+            linkedOdds: Number(betData.odds || 0),
+            capturedAt: Date.now(),
+            linkedBy: 'manual-my-bets'
+        };
         const limited = Object.entries(links)
             .sort((a, b) => Number(b[1]?.capturedAt || 0) - Number(a[1]?.capturedAt || 0))
             .slice(0, 200);
@@ -2539,6 +2546,8 @@
 
     function buildOpenBetsFromMyBetsSnapshot(snapshot, fallbackOpen) {
         const unusedFallback = new Set(fallbackOpen.map((_, index) => index));
+        const manualLinks = loadManualBetLinks();
+        const manualLinkValues = Object.values(manualLinks);
         return snapshot.entries.map((entry, snapshotIndex) => {
             let matchedIndex = fallbackOpen.findIndex((bet, index) =>
                 unusedFallback.has(index)
@@ -2556,21 +2565,35 @@
             if (matchedIndex >= 0) unusedFallback.delete(matchedIndex);
             const stake = Number(entry.stake || apiBet?.stake || 0);
             const odds = Number(entry.odds || apiBet?.odds || 0);
+            const openBetId = apiBet?.id || `mybets_${entry.gameId}_${snapshotIndex}_${stake}_${odds}`;
+            const manualByGameId = manualLinkValues
+                .filter(link => entry.gameId && String(link?.gameId || '') === String(entry.gameId));
+            const manualByFingerprint = manualLinkValues.filter(link =>
+                Number(link?.linkedStake || 0) > 0
+                && Math.abs(Number(link.linkedStake) - stake) < 1
+                && Math.abs(Number(link?.linkedOdds || 0) - odds) <= 0.021
+            );
+            const manualFixture = manualLinks[String(openBetId)]
+                || (apiBet ? manualLinks[String(apiBet.id)] : null)
+                || (manualByGameId.length === 1 ? manualByGameId[0] : null)
+                || (manualByFingerprint.length === 1 ? manualByFingerprint[0] : null)
+                || {};
             const fixture = {
                 ...(apiBet?.fixture || {}),
-                gameId: entry.gameId,
-                matchTitle: entry.matchTitle,
-                homeTeam: entry.homeTeam,
-                awayTeam: entry.awayTeam,
-                competition: entry.competition,
-                placedSelection: entry.selection,
-                market: entry.market,
+                ...manualFixture,
+                gameId: entry.gameId || manualFixture.gameId || apiBet?.fixture?.gameId || '',
+                matchTitle: entry.matchTitle || manualFixture.matchTitle || apiBet?.fixture?.matchTitle || '',
+                homeTeam: entry.homeTeam || manualFixture.homeTeam || apiBet?.fixture?.homeTeam || '',
+                awayTeam: entry.awayTeam || manualFixture.awayTeam || apiBet?.fixture?.awayTeam || '',
+                competition: entry.competition || manualFixture.competition || apiBet?.fixture?.competition || '',
+                placedSelection: entry.selection || manualFixture.placedSelection || apiBet?.fixture?.placedSelection || '',
+                market: entry.market || manualFixture.market || apiBet?.fixture?.market || '',
                 myBetsOdds: odds,
-                linkedBy: 'my-bets-snapshot'
+                linkedBy: manualFixture.gameId ? manualFixture.linkedBy || 'manual-my-bets' : 'my-bets-snapshot'
             };
 
             return {
-                id: apiBet?.id || `mybets_${entry.gameId}_${snapshotIndex}_${stake}_${odds}`,
+                id: openBetId,
                 timestamp: apiBet?.timestamp || Math.floor(Number(snapshot.capturedAt || Date.now()) / 1000),
                 key: apiBet?.key || `mybets/${entry.gameId}/${snapshotIndex}`,
                 stake,
