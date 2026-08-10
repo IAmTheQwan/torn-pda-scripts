@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.14.2
+// @version      1.14.3
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -56,7 +56,7 @@
     let lastLoadStatus = 'Not loaded yet.';
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.14.2';
+    const SCRIPT_VERSION = '1.14.3';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -2324,11 +2324,6 @@
     }
 
     function setPendingManualCapture(bet) {
-        const current = getPendingManualCapture();
-        if (current?.betId === String(bet.id)) {
-            localStorage.removeItem(PENDING_MANUAL_CAPTURE_KEY);
-            return false;
-        }
         localStorage.setItem(PENDING_MANUAL_CAPTURE_KEY, JSON.stringify({
             betId: String(bet.id),
             stake: Number(bet.stake || 0),
@@ -4076,7 +4071,9 @@ ${safeJson(log.raw)}
 
     function handleCaptureButtonInteraction(event) {
         const rawTarget = event.target;
-        const target = rawTarget instanceof Element ? rawTarget : rawTarget?.parentElement;
+        // Avoid instanceof here: PDA can expose page nodes through a different
+        // JavaScript realm, causing a real Element to fail that check.
+        const target = typeof rawTarget?.closest === 'function' ? rawTarget : rawTarget?.parentElement;
         const button = target?.closest?.('[data-tbp-capture-bet-id]');
         if (!button) return;
 
