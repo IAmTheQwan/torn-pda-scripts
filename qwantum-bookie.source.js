@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.14.6
+// @version      1.14.7
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -54,9 +54,10 @@
     let todaySummary = { bets: 0, wins: 0, losses: 0, refunds: 0, won: 0, lost: 0, net: 0 };
     let overallBookieNet = 0;
     let lastLoadStatus = 'Not loaded yet.';
+    let indexedManualBetLinks = {};
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.14.6';
+    const SCRIPT_VERSION = '1.14.7';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -255,7 +256,9 @@
                     .index('owner')
                     .getAll(owner);
 
-                request.onsuccess = () => resolve(request.result.map(({ cacheId, owner: ignored, ...log }) => log));
+                request.onsuccess = () => resolve(request.result
+                    .filter(item => item.recordType !== 'manual-bet-links')
+                    .map(({ cacheId, owner: ignored, ...log }) => log));
                 request.onerror = () => reject(request.error);
             });
         } finally {
@@ -348,6 +351,47 @@
             return parsed && typeof parsed === 'object' ? parsed : {};
         } catch {
             return {};
+        }
+    }
+
+    async function loadIndexedManualBetLinks() {
+        const owner = await getCacheOwner();
+        if (!owner) return {};
+        const db = await openCacheDb();
+        try {
+            return await new Promise((resolve, reject) => {
+                const request = db
+                    .transaction(CACHE_STORE_NAME, 'readonly')
+                    .objectStore(CACHE_STORE_NAME)
+                    .get(`${owner}:manual-bet-links`);
+                request.onsuccess = () => resolve(request.result?.links || {});
+                request.onerror = () => reject(request.error);
+            });
+        } finally {
+            db.close();
+        }
+    }
+
+    async function storeIndexedManualBetLinks(links) {
+        const owner = await getCacheOwner();
+        if (!owner) return;
+        const db = await openCacheDb();
+        try {
+            await new Promise((resolve, reject) => {
+                const transaction = db.transaction(CACHE_STORE_NAME, 'readwrite');
+                transaction.objectStore(CACHE_STORE_NAME).put({
+                    cacheId: `${owner}:manual-bet-links`,
+                    owner,
+                    recordType: 'manual-bet-links',
+                    links,
+                    updatedAt: Date.now()
+                });
+                transaction.oncomplete = () => resolve();
+                transaction.onerror = () => reject(transaction.error);
+                transaction.onabort = () => reject(transaction.error);
+            });
+        } finally {
+            db.close();
         }
     }
 
@@ -1189,7 +1233,11 @@
         const limited = Object.entries(links)
             .sort((a, b) => Number(b[1]?.capturedAt || 0) - Number(a[1]?.capturedAt || 0))
             .slice(0, 1000);
-        localStorage.setItem(BET_STATS_LINKS_KEY, JSON.stringify(Object.fromEntries(limited)));
+        try {
+            localStorage.setItem(BET_STATS_LINKS_KEY, JSON.stringify(Object.fromEntries(limited)));
+        } catch (error) {
+            console.warn('Bookie stats storage is full; capture details remain available in IndexedDB.', error);
+        }
     }
 
     function buildBookieData() {
@@ -1525,6 +1573,7 @@
         render();
 
         try {
+            indexedManualBetLinks = await loadIndexedManualBetLinks();
             rawLogs = (await loadCachedLogs()).sort((a, b) => b.timestamp - a.timestamp);
             buildBookieData();
 
@@ -2291,12 +2340,12 @@
     }
 
     function loadManualBetLinks() {
+        let localLinks = {};
         try {
             const parsed = JSON.parse(localStorage.getItem(MANUAL_BET_LINKS_KEY) || '{}');
-            return parsed && typeof parsed === 'object' ? parsed : {};
-        } catch {
-            return {};
-        }
+            localLinks = parsed && typeof parsed === 'object' ? parsed : {};
+        } catch {}
+        return { ...localLinks, ...indexedManualBetLinks };
     }
 
     function saveManualBetLink(betId, fixture, betData = {}) {
@@ -2312,26 +2361,38 @@
         const limited = Object.entries(links)
             .sort((a, b) => Number(b[1]?.capturedAt || 0) - Number(a[1]?.capturedAt || 0))
             .slice(0, 200);
-        localStorage.setItem(MANUAL_BET_LINKS_KEY, JSON.stringify(Object.fromEntries(limited)));
+        indexedManualBetLinks = Object.fromEntries(limited);
+        storeIndexedManualBetLinks(indexedManualBetLinks).catch(error => {
+            console.error('Could not save captured Bookie names to IndexedDB.', error);
+            lastLoadStatus = `Captured names are visible for this session, but permanent storage failed: ${String(error?.message || error)}`;
+            showManualCaptureNotice(lastLoadStatus);
+        });
         saveBetStatsLink(betId, fixture, 0, betData);
+    }
+
+    function clearPendingManualCapture() {
+        sessionStorage.removeItem(PENDING_MANUAL_CAPTURE_KEY);
+        localStorage.removeItem(PENDING_MANUAL_CAPTURE_KEY);
     }
 
     function getPendingManualCapture() {
         try {
-            const pending = JSON.parse(localStorage.getItem(PENDING_MANUAL_CAPTURE_KEY) || 'null');
+            const pending = JSON.parse(sessionStorage.getItem(PENDING_MANUAL_CAPTURE_KEY)
+                || localStorage.getItem(PENDING_MANUAL_CAPTURE_KEY)
+                || 'null');
             if (!pending?.betId || Date.now() - Number(pending.armedAt || 0) > MANUAL_CAPTURE_TTL_MS) {
-                localStorage.removeItem(PENDING_MANUAL_CAPTURE_KEY);
+                clearPendingManualCapture();
                 return null;
             }
             return pending;
         } catch {
-            localStorage.removeItem(PENDING_MANUAL_CAPTURE_KEY);
+            clearPendingManualCapture();
             return null;
         }
     }
 
     function setPendingManualCapture(bet) {
-        localStorage.setItem(PENDING_MANUAL_CAPTURE_KEY, JSON.stringify({
+        sessionStorage.setItem(PENDING_MANUAL_CAPTURE_KEY, JSON.stringify({
             betId: String(bet.id),
             stake: Number(bet.stake || 0),
             odds: Number(bet.odds || 0),
@@ -2658,7 +2719,7 @@
             linkedBy: 'manual-my-bets-snapshot'
         };
         saveManualBetLink(pending.betId, fixture, { stake: pending.stake, odds: pending.odds });
-        localStorage.removeItem(PENDING_MANUAL_CAPTURE_KEY);
+        clearPendingManualCapture();
         buildBookieData();
         return {
             captured: true,
@@ -2690,7 +2751,11 @@
         const previous = loadMyBetsOpenSnapshot();
         const previousEntries = JSON.stringify(previous?.entries || []);
         const nextEntries = JSON.stringify(entries);
-        localStorage.setItem(MY_BETS_SNAPSHOT_KEY, JSON.stringify({ capturedAt: Date.now(), entries }));
+        try {
+            localStorage.setItem(MY_BETS_SNAPSHOT_KEY, JSON.stringify({ capturedAt: Date.now(), entries }));
+        } catch (error) {
+            console.warn('My Bets snapshot could not be persisted because PDA storage is full.', error);
+        }
         const armedCapture = captureArmedBetFromMyBetsEntries(entries);
         if (armedCapture.captured) {
             handleManualCaptureResult(armedCapture);
@@ -2758,7 +2823,7 @@
             apiOddsAtCapture: Number(pending.odds || 0),
             captureMatch: exactMatch ? 'exact' : match ? 'manual-relaxed' : 'names-only'
         }, { stake: pending.stake, odds: pending.odds });
-        localStorage.removeItem(PENDING_MANUAL_CAPTURE_KEY);
+        clearPendingManualCapture();
         buildBookieData();
         return { captured: true, fixture: details, selection: match?.selection || '' };
     }
