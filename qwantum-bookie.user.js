@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.14.0
+// @version      1.14.1
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -2308,6 +2308,66 @@ fixture
 };
 }).sort((a, b) => b.timestamp - a.timestamp);
 }
+function captureArmedBetFromMyBetsEntries(entries) {
+const pending = getPendingManualCapture();
+if (!pending || !Array.isArray(entries) || !entries.length) return { captured: false, inactive: !pending };
+const candidates = Array.from(new Map(entries
+.filter(entry => entry.gameId && entry.homeTeam && entry.awayTeam)
+.map(entry => [`${entry.gameId}|${Number(entry.stake || 0)}|${Number(entry.odds || 0)}|${String(entry.selection || '').toLowerCase()}|${String(entry.market || '').toLowerCase()}`, entry]))
+.values());
+const exactMatches = candidates.filter(entry => {
+return Math.abs(Number(entry.stake || 0) - Number(pending.stake || 0)) < 1
+&& Math.abs(Number(entry.odds || 0) - Number(pending.odds || 0)) <= 0.021;
+});
+const stakeMatches = candidates.filter(entry =>
+Math.abs(Number(entry.stake || 0) - Number(pending.stake || 0)) < 1
+);
+const oddsRanked = [...candidates].sort((a, b) =>
+Math.abs(Number(a.odds || 0) - Number(pending.odds || 0))
+- Math.abs(Number(b.odds || 0) - Number(pending.odds || 0))
+);
+const nearestOddsDifference = oddsRanked.length ? Math.abs(Number(oddsRanked[0].odds || 0) - Number(pending.odds || 0)) : Infinity;
+const nearestOddsIsUnique = nearestOddsDifference <= 0.10 && (oddsRanked.length === 1
+|| (oddsRanked.length > 1
+&& Math.abs(Number(oddsRanked[0].odds || 0) - Number(pending.odds || 0)) + 0.001
+< Math.abs(Number(oddsRanked[1].odds || 0) - Number(pending.odds || 0))));
+const match = exactMatches.length === 1 ? exactMatches[0]
+: stakeMatches.length === 1 ? stakeMatches[0]
+: candidates.length === 1 ? candidates[0]
+: nearestOddsIsUnique ? oddsRanked[0] : null;
+if (!match) {
+return {
+captured: false,
+inactive: false,
+reason: `Capture is armed, but ${candidates.length} visible My Bets entries could not be matched uniquely yet. Expand or scroll to the target game.`
+};
+}
+const reviewedFixture = loadFootballFixtureRecords()
+.find(fixture => String(fixture.gameId) === String(match.gameId)) || {};
+const fixture = {
+...reviewedFixture,
+gameId: match.gameId,
+matchTitle: match.matchTitle,
+homeTeam: match.homeTeam,
+awayTeam: match.awayTeam,
+competition: match.competition || '',
+placedSelection: match.selection || '',
+market: match.market || '',
+myBetsOdds: Number(match.odds || 0),
+apiOddsAtCapture: Number(pending.odds || 0),
+captureMatch: exactMatches.length === 1 ? 'snapshot-exact' : 'snapshot-relaxed',
+linkedBy: 'manual-my-bets-snapshot'
+};
+saveManualBetLink(pending.betId, fixture, { stake: pending.stake, odds: pending.odds });
+localStorage.removeItem(PENDING_MANUAL_CAPTURE_KEY);
+buildBookieData();
+return {
+captured: true,
+fixture,
+selection: match.selection || '',
+source: 'My Bets list'
+};
+}
 function captureVisibleMyBetsSnapshot() {
 if (!/^#\/your-bets(?:\/|$)/i.test(location.hash)) return false;
 const links = getVisibleMyBetsLinks();
@@ -2328,6 +2388,11 @@ const previous = loadMyBetsOpenSnapshot();
 const previousEntries = JSON.stringify(previous?.entries || []);
 const nextEntries = JSON.stringify(entries);
 localStorage.setItem(MY_BETS_SNAPSHOT_KEY, JSON.stringify({ capturedAt: Date.now(), entries }));
+const armedCapture = captureArmedBetFromMyBetsEntries(entries);
+if (armedCapture.captured) {
+handleManualCaptureResult(armedCapture);
+return true;
+}
 if (previousEntries === nextEntries && !completedCapture.captured) return false;
 buildBookieData();
 lastLoadStatus = completedCapture.captured
@@ -2992,7 +3057,7 @@ const pendingManualBet = pendingManual
 const pendingManualDetails = pendingManualBet ? `
 <div class="tbp-card" style="border-color:#d69a32;">
 <div style="font-weight:bold; color:#f2bd61;">Manual capture armed</div>
-<div class="tbp-muted" style="margin-top:5px;">${money(pendingManualBet.stake)} at x${num(pendingManualBet.odds)} — go to My Bets and tap the matching game row. Tap Armed below to cancel.</div>
+<div class="tbp-muted" style="margin-top:5px;">${money(pendingManualBet.stake)} at x${num(pendingManualBet.odds)} — open My Bets and let the matching game appear. Capture now runs automatically from the visible list; tap Armed below to cancel.</div>
 </div>
 ` : '';
 const pendingCaptureDetails = pendingCaptures.length ? `
@@ -3405,8 +3470,11 @@ const bet = openBets.find(candidate => String(candidate.id) === button.dataset.t
 if (!bet) return;
 const armed = setPendingManualCapture(bet);
 lastLoadStatus = armed
-? `Manual name capture armed for ${money(bet.stake)} at x${num(bet.odds)}. Open My Bets and tap the matching game.`
+? `Manual name capture armed for ${money(bet.stake)} at x${num(bet.odds)}. Open My Bets and let the matching game appear.`
 : 'Manual name capture cancelled.';
+showManualCaptureNotice(armed
+? `Capture armed for ${money(bet.stake)} at x${num(bet.odds)}. Open My Bets; the script will capture the matching visible game automatically.`
+: 'Manual capture cancelled.', false);
 render();
 };
 });
