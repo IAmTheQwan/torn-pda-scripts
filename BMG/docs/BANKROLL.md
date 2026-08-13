@@ -38,6 +38,8 @@ Kelly stake.
 - Never increase a stake to recover a loss.
 - Never count correlated bets as independent exposure.
 - Never use unrealized stock value as instantly liquid without a haircut.
+- Store stock market value in the asset total, but exclude it from the
+  risk-eligible bankroll until it is sold or an explicit haircut is adopted.
 - Never call a partial market a hedge or arbitrage.
 - Stop when the daily loss boundary is reached; review the following day.
 - Keep prediction timestamp, accepted odds, closing odds, and settlement rule.

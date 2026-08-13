@@ -187,6 +187,13 @@ def latest_bankroll(connection: sqlite3.Connection) -> sqlite3.Row | None:
     ).fetchone()
 
 
+def risk_eligible_bankroll(row: sqlite3.Row | None) -> int:
+    """Return funds that can be staked without first liquidating investments."""
+    if row is None:
+        return 0
+    return int(row["wallet"]) + int(row["bookie"]) + int(row["other_liquid"])
+
+
 def initialize_database(connection: sqlite3.Connection, starting_bankroll: int = STARTING_BANKROLL) -> bool:
     apply_schema(connection)
     if latest_bankroll(connection):
@@ -3519,7 +3526,7 @@ def run_daily_paper_review(
     ).fetchone():
         raise ValueError(f"forecast run {final_run_id!r} already exists; choose another --run-id.")
     bankroll_row = latest_bankroll(connection)
-    bankroll = int(bankroll_row["total"]) if bankroll_row else 0
+    bankroll = risk_eligible_bankroll(bankroll_row)
     bankroll_snapshot_id = int(bankroll_row["bankroll_snapshot_id"]) if bankroll_row else None
     config = {
         "review_date": resolved_date,
@@ -3907,7 +3914,7 @@ def run_score_model_review(
     if connection.execute("SELECT 1 FROM forecast_runs WHERE forecast_run_id = ?", (final_run_id,)).fetchone():
         raise ValueError(f"forecast run {final_run_id!r} already exists.")
     bankroll_row = latest_bankroll(connection)
-    bankroll = int(bankroll_row["total"]) if bankroll_row else 0
+    bankroll = risk_eligible_bankroll(bankroll_row)
     bankroll_snapshot_id = int(bankroll_row["bankroll_snapshot_id"]) if bankroll_row else None
     run_config = {
         **config,
@@ -5348,9 +5355,11 @@ def print_risk(connection: sqlite3.Connection) -> None:
     row = latest_bankroll(connection)
     if not row:
         raise RuntimeError("No bankroll snapshot. Run init or bankroll first.")
-    bankroll = int(row["total"])
+    asset_total = int(row["total"])
+    bankroll = risk_eligible_bankroll(row)
     limits = risk_limits(bankroll)
-    print(f"Bankroll at {row['observed_at']}: {money(bankroll)}")
+    print(f"Tracked assets at {row['observed_at']}: {money(asset_total)}")
+    print(f"Risk-eligible bankroll:   {money(bankroll)}")
     print(f"  reserve (70%):          {money(limits['reserve'])}")
     print(f"  deployable (30%):       {money(limits['deployable'])}")
     print(f"  one option (2% / cap):  {money(limits['single_option'])}")
