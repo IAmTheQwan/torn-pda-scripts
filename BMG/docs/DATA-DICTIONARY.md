@@ -34,8 +34,8 @@ suspension state.
 - `bets` — stake, accepted price, state, payout, and profit.
 - `history_event_details` — immutable raw expanded-dropdown records and completeness counts.
 - `bankroll_snapshots` — wallet, Bookie, stocks, other liquid value, and gross
-  tracked asset total. Staking uses wallet + Bookie + other liquid; stock value
-  remains excluded until sold or covered by an explicit haircut policy.
+  tracked asset total. Staking uses wallet + Bookie + other liquid plus 95% of
+  stock market value under the explicit committed-capital haircut policy.
 - `capture_events` — explicit event membership in a capture, including unpriced slate entries.
 
 ## Flashscore foreground capture (`bmg.flashscore-league.v1`)

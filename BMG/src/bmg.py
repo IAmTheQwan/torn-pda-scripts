@@ -38,6 +38,7 @@ DEFAULT_EVENT_MATCH_REVIEW = PROJECT_DIR / "config" / "event-match-reviewed-deci
 SCHEMA_FILES = sorted((PROJECT_DIR / "schema").glob("[0-9][0-9][0-9]_*.sql"))
 STARTING_BANKROLL = 57_365_830
 TORN_OPTION_CAP = 1_000_000_000
+STOCK_RISK_ELIGIBLE_BPS = 9_500
 CAPTURE_SCHEMA = "bmg.capture.v1"
 MARKET_ODDS_SCHEMA = "bmg.market-odds.v1"
 REFERENCE_LEAGUE_SCHEMAS = {"bmg.flashscore-league.v1", "bmg.sports-league.v1"}
@@ -188,10 +189,17 @@ def latest_bankroll(connection: sqlite3.Connection) -> sqlite3.Row | None:
 
 
 def risk_eligible_bankroll(row: sqlite3.Row | None) -> int:
-    """Return funds that can be staked without first liquidating investments."""
+    """Return funds committed to BMG after the stock liquidation buffer."""
     if row is None:
         return 0
-    return int(row["wallet"]) + int(row["bookie"]) + int(row["other_liquid"])
+    stock_value = int(row["stocks"])
+    eligible_stock_value = (stock_value * STOCK_RISK_ELIGIBLE_BPS) // 10_000
+    return (
+        int(row["wallet"])
+        + int(row["bookie"])
+        + int(row["other_liquid"])
+        + eligible_stock_value
+    )
 
 
 def initialize_database(connection: sqlite3.Connection, starting_bankroll: int = STARTING_BANKROLL) -> bool:
@@ -5359,7 +5367,10 @@ def print_risk(connection: sqlite3.Connection) -> None:
     bankroll = risk_eligible_bankroll(row)
     limits = risk_limits(bankroll)
     print(f"Tracked assets at {row['observed_at']}: {money(asset_total)}")
-    print(f"Risk-eligible bankroll:   {money(bankroll)}")
+    print(
+        f"Risk-eligible bankroll:   {money(bankroll)} "
+        f"(includes {STOCK_RISK_ELIGIBLE_BPS / 100:.0f}% of stocks)"
+    )
     print(f"  reserve (70%):          {money(limits['reserve'])}")
     print(f"  deployable (30%):       {money(limits['deployable'])}")
     print(f"  one option (2% / cap):  {money(limits['single_option'])}")
