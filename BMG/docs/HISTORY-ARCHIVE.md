@@ -24,7 +24,15 @@ Live exports are ignored by Git and remain under `BMG/exports/history-*/`:
   dropdown, including every displayed market, selection, decimal/fractional
   price, raw text, and expansion-completeness evidence;
 - `expanded-event-failures.ndjson` — retry audit log; failures are never hidden;
-- `detail-manifest.json` — durable completion and resume checkpoint.
+- `detail-manifest.json` — durable completion, resume checkpoint, and final audit;
+- `expanded-detail-unavailable.json` — the collapsed records for event IDs whose
+  expanded cards Torn no longer returned after the corrected retry audit.
+
+The final dropdown audit captured 3,476 of 3,706 event cards (93.8%), containing
+103,282 raw markets and 204,572 raw selections/odds. Every remaining event was
+retried with exact home/away validation. Torn did not return expanded cards for
+230 events; all their wager, stake, accepted-odds, settlement, team, league,
+sport, and raw summary data remains preserved in the complete summary archive.
 
 The SQLite importer stores the raw JSON as evidence and also normalizes events,
 markets, selections, odds, wagers, and settlement timestamps. Event outcomes
@@ -41,3 +49,8 @@ python .\BMG\src\bmg.py summary
 
 Both import paths are idempotent. The detail importer keeps the newest complete
 record for an event when an interrupted attempt produced an earlier duplicate.
+
+`src/browser_history_capture.mjs` contains the checkpointed exact-game loader
+used for bounded retry audits in a manually initiated in-app browser session.
+It validates both participants before recording a card and expands every
+visible `Show N additional betting options` control.

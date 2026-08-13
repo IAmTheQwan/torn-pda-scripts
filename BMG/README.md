@@ -62,7 +62,8 @@ database is the evidence store; Git is the reproducible blueprint.
 ## Project map
 
 - `userscripts/` — manual Torn page capture and JSON export.
-- `src/` — SQLite initialization, import, bankroll, and odds math CLI.
+- `src/` — SQLite initialization/import, bankroll and odds math CLI, plus the
+  checkpointed in-app-browser history recovery helper.
 - `schema/` — versioned relational model.
 - `docs/` — architecture, compliance, data dictionary, bankroll policy, and plan.
 - `tests/` — deterministic fixtures and regression tests.
