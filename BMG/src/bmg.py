@@ -14,6 +14,7 @@ import sqlite3
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -21,6 +22,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DB = PROJECT_DIR / "data" / "bmg.sqlite"
+DEFAULT_TEAM_ALIAS_AUDIT = PROJECT_DIR / "data" / "team-alias-audit.json"
 SCHEMA_FILES = sorted((PROJECT_DIR / "schema").glob("[0-9][0-9][0-9]_*.sql"))
 STARTING_BANKROLL = 57_365_830
 TORN_OPTION_CAP = 1_000_000_000
@@ -1690,6 +1692,462 @@ def team_lookup_keys(value: Any) -> set[str]:
     return {key for key in keys if key}
 
 
+def build_team_lookup(connection: sqlite3.Connection, sport: str) -> dict[str, set[int]]:
+    lookup: dict[str, set[int]] = defaultdict(set)
+    sport_key = canonical(sport)
+    for row in connection.execute(
+        "SELECT team_id, name FROM sports_teams WHERE sport = ?", (sport_key,)
+    ):
+        for key in team_lookup_keys(row["name"]):
+            lookup[key].add(int(row["team_id"]))
+    for row in connection.execute(
+        """
+        SELECT ta.team_id, ta.alias
+        FROM team_aliases ta JOIN sports_teams st ON st.team_id = ta.team_id
+        WHERE st.sport = ?
+        """,
+        (sport_key,),
+    ):
+        for key in team_lookup_keys(row["alias"]):
+            lookup[key].add(int(row["team_id"]))
+    return lookup
+
+
+def lookup_team_ids(lookup: dict[str, set[int]], name: Any) -> set[int]:
+    team_ids: set[int] = set()
+    for key in team_lookup_keys(name):
+        team_ids.update(lookup.get(key, set()))
+    return team_ids
+
+
+def team_name_similarity(left: Any, right: Any) -> float:
+    left_keys = team_lookup_keys(left)
+    right_keys = team_lookup_keys(right)
+    if not left_keys or not right_keys:
+        return 0.0
+    best = max(SequenceMatcher(None, a, b).ratio() for a in left_keys for b in right_keys)
+    for a in left_keys:
+        for b in right_keys:
+            a_initials = "".join(token[0] for token in a.split() if token)
+            b_initials = "".join(token[0] for token in b.split() if token)
+            if a == b_initials or b == a_initials:
+                best = 1.0
+    return round(best, 6)
+
+
+def competition_alias_compatible(
+    event_league: Any,
+    provider_competition: Any,
+    provider_country: Any,
+    known_countries: set[str],
+) -> bool:
+    event_key = canonical(event_league)
+    _, jurisdiction = split_torn_league_label(event_league)
+    jurisdiction_key = canonical(jurisdiction)
+    competition_key = canonical(provider_competition)
+    country_key = canonical(provider_country)
+    country_aliases = {
+        "uae": "united arab emirates",
+        "us": "usa",
+        "united states": "usa",
+        "faroe islands": "faroe islands",
+    }
+    country_key = country_aliases.get(country_key, country_key)
+    event_country = ""
+    for candidate in sorted(known_countries | set(country_aliases), key=len, reverse=True):
+        normalized_candidate = country_aliases.get(candidate, candidate)
+        if jurisdiction_key == candidate or jurisdiction_key.startswith(candidate + " "):
+            event_country = normalized_candidate
+            break
+    if event_country and country_key and event_country != country_key:
+        return False
+    event_is_women = any(token in event_key for token in ("female", "women", "femenil", "feminine"))
+    provider_is_women = any(
+        token in competition_key for token in ("female", "women", "femenil", "feminine")
+    )
+    if event_is_women != provider_is_women:
+        return False
+    event_youth = set(re.findall(r"\bu\s*(\d{2})\b", event_key))
+    provider_youth = set(re.findall(r"\bu\s*(\d{2})\b", competition_key))
+    if event_youth != provider_youth and (event_youth or provider_youth):
+        return False
+    return True
+
+
+def build_team_alias_audit(
+    connection: sqlite3.Connection,
+    *,
+    sport: str = "football",
+    max_time_gap_hours: float = 6.0,
+) -> dict[str, Any]:
+    """Find evidence-backed Torn aliases without accepting two-name fuzzy matches."""
+    if max_time_gap_hours <= 0:
+        raise ValueError("max_time_gap_hours must be positive.")
+    sport_key = canonical(sport)
+    lookup = build_team_lookup(connection, sport_key)
+    teams = {
+        int(row["team_id"]): clean_text(row["name"])
+        for row in connection.execute(
+            "SELECT team_id, name FROM sports_teams WHERE sport = ?", (sport_key,)
+        )
+    }
+    matches_by_home: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    matches_by_away: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    matches_by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    known_countries = {
+        canonical(row["country"])
+        for row in connection.execute("SELECT DISTINCT country FROM sports_competitions")
+        if canonical(row["country"])
+    }
+    match_rows = connection.execute(
+        """
+        SELECT sm.match_id, sm.home_team_id, sm.away_team_id, sm.scheduled_at,
+               sm.scheduled_date, sm.status, ht.name AS home_name, at.name AS away_name,
+               COALESCE(sc.name, '') AS competition, COALESCE(sc.country, '') AS competition_country
+        FROM sports_matches sm
+        JOIN sports_teams ht ON ht.team_id = sm.home_team_id
+        JOIN sports_teams at ON at.team_id = sm.away_team_id
+        LEFT JOIN sports_competitions sc ON sc.competition_id = sm.competition_id
+        WHERE sm.sport = ? AND sm.scheduled_at IS NOT NULL
+          AND sm.status NOT IN ('cancelled', 'postponed')
+        """,
+        (sport_key,),
+    ).fetchall()
+    for row in match_rows:
+        match_time = parse_iso_datetime(row["scheduled_at"])
+        if match_time is None:
+            continue
+        item = {
+            "match_id": int(row["match_id"]),
+            "home_team_id": int(row["home_team_id"]),
+            "away_team_id": int(row["away_team_id"]),
+            "home_name": clean_text(row["home_name"]),
+            "away_name": clean_text(row["away_name"]),
+            "competition": clean_text(row["competition"]),
+            "competition_country": clean_text(row["competition_country"]),
+            "scheduled_at": match_time.isoformat().replace("+00:00", "Z"),
+            "match_time": match_time,
+        }
+        matches_by_home[item["home_team_id"]].append(item)
+        matches_by_away[item["away_team_id"]].append(item)
+        matches_by_date[match_time.date().isoformat()].append(item)
+
+    suggestions: dict[str, dict[int, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+    review_matches: list[dict[str, Any]] = []
+    counts = {
+        "events_scanned": 0,
+        "one_anchor_events": 0,
+        "two_unknown_events": 0,
+        "already_resolvable_events": 0,
+        "no_timing_evidence": 0,
+    }
+    events = connection.execute(
+        """
+        SELECT e.event_id, e.event_uid, e.home_team, e.away_team, e.league,
+               e.scheduled_at, e.settled_at
+        FROM events e
+        WHERE e.sport = ?
+          AND e.home_team <> '' AND e.away_team <> ''
+          AND EXISTS (SELECT 1 FROM bets b WHERE b.event_id = e.event_id)
+          AND NOT EXISTS (
+              SELECT 1 FROM event_match_links eml
+              WHERE eml.event_id = e.event_id AND eml.confirmed = 1
+          )
+        ORDER BY COALESCE(e.scheduled_at, e.settled_at), e.event_id
+        """,
+        (sport_key,),
+    ).fetchall()
+    max_seconds = max_time_gap_hours * 3600
+    for event in events:
+        counts["events_scanned"] += 1
+        event_time = parse_iso_datetime(event["scheduled_at"] or event["settled_at"])
+        if event_time is None:
+            counts["no_timing_evidence"] += 1
+            continue
+        home_ids = lookup_team_ids(lookup, event["home_team"])
+        away_ids = lookup_team_ids(lookup, event["away_team"])
+        if home_ids and away_ids:
+            counts["already_resolvable_events"] += 1
+            continue
+        anchor_side = ""
+        anchor_id: int | None = None
+        unknown_alias = ""
+        candidate_rows: list[dict[str, Any]] = []
+        if len(home_ids) == 1 and not away_ids:
+            anchor_side = "home"
+            anchor_id = next(iter(home_ids))
+            unknown_alias = clean_text(event["away_team"])
+            candidate_rows = matches_by_home.get(anchor_id, [])
+        elif len(away_ids) == 1 and not home_ids:
+            anchor_side = "away"
+            anchor_id = next(iter(away_ids))
+            unknown_alias = clean_text(event["home_team"])
+            candidate_rows = matches_by_away.get(anchor_id, [])
+        if anchor_id is not None:
+            counts["one_anchor_events"] += 1
+            timed = []
+            for match in candidate_rows:
+                delta = abs((event_time - match["match_time"]).total_seconds())
+                if delta <= max_seconds:
+                    timed.append((delta, match))
+            opponents: dict[int, list[tuple[float, dict[str, Any]]]] = defaultdict(list)
+            for delta, match in timed:
+                opponent_id = (
+                    int(match["away_team_id"]) if anchor_side == "home" else int(match["home_team_id"])
+                )
+                opponents[opponent_id].append((delta, match))
+            if len(opponents) == 1:
+                opponent_id, evidence_rows = next(iter(opponents.items()))
+                evidence_rows.sort(key=lambda item: (item[0], item[1]["match_id"]))
+                best_delta, best_match = evidence_rows[0]
+                suggestions[canonical(unknown_alias)][opponent_id].append(
+                    {
+                        "event_id": int(event["event_id"]),
+                        "event_uid": clean_text(event["event_uid"]),
+                        "event_league": clean_text(event["league"]),
+                        "event_time": event_time.isoformat().replace("+00:00", "Z"),
+                        "anchor_side": anchor_side,
+                        "anchor_team_id": anchor_id,
+                        "anchor_team": teams.get(anchor_id, ""),
+                        "match_ids": [int(item[1]["match_id"]) for item in evidence_rows],
+                        "provider_team_id": opponent_id,
+                        "provider_team": teams.get(opponent_id, ""),
+                        "provider_competition": best_match["competition"],
+                        "provider_country": best_match["competition_country"],
+                        "provider_time": best_match["scheduled_at"],
+                        "time_gap_minutes": round(best_delta / 60, 2),
+                        "confidence": 0.995 if best_delta <= 4 * 3600 else 0.99,
+                    }
+                )
+            elif timed:
+                review_matches.append(
+                    {
+                        "event_id": int(event["event_id"]),
+                        "home_team": clean_text(event["home_team"]),
+                        "away_team": clean_text(event["away_team"]),
+                        "event_league": clean_text(event["league"]),
+                        "review_reason": "one known team but multiple provider opponents in the time window",
+                        "candidate_match_ids": sorted(int(match["match_id"]) for _, match in timed),
+                    }
+                )
+            continue
+
+        if not home_ids and not away_ids:
+            counts["two_unknown_events"] += 1
+            nearby: list[tuple[float, dict[str, Any]]] = []
+            for offset in (-1, 0, 1):
+                day = (event_time + timedelta(days=offset)).date().isoformat()
+                for match in matches_by_date.get(day, []):
+                    delta = abs((event_time - match["match_time"]).total_seconds())
+                    if delta <= max_seconds:
+                        nearby.append((delta, match))
+            scored: list[tuple[float, float, float, float, dict[str, Any]]] = []
+            for delta, match in nearby:
+                home_score = team_name_similarity(event["home_team"], match["home_name"])
+                away_score = team_name_similarity(event["away_team"], match["away_name"])
+                combined = (home_score + away_score) / 2
+                if home_score >= 0.5 and away_score >= 0.5 and combined >= 0.7:
+                    scored.append((combined, home_score, away_score, delta, match))
+            scored.sort(key=lambda item: (-item[0], item[3], item[4]["match_id"]))
+            if scored:
+                top = scored[0]
+                margin = top[0] - scored[1][0] if len(scored) > 1 else top[0]
+                if margin >= 0.08:
+                    match = top[4]
+                    review_matches.append(
+                        {
+                            "event_id": int(event["event_id"]),
+                            "home_team": clean_text(event["home_team"]),
+                            "away_team": clean_text(event["away_team"]),
+                            "event_league": clean_text(event["league"]),
+                            "review_reason": "both team names require fuzzy review",
+                            "candidate_match_id": int(match["match_id"]),
+                            "provider_home_team_id": int(match["home_team_id"]),
+                            "provider_home_team": match["home_name"],
+                            "provider_away_team_id": int(match["away_team_id"]),
+                            "provider_away_team": match["away_name"],
+                            "provider_competition": match["competition"],
+                            "home_similarity": top[1],
+                            "away_similarity": top[2],
+                            "combined_similarity": round(top[0], 6),
+                            "candidate_margin": round(margin, 6),
+                            "time_gap_minutes": round(top[3] / 60, 2),
+                        }
+                    )
+
+    automatic: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    for alias_key, candidates in suggestions.items():
+        if not alias_key:
+            continue
+        if len(candidates) != 1:
+            conflicts.append(
+                {
+                    "canonical_alias": alias_key,
+                    "candidate_team_ids": sorted(candidates),
+                    "event_ids": sorted(
+                        evidence["event_id"]
+                        for rows in candidates.values()
+                        for evidence in rows
+                    ),
+                }
+            )
+            continue
+        team_id, evidence = next(iter(candidates.items()))
+        evidence.sort(key=lambda item: (item["event_id"], item["match_ids"]))
+        aliases = []
+        for item in evidence:
+            event_row = next((row for row in events if int(row["event_id"]) == item["event_id"]), None)
+            if event_row is not None:
+                value = clean_text(
+                    event_row["away_team"] if item["anchor_side"] == "home" else event_row["home_team"]
+                )
+                if value and value not in aliases:
+                    aliases.append(value)
+        alias = aliases[0] if aliases else alias_key
+        similarity = team_name_similarity(alias, teams.get(team_id, ""))
+        competition_compatible = all(
+            competition_alias_compatible(
+                item["event_league"],
+                item["provider_competition"],
+                item["provider_country"],
+                known_countries,
+            )
+            for item in evidence
+        )
+        if not competition_compatible or (len(evidence) < 2 and similarity < 0.68):
+            review_matches.append(
+                {
+                    "event_id": int(evidence[0]["event_id"]),
+                    "event_ids": [int(item["event_id"]) for item in evidence],
+                    "alias": alias,
+                    "provider_team_id": team_id,
+                    "provider_team": teams.get(team_id, ""),
+                    "review_reason": (
+                        "competition country/gender/youth mismatch"
+                        if not competition_compatible
+                        else "one-event alias has weak name similarity"
+                    ),
+                    "name_similarity": similarity,
+                    "evidence_count": len(evidence),
+                }
+            )
+            continue
+        automatic.append(
+            {
+                "alias": alias,
+                "canonical_alias": alias_key,
+                "team_id": team_id,
+                "provider_team": teams.get(team_id, ""),
+                "rule": "unique-opponent/known-side/six-hour-window",
+                "confidence": min(float(item["confidence"]) for item in evidence),
+                "name_similarity": similarity,
+                "evidence_count": len(evidence),
+                "evidence": evidence,
+            }
+        )
+    automatic.sort(key=lambda item: (-int(item["evidence_count"]), item["canonical_alias"]))
+    conflicts.sort(key=lambda item: item["canonical_alias"])
+    review_matches.sort(key=lambda item: int(item["event_id"]))
+    return {
+        "schema_version": "bmg.team-alias-audit.v1",
+        "observed_at": utc_now(),
+        "sport": sport_key,
+        "policy": {
+            "automatic": "one uniquely mapped side, same role and provider opponent within six hours, compatible competition scope, plus repeated events or name similarity >= 0.68",
+            "review_only": "both team names fuzzy or more than one provider opponent",
+        },
+        "summary": {
+            **counts,
+            "automatic_aliases": len(automatic),
+            "automatic_evidence_events": sum(int(item["evidence_count"]) for item in automatic),
+            "review_matches": len(review_matches),
+            "conflicts": len(conflicts),
+        },
+        "automatic_aliases": automatic,
+        "review_matches": review_matches,
+        "conflicts": conflicts,
+    }
+
+
+def apply_team_alias_audit(connection: sqlite3.Connection, audit: dict[str, Any]) -> dict[str, int]:
+    if audit.get("schema_version") != "bmg.team-alias-audit.v1":
+        raise ValueError("Unsupported team-alias audit schema.")
+    sport = canonical(audit.get("sport"))
+    if not sport:
+        raise ValueError("Team-alias audit has no sport.")
+    current = build_team_alias_audit(connection, sport=sport)
+    current_candidates = {
+        (str(item["canonical_alias"]), int(item["team_id"])): item
+        for item in (current.get("automatic_aliases") or [])
+        if isinstance(item, dict)
+    }
+    counts = {"aliases": 0, "existing": 0, "evidence": 0}
+    with connection:
+        for item in audit.get("automatic_aliases") or []:
+            if not isinstance(item, dict):
+                raise ValueError("Automatic team-alias entries must be objects.")
+            alias = clean_text(item.get("alias"))
+            alias_key = canonical(alias)
+            team_id = int(item.get("team_id"))
+            if alias_key != clean_text(item.get("canonical_alias")):
+                raise ValueError(f"Team alias canonical form drifted: {alias}")
+            team_row = connection.execute(
+                "SELECT name FROM sports_teams WHERE team_id = ? AND sport = ?", (team_id, sport)
+            ).fetchone()
+            if team_row is None or clean_text(team_row["name"]) != clean_text(item.get("provider_team")):
+                raise ValueError(f"Provider team drifted for alias: {alias}")
+            existing_ids = lookup_team_ids(build_team_lookup(connection, sport), alias)
+            already_applied = team_id in existing_ids
+            if existing_ids and existing_ids != {team_id}:
+                raise ValueError(f"Alias already resolves to a different or ambiguous team: {alias}")
+            if not already_applied and (alias_key, team_id) not in current_candidates:
+                raise ValueError(f"Alias evidence no longer reproduces against the current database: {alias}")
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO team_aliases (team_id, source, alias, canonical_alias)
+                VALUES (?, 'torn-evidence-bridge', ?, ?)
+                """,
+                (team_id, alias, alias_key),
+            )
+            counts["aliases"] += max(0, cursor.rowcount)
+            counts["existing"] += 1 if cursor.rowcount == 0 else 0
+            alias_row = connection.execute(
+                """
+                SELECT team_alias_id FROM team_aliases
+                WHERE team_id = ? AND source = 'torn-evidence-bridge' AND canonical_alias = ?
+                """,
+                (team_id, alias_key),
+            ).fetchone()
+            if alias_row is None:
+                raise ValueError(f"Could not persist alias: {alias}")
+            for evidence in item.get("evidence") or []:
+                event_id = int(evidence["event_id"])
+                confidence = float(evidence["confidence"])
+                for match_id in evidence.get("match_ids") or []:
+                    raw_json = json.dumps(
+                        evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                    )
+                    evidence_cursor = connection.execute(
+                        """
+                        INSERT OR IGNORE INTO team_alias_evidence (
+                            team_alias_id, event_id, match_id, rule, confidence, observed_at, raw_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            int(alias_row["team_alias_id"]),
+                            event_id,
+                            int(match_id),
+                            clean_text(item.get("rule")),
+                            confidence,
+                            utc_now(),
+                            raw_json,
+                        ),
+                    )
+                    counts["evidence"] += max(0, evidence_cursor.rowcount)
+    return counts
+
+
 def parse_iso_date(value: Any) -> datetime | None:
     text = clean_text(value)
     if not text:
@@ -1722,20 +2180,7 @@ def reconcile_event_matches(
 ) -> dict[str, int]:
     if max_day_gap < 0:
         raise ValueError("max_day_gap cannot be negative.")
-    team_map: dict[str, set[int]] = defaultdict(set)
-    for row in connection.execute("SELECT team_id, name FROM sports_teams WHERE sport = ?", (canonical(sport),)):
-        for key in team_lookup_keys(row["name"]):
-            team_map[key].add(int(row["team_id"]))
-    for row in connection.execute(
-        """
-        SELECT ta.team_id, ta.alias
-        FROM team_aliases ta JOIN sports_teams st ON st.team_id = ta.team_id
-        WHERE st.sport = ?
-        """,
-        (canonical(sport),),
-    ):
-        for key in team_lookup_keys(row["alias"]):
-            team_map[key].add(int(row["team_id"]))
+    team_map = build_team_lookup(connection, sport)
 
     counts = {"events_scanned": 0, "unmapped": 0, "candidates": 0, "confirmed": 0}
     events = connection.execute(
@@ -1748,12 +2193,8 @@ def reconcile_event_matches(
     ).fetchall()
     for event in events:
         counts["events_scanned"] += 1
-        home_ids: set[int] = set()
-        away_ids: set[int] = set()
-        for key in team_lookup_keys(event["home_team"]):
-            home_ids.update(team_map.get(key, set()))
-        for key in team_lookup_keys(event["away_team"]):
-            away_ids.update(team_map.get(key, set()))
+        home_ids = lookup_team_ids(team_map, event["home_team"])
+        away_ids = lookup_team_ids(team_map, event["away_team"])
         event_time = parse_iso_datetime(event["scheduled_at"] or event["settled_at"])
         event_date = parse_iso_date(event["scheduled_at"] or event["settled_at"])
         if not home_ids or not away_ids or event_date is None:
@@ -2542,6 +2983,8 @@ def print_summary(connection: sqlite3.Connection) -> None:
         "sports_competitions",
         "competition_seasons",
         "sports_teams",
+        "team_aliases",
+        "team_alias_evidence",
         "sports_matches",
         "standings_snapshots",
         "standing_rows",
@@ -2934,6 +3377,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="confirm only unique exact-team, same-date or time-aligned matches; otherwise store review candidates",
     )
 
+    alias_audit_parser = subparsers.add_parser(
+        "team-alias-audit",
+        help="find evidence-backed Torn/provider team aliases without applying fuzzy pairs",
+    )
+    alias_audit_parser.add_argument("--sport", default="football")
+    alias_audit_parser.add_argument("--max-time-gap-hours", type=float, default=6.0)
+    alias_audit_parser.add_argument("--output", type=Path, default=DEFAULT_TEAM_ALIAS_AUDIT)
+
+    alias_apply_parser = subparsers.add_parser(
+        "team-alias-apply", help="apply only the reproducible automatic aliases from an audit"
+    )
+    alias_apply_parser.add_argument("audit", type=Path, nargs="?", default=DEFAULT_TEAM_ALIAS_AUDIT)
+
     subparsers.add_parser(
         "sync-outcomes", help="copy scores from confirmed match links into auditable Torn outcomes"
     )
@@ -3098,6 +3554,29 @@ def main(argv: list[str] | None = None) -> int:
                     confirm_exact=args.confirm_exact,
                 )
                 print("Reconciled " + ", ".join(f"{key}={value}" for key, value in result.items()))
+            elif args.command == "team-alias-audit":
+                result = build_team_alias_audit(
+                    connection,
+                    sport=args.sport,
+                    max_time_gap_hours=args.max_time_gap_hours,
+                )
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                temporary = args.output.with_suffix(args.output.suffix + ".tmp")
+                temporary.write_text(
+                    json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                temporary.replace(args.output)
+                values = result["summary"]
+                print(
+                    f"Team alias audit automatic={values['automatic_aliases']}, "
+                    f"evidence_events={values['automatic_evidence_events']}, "
+                    f"review={values['review_matches']}, conflicts={values['conflicts']}; "
+                    f"report={args.output}"
+                )
+            elif args.command == "team-alias-apply":
+                audit = json.loads(args.audit.read_text(encoding="utf-8"))
+                result = apply_team_alias_audit(connection, audit)
+                print("Applied team aliases " + ", ".join(f"{key}={value}" for key, value in result.items()))
             elif args.command == "sync-outcomes":
                 result = sync_confirmed_outcomes(connection)
                 print("Synced " + ", ".join(f"{key}={value}" for key, value in result.items()))

@@ -521,6 +521,103 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertEqual("walkover", api_football.match_status("WO"))
         self.assertEqual("finished", api_football.match_status("FT"))
 
+    def test_team_alias_bridge_requires_one_known_side_and_keeps_evidence(self) -> None:
+        bmg.import_file(self.connection, FIXTURE)
+        reference = {
+            "schema_version": "bmg.sports-league.v1",
+            "capture_id": "alias-reference",
+            "observed_at": "2026-08-13T20:00:00Z",
+            "source": "api-football",
+            "page_url": "https://example.test/league",
+            "display_timezone": "UTC",
+            "competition": {
+                "sport": "football", "country": "Testland", "name": "Test League",
+                "source_slug": "test-league", "source_url": "https://example.test/league",
+            },
+            "season": {
+                "name": "2026", "source_season_id": "test:2026",
+                "source_url": "https://example.test/league", "start_date": "2026-01-01",
+                "end_date": "2026-12-31", "is_current": True,
+            },
+            "standings": [],
+            "matches": [{
+                "source_match_id": "alias-match",
+                "source_url": "https://example.test/match",
+                "scheduled_at": "2026-08-13T18:00:00Z",
+                "status": "finished",
+                "home_team": "North City", "home_team_id": "north",
+                "away_team": "South United Athletic", "away_team_id": "south",
+                "home_score": 2, "away_score": 0,
+            }],
+        }
+        bmg.import_flashscore_capture(self.connection, reference)
+
+        audit = bmg.build_team_alias_audit(self.connection)
+
+        self.assertEqual(1, audit["summary"]["automatic_aliases"])
+        alias = audit["automatic_aliases"][0]
+        self.assertEqual("South United", alias["alias"])
+        self.assertEqual("South United Athletic", alias["provider_team"])
+        first = bmg.apply_team_alias_audit(self.connection, audit)
+        self.assertEqual({"aliases": 1, "existing": 0, "evidence": 1}, first)
+        self.assertEqual(1, self.count("team_alias_evidence"))
+        second = bmg.apply_team_alias_audit(self.connection, audit)
+        self.assertEqual({"aliases": 0, "existing": 1, "evidence": 0}, second)
+
+        reconciled = bmg.reconcile_event_matches(self.connection, confirm_exact=True)
+        self.assertEqual(1, reconciled["confirmed"])
+
+    def test_team_alias_bridge_leaves_two_fuzzy_names_for_review(self) -> None:
+        bmg.import_file(self.connection, FIXTURE)
+        reference = {
+            "schema_version": "bmg.sports-league.v1",
+            "capture_id": "fuzzy-alias-reference",
+            "observed_at": "2026-08-13T20:00:00Z",
+            "source": "api-football",
+            "page_url": "https://example.test/league",
+            "display_timezone": "UTC",
+            "competition": {
+                "sport": "football", "country": "Testland", "name": "Test League",
+                "source_slug": "test-league", "source_url": "https://example.test/league",
+            },
+            "season": {
+                "name": "2026", "source_season_id": "fuzzy:2026",
+                "source_url": "https://example.test/league", "start_date": "2026-01-01",
+                "end_date": "2026-12-31", "is_current": True,
+            },
+            "standings": [],
+            "matches": [{
+                "source_match_id": "fuzzy-alias-match",
+                "source_url": "https://example.test/match",
+                "scheduled_at": "2026-08-13T18:00:00Z",
+                "status": "finished",
+                "home_team": "North City Football", "home_team_id": "north-fuzzy",
+                "away_team": "South United Athletic", "away_team_id": "south-fuzzy",
+                "home_score": 1, "away_score": 1,
+            }],
+        }
+        bmg.import_flashscore_capture(self.connection, reference)
+
+        audit = bmg.build_team_alias_audit(self.connection)
+
+        self.assertEqual(0, audit["summary"]["automatic_aliases"])
+        self.assertEqual(1, audit["summary"]["review_matches"])
+
+    def test_team_alias_scope_guard_rejects_country_gender_and_youth_mismatches(self) -> None:
+        countries = {"france", "england", "world"}
+        self.assertTrue(bmg.competition_alias_compatible(
+            "Ligue 1 2025/2026 (France 1)", "Ligue 1", "France", countries
+        ))
+        self.assertFalse(bmg.competition_alias_compatible(
+            "Division 1 2025/2026 (France 1, female)", "Ligue 1", "France", countries
+        ))
+        self.assertFalse(bmg.competition_alias_compatible(
+            "Premier League 2025/2026 (England 1)", "Ligue 1", "France", countries
+        ))
+        self.assertFalse(bmg.competition_alias_compatible(
+            "World Cup U20 2025 (World Championship U20 1)", "World Cup - U17", "World", countries
+        ))
+
     def test_modeling_schema_tracks_complete_slates_and_timestamped_external_odds(self) -> None:
         bmg.import_file(self.connection, FIXTURE)
         self.assertEqual(4, self.count("capture_events"))

@@ -1,5 +1,25 @@
 # Historical collection progress
 
+## Evidence-backed team-alias checkpoint — 2026-08-13
+
+The first deterministic alias bridge is complete. It used one already-known
+team, home/away role, a six-hour event/match window, and compatible competition
+country/gender/youth scope. A one-event alias additionally required name
+similarity of at least 0.68; lower-similarity renames required evidence from at
+least two independent wagered events.
+
+- Four guarded dependency waves accepted 320 Torn/provider aliases with 548
+  durable event/match evidence rows.
+- Confirmed Torn/match links and reconciled outcomes rose from 617 to 1,171.
+- Linked historical football wagers rose from 731 to 1,370 of 3,371.
+- Fully reconciled competition targets rose from 31 to 81; 82 targets have
+  progressed.
+- The final audit has zero remaining automatic aliases, zero conflicts, and 137
+  two-name fuzzy or otherwise weaker cases left for explicit review.
+
+This bridge made no API calls. Every accepted alias can be traced back to its
+Torn event and provider match, and rerunning the apply command is idempotent.
+
 ## API-Football reviewed-label checkpoint — 2026-08-13
 
 The second conservative tier resolved explicit same-competition renames and

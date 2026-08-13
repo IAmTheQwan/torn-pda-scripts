@@ -69,7 +69,11 @@ Canonical match rows are stored once: a future fixture becoming a result updates
 the same match. `match_sources` preserves provider identity and
 `event_match_links` is the reviewed bridge to Torn. Team aliases allow labels
 such as `Manchester Utd` and `Manchester United` to resolve without rewriting
-source data.
+source data. Automatically bridged aliases are limited to a uniquely known
+opponent in the same home/away role and kickoff window, with compatible
+country/gender/youth scope. `team_alias_evidence` preserves the exact events
+and matches behind the decision; pairs requiring two fuzzy names are never
+automatically accepted.
 
 ## Analysis boundary
 

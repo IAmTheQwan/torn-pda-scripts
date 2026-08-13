@@ -55,6 +55,8 @@ when the visible row includes a time and BMG can resolve the timezone safely.
 - `sports_competitions`, `competition_sources` — canonical league plus provider identity.
 - `competition_seasons`, `season_sources` — season dates and provider season ID.
 - `sports_teams`, `team_sources`, `team_aliases` — canonical team and source labels.
+- `team_alias_evidence` — the Torn event, provider match, rule, confidence, and
+  raw evidence supporting each automatically accepted alias.
 - `season_teams` — membership observed for a competition season.
 - `sports_matches`, `match_sources` — one fixture/result identity plus source evidence.
 - `standings_snapshots`, `standing_rows` — append-only table observations.
