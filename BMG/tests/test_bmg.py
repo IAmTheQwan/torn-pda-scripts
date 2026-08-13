@@ -16,6 +16,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 import bmg  # noqa: E402
+import api_football  # noqa: E402
 
 
 FIXTURE = PROJECT_DIR / "tests" / "fixtures" / "capture-history-v1.json"
@@ -273,6 +274,175 @@ class BmgDatabaseTests(unittest.TestCase):
 
         self.assertEqual(1, result["captures"])
         self.assertEqual(1, result["matches"])
+
+    def test_api_football_capture_uses_exact_utc_schedule_and_shared_reference_tables(self) -> None:
+        league = {
+            "league": {"id": 999, "name": "Test Premier League", "type": "League"},
+            "country": {"name": "Testland"},
+            "seasons": [{
+                "year": 2025,
+                "start": "2025-08-01",
+                "end": "2026-05-20",
+                "current": False,
+                "coverage": {"standings": True, "odds": True},
+            }],
+        }
+        fixtures = [{
+            "fixture": {
+                "id": 12345,
+                "date": "2026-05-20T19:45:00+00:00",
+                "status": {"short": "FT", "long": "Match Finished"},
+            },
+            "league": {"id": 999, "round": "Regular Season - 38"},
+            "teams": {
+                "home": {"id": 11, "name": "North FC"},
+                "away": {"id": 12, "name": "South United"},
+            },
+            "goals": {"home": 2, "away": 1},
+        }]
+        standings = [{"league": {"standings": [[
+            {
+                "rank": 1,
+                "team": {"id": 11, "name": "North FC"},
+                "points": 82,
+                "goalsDiff": 40,
+                "group": "Test Premier League",
+                "form": "WWDWL",
+                "description": "Champion",
+                "all": {"played": 38, "win": 25, "draw": 7, "lose": 6,
+                        "goals": {"for": 70, "against": 30}},
+            },
+            {
+                "rank": 2,
+                "team": {"id": 12, "name": "South United"},
+                "points": 78,
+                "goalsDiff": 35,
+                "group": "Test Premier League",
+                "form": "WLWWW",
+                "description": "",
+                "all": {"played": 38, "win": 24, "draw": 6, "lose": 8,
+                        "goals": {"for": 65, "against": 30}},
+            },
+        ]]}}]
+
+        capture = api_football.transform_season_capture(league, 2025, fixtures, standings)
+        result = bmg.import_flashscore_capture(self.connection, capture)
+
+        self.assertEqual("bmg.sports-league.v1", capture["schema_version"])
+        self.assertEqual(1, result["matches"])
+        self.assertEqual(2, result["standings"])
+        match = self.connection.execute(
+            "SELECT sm.* FROM sports_matches sm JOIN match_sources ms ON ms.match_id = sm.match_id "
+            "WHERE ms.source = 'api-football' AND ms.source_match_id = '12345'"
+        ).fetchone()
+        self.assertEqual("2026-05-20T19:45:00Z", match["scheduled_at"])
+        self.assertEqual("2026-05-20", match["scheduled_date"])
+        self.assertEqual("finished", match["status"])
+
+    def test_api_football_coverage_score_prefers_country_and_required_season(self) -> None:
+        exact = {
+            "league": {"id": 1, "name": "Premier League"},
+            "country": {"name": "Tanzania"},
+            "seasons": [{"year": 2025}],
+        }
+        wrong_country = {
+            "league": {"id": 2, "name": "Premier League"},
+            "country": {"name": "England"},
+            "seasons": [{"year": 2025}],
+        }
+        exact_score = api_football.candidate_score(
+            "Premier League", "Tanzania 1", {2025}, exact, strict_country=True
+        )
+        wrong_score = api_football.candidate_score(
+            "Premier League", "Tanzania 1", {2025}, wrong_country, strict_country=True
+        )
+        self.assertGreater(exact_score["score"], wrong_score["score"])
+        self.assertLess(wrong_score["score"], 0.64)
+        self.assertEqual(1.0, exact_score["season_score"])
+
+    def test_api_football_exact_backfill_only_accepts_exact_complete_mappings(self) -> None:
+        audit = {
+            "targets": [
+                {
+                    "target_id": "safe",
+                    "classification": "automatic",
+                    "required_seasons": [2025, 2026],
+                    "wager_count": 3,
+                    "staked": 100,
+                    "candidates": [{
+                        "league_id": 50,
+                        "name": "Safe League",
+                        "country": "Safe Country",
+                        "name_score": 1.0,
+                        "country_score": 1.0,
+                        "available_seasons": [2024, 2025, 2026],
+                    }],
+                },
+                {
+                    "target_id": "renamed-review",
+                    "classification": "automatic",
+                    "required_seasons": [2026],
+                    "wager_count": 5,
+                    "staked": 200,
+                    "candidates": [{
+                        "league_id": 60,
+                        "name": "Different League",
+                        "country": "Safe Country",
+                        "name_score": 0.9,
+                        "country_score": 1.0,
+                        "available_seasons": [2026],
+                    }],
+                },
+                {
+                    "target_id": "missing-season",
+                    "classification": "automatic",
+                    "required_seasons": [2026],
+                    "wager_count": 7,
+                    "staked": 300,
+                    "candidates": [{
+                        "league_id": 70,
+                        "name": "Missing League",
+                        "country": "Safe Country",
+                        "name_score": 1.0,
+                        "country_score": 1.0,
+                        "available_seasons": [2025],
+                    }],
+                },
+            ]
+        }
+
+        jobs = api_football.exact_backfill_jobs(audit)
+
+        self.assertEqual([(50, 2025), (50, 2026)], [
+            (job["league_id"], job["season"]) for job in jobs
+        ])
+
+    def test_api_football_duplicate_standings_group_names_get_unique_scopes(self) -> None:
+        league = {
+            "league": {"id": 888, "name": "Grouped League"},
+            "country": {"name": "Testland"},
+            "seasons": [{"year": 2026, "start": "2026-01-01", "end": "2026-12-31"}],
+        }
+        row = {
+            "rank": 1,
+            "team": {"id": 1, "name": "Test Team"},
+            "group": "Conference",
+            "all": {"played": 1, "win": 1, "draw": 0, "lose": 0,
+                    "goals": {"for": 1, "against": 0}},
+        }
+        standings = [{"league": {"standings": [[row], [{**row, "team": {"id": 2, "name": "Other Team"}}]]}}]
+
+        capture = api_football.transform_season_capture(league, 2026, [], standings)
+
+        self.assertEqual(
+            ["group:Conference", "group:Conference:2"],
+            [snapshot["scope"] for snapshot in capture["standings"]],
+        )
+
+    def test_api_football_unscored_technical_results_are_not_finished(self) -> None:
+        self.assertEqual("awarded", api_football.match_status("AWD"))
+        self.assertEqual("walkover", api_football.match_status("WO"))
+        self.assertEqual("finished", api_football.match_status("FT"))
 
     def test_modeling_schema_tracks_complete_slates_and_timestamped_external_odds(self) -> None:
         bmg.import_file(self.connection, FIXTURE)

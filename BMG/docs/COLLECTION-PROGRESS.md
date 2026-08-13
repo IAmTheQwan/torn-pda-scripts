@@ -1,5 +1,28 @@
 # Historical collection progress
 
+## API-Football exact-tier checkpoint — 2026-08-13
+
+The Ultra integration is active and the first conservative structured backfill
+is complete. A one-call provider catalog audit compared all 553 normalized BMG
+competition families against 1,239 API-Football competitions. Country mismatch
+guards prevent common league names from being auto-approved.
+
+- 145 high-confidence audit candidates, 326 review candidates, 82 unmatched.
+- The stricter first tier required exact normalized competition name, exact
+  country, and every wagered API season to be available.
+- 90 competitions and 116 unique league-seasons passed that gate.
+- 30,400 provider fixtures/results, 1,499 provider teams, and 2,038 official
+  standings rows are now in the canonical BMG database.
+- 25,595 imported provider matches were finished; one unscored technical award
+  is retained as `awarded`, never misrepresented as a scored result.
+- Exact unique reconciliation increased confirmed Torn/match links from 26 to
+  370 and linked historical wagers from 33 to 462.
+- Two date-offset reconciliation candidates remain unconfirmed for review.
+
+The ignored audit, provider catalog, captures, and resumable batch reports live
+under `BMG/data/` and `BMG/exports/`. The committed client, contracts, tests,
+and workflow documentation are the reproducible blueprint.
+
 ## Scope snapshot — 2026-08-13
 
 The football archive currently contains 3,371 wagers across 2,843 distinct

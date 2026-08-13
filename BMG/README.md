@@ -76,6 +76,22 @@ state. The first milestone is trustworthy data.
    slate, forecast, decision, settlement, and backtest details are in
    `docs/MODELING.md`.
 
+8. Audit and collect API-Football coverage without exposing the key:
+
+   ```powershell
+   Copy-Item .\BMG\.env.example .\BMG\.env
+   # Add API_FOOTBALL_KEY to the ignored .env file.
+   python .\BMG\src\api_football.py status
+   python .\BMG\src\api_football.py audit --refresh-catalog
+   python .\BMG\src\api_football.py collect-season LEAGUE_ID SEASON
+   python .\BMG\src\api_football.py backfill-exact --dry-run
+   python .\BMG\src\api_football.py backfill-exact
+   ```
+
+   The catalog and audit live under ignored `BMG/data/`; captures live under
+   ignored `BMG/exports/`. API-Football fixture IDs are imported into the same
+   canonical reference tables as Flashscore data. See `docs/API-FOOTBALL.md`.
+
 For a smoke test without Torn data:
 
 ```powershell

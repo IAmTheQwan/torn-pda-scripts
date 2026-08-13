@@ -26,6 +26,7 @@ STARTING_BANKROLL = 57_365_830
 TORN_OPTION_CAP = 1_000_000_000
 CAPTURE_SCHEMA = "bmg.capture.v1"
 MARKET_ODDS_SCHEMA = "bmg.market-odds.v1"
+REFERENCE_LEAGUE_SCHEMAS = {"bmg.flashscore-league.v1", "bmg.sports-league.v1"}
 
 
 def utc_now() -> str:
@@ -1131,9 +1132,17 @@ def upsert_sports_match(
             source_url="",
             observed_at=observed_at,
         )
-    scheduled_at, scheduled_date = parse_flashscore_schedule(
-        record.get("raw_scheduled_local") or record.get("raw_date"), season, display_timezone
-    )
+    scheduled_at = clean_text(record.get("scheduled_at")) or None
+    scheduled_date = clean_text(record.get("scheduled_date")) or None
+    if scheduled_at:
+        parsed = parse_iso_datetime(scheduled_at)
+        scheduled_at = parsed.isoformat().replace("+00:00", "Z") if parsed else None
+        if scheduled_at and not scheduled_date:
+            scheduled_date = scheduled_at[:10]
+    if not scheduled_at and not scheduled_date:
+        scheduled_at, scheduled_date = parse_flashscore_schedule(
+            record.get("raw_scheduled_local") or record.get("raw_date"), season, display_timezone
+        )
     home_score = optional_float(record.get("home_score"))
     away_score = optional_float(record.get("away_score"))
     status = clean_text(record.get("status"))
@@ -1234,8 +1243,8 @@ def split_flashscore_competition(value: Any, fallback_country: str) -> tuple[str
 
 
 def import_flashscore_capture(connection: sqlite3.Connection, capture: dict[str, Any]) -> dict[str, int]:
-    if capture.get("schema_version") != "bmg.flashscore-league.v1":
-        raise ValueError("Unsupported Flashscore capture schema.")
+    if capture.get("schema_version") not in REFERENCE_LEAGUE_SCHEMAS:
+        raise ValueError("Unsupported reference-league capture schema.")
     capture_id = clean_text(capture.get("capture_id"))
     observed_at = clean_text(capture.get("observed_at"))
     source = clean_text(capture.get("source")) or "flashscore-visible-browser"
