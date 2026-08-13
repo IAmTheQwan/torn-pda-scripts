@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.25.1
+// @version      1.26.0
 // @description  Foreground-only Auction House, Item Market, and inventory history with bonus filters and local snapshot tools
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -99,6 +99,7 @@
   const marketCatch = new Map();
   const inventoryItems = new Map();
   const inventorySourceById = new Map();
+  const inventoryDetailCache = new Map();
   const marketCatchSuppressedKeys = new Set();
   const historyRequestsInFlight = new Map();
   const MARKET_ANALYSIS_CONCURRENCY = 6;
@@ -1112,6 +1113,7 @@
     #${INVENTORY_PANEL_ID} .caf-clean-inventory-image.yellow { border-color: #d8d800; }
     #${INVENTORY_PANEL_ID} .caf-clean-inventory-image.orange { border-color: #ff8c00; }
     #${INVENTORY_PANEL_ID} .caf-clean-inventory-image.red { border-color: #d94444; }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-image img,
     #${INVENTORY_PANEL_ID} .caf-clean-inventory-image canvas {
       max-width: 52px;
       max-height: 42px;
@@ -1130,11 +1132,22 @@
       overflow-wrap: anywhere;
     }
     #${INVENTORY_PANEL_ID} .caf-clean-inventory-bonus { color: #d8b4fe; font-weight: 700; }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-history-shell { margin-top: 6px; }
     #${INVENTORY_PANEL_ID} .caf-clean-inventory-history {
+      display: block;
       width: 100%;
-      margin-top: 6px;
+      min-height: 34px;
+      padding: 8px;
+      color: #8ecbff;
+      background: #151515;
+      border: 1px solid #555;
+      border-radius: 5px;
+      box-sizing: border-box;
+      cursor: pointer;
+      text-align: center;
+      list-style-position: inside;
     }
-    #${INVENTORY_PANEL_ID} .caf-clean-inventory-history[aria-expanded="true"] {
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-history-shell[open] > .caf-clean-inventory-history {
       color: #b9e1ff;
       background: #243746;
       border-color: #6694b5;
@@ -2078,6 +2091,148 @@
     return current;
   }
 
+  function inventoryExtraMap(value) {
+    const extras = Array.isArray(value?.extras) ? value.extras : [];
+    const result = new Map();
+    extras.forEach(extra => {
+      const title = String(extra?.title ?? extra?.name ?? "").trim().toLowerCase();
+      if (title) result.set(title, extra?.value ?? extra?.val ?? extra?.text ?? null);
+    });
+    return result;
+  }
+
+  function firstInventoryNumber(...values) {
+    for (const value of values) {
+      const parsed = numberFrom(value);
+      if (parsed !== null && parsed > 0) return parsed;
+    }
+    return null;
+  }
+
+  function inventoryDetailImage(value) {
+    const direct = [
+      value?.image, value?.imageUrl, value?.imageURL, value?.img, value?.src,
+      value?.itemImage, value?.item_image, value?.icon
+    ];
+    for (const candidate of direct) {
+      let url = typeof candidate === "string"
+        ? candidate
+        : candidate?.src ?? candidate?.url ?? candidate?.image;
+      if (typeof url === "string" && /<[^>]+>/.test(url)) {
+        url = (url.match(/(?:src|data-src)=["']([^"']+)["']/i) || [])[1] || "";
+      }
+      if (typeof url === "string" && /(?:\/images?\/|\/items?\/|\.png|\.webp|\.jpe?g)(?:[?#]|$)/i.test(url)) {
+        try { return new URL(url, location.origin).href; } catch {}
+      }
+    }
+    return "";
+  }
+
+  function normalizeInventoryDetail(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const extras = inventoryExtraMap(value);
+    const stats = value.stats && typeof value.stats === "object" ? value.stats : {};
+    const item = value.item && typeof value.item === "object" ? value.item : {};
+    const damage = firstInventoryNumber(value.damage, value.stat_damage, stats.damage, item.damage, extras.get("damage"));
+    const accuracy = firstInventoryNumber(value.accuracy, value.stat_accuracy, stats.accuracy, item.accuracy, extras.get("accuracy"));
+    const quality = firstInventoryNumber(value.quality, value.stat_quality, stats.quality, item.quality, extras.get("quality"));
+    const armoryId = String(value.armoryID ?? value.armouryID ?? value.armoryId ?? value.armouryId
+      ?? value.itemUID ?? value.itemUid ?? value.uid ?? item.armoryID ?? item.armouryID ?? "");
+    const itemId = String(value.itemID ?? value.itemId ?? value.item_id ?? item.itemID ?? item.itemId ?? item.id ?? "");
+    const name = normalizeInventoryItemName(value.itemName ?? value.name ?? value.title ?? item.itemName ?? item.name ?? "");
+    const raw = `${Object.entries(value)
+      .filter(([, entry]) => typeof entry === "string" || typeof entry === "number")
+      .slice(0, 60)
+      .map(([key, entry]) => `${key}:${entry}`)
+      .join(" ")} ${JSON.stringify(value.bonuses || item.bonuses || value.extras || [])}`;
+    const bonuses = Array.isArray(value.bonuses)
+      ? marketResponseBonuses(value)
+      : Array.isArray(item.bonuses)
+        ? marketResponseBonuses(item)
+        : bonusDetails(raw);
+    const qualityExtra = Array.isArray(value.extras)
+      ? value.extras.find(extra => /quality/i.test(String(extra?.title ?? extra?.name ?? "")))
+      : null;
+    const colorSource = `${value.glowClass || ""} ${value.glowcolor || ""} ${value.glow || ""} ${qualityExtra?.colorOverlay || ""} ${extras.get("quality") || ""}`.toLowerCase();
+    const color = /\bred\b/.test(colorSource) ? "red"
+      : /\borange\b|ff9f00/.test(colorSource) ? "orange"
+        : /\byellow\b|ffff00/.test(colorSource) ? "yellow" : "";
+    const imageUrl = inventoryDetailImage(value) || inventoryDetailImage(item);
+    const looksUseful = !!armoryId || (!!itemId && (!!damage || !!accuracy || !!quality || bonuses.length))
+      || (!!name && (!!damage || !!accuracy || !!quality || bonuses.length));
+    return looksUseful ? { armoryId, itemId, name, damage, accuracy, quality, bonuses, color, imageUrl } : null;
+  }
+
+  function inventoryDetailKeys(detail) {
+    return [
+      detail?.armoryId ? `armory:${detail.armoryId}` : "",
+      detail?.itemId ? `item:${detail.itemId}` : "",
+      detail?.name ? `name:${normalizeItemName(detail.name).toLowerCase()}` : ""
+    ].filter(Boolean);
+  }
+
+  function cacheInventoryDetailResponse(payload) {
+    if (!payload || typeof payload !== "object") return 0;
+    const queue = [payload];
+    const visited = new Set();
+    let cached = 0;
+    while (queue.length && visited.size < 3000) {
+      const value = queue.shift();
+      if (!value || typeof value !== "object" || visited.has(value)) continue;
+      visited.add(value);
+      const detail = normalizeInventoryDetail(value);
+      if (detail) {
+        inventoryDetailKeys(detail).forEach(key => {
+          const previous = inventoryDetailCache.get(key) || {};
+          inventoryDetailCache.set(key, {
+            ...previous,
+            ...detail,
+            damage: detail.damage ?? previous.damage ?? null,
+            accuracy: detail.accuracy ?? previous.accuracy ?? null,
+            quality: detail.quality ?? previous.quality ?? null,
+            bonuses: detail.bonuses?.length ? detail.bonuses : previous.bonuses || [],
+            color: detail.color || previous.color || "",
+            imageUrl: detail.imageUrl || previous.imageUrl || ""
+          });
+        });
+        cached += 1;
+      }
+      Object.values(value).forEach(child => {
+        if (child && typeof child === "object") queue.push(child);
+      });
+    }
+    if (cached && isActiveView() && isInventoryPage() && inventoryItems.size) {
+      setInventoryStatus("Torn supplied visible item details. Tap Load Weapons again to refresh the list.");
+    }
+    return cached;
+  }
+
+  function inventoryElementIdentity(element, source = "") {
+    const html = element?.outerHTML || source;
+    const armoryId = String(
+      element?.getAttribute?.("data-armoury-id")
+      || element?.getAttribute?.("data-armory-id")
+      || element?.getAttribute?.("data-item-uid")
+      || element?.getAttribute?.("data-uid")
+      || (html.match(/(?:armou?r?yID|itemUID|itemUid|uid)["'=:\s-]+(\d+)/i) || [])[1]
+      || ""
+    );
+    const itemId = String(
+      element?.getAttribute?.("data-item")
+      || element?.getAttribute?.("data-item-id")
+      || (html.match(/(?:data-item(?:-id)?|itemID|itemId)["'=:\s-]+(\d+)/i) || [])[1]
+      || ""
+    );
+    return { armoryId, itemId };
+  }
+
+  function cachedInventoryDetail(identity, name) {
+    return inventoryDetailCache.get(`armory:${identity.armoryId}`)
+      || inventoryDetailCache.get(`item:${identity.itemId}`)
+      || inventoryDetailCache.get(`name:${normalizeItemName(name).toLowerCase()}`)
+      || null;
+  }
+
   function activeInventoryWeaponView() {
     if (/\b(?:weapon|primary|secondary|melee)\b/i.test(`${location.search} ${location.hash}`)) return true;
     return [...document.querySelectorAll('[role="tab"][aria-selected="true"], [aria-current="page"], .active')]
@@ -2171,34 +2326,36 @@
   }
 
   function inventoryItemIdentifier(element, item, index) {
-    const html = element.outerHTML || "";
-    const unique = [
-      element.getAttribute("data-uid"),
-      element.getAttribute("data-item-uid"),
-      element.getAttribute("data-armoury-id"),
-      element.getAttribute("data-armory-id"),
-      (html.match(/(?:armou?r?yID|itemUID|itemUid|uid)["'=:\s-]+(\d+)/i) || [])[1]
-    ].find(Boolean);
-    const itemId = element.getAttribute("data-item")
-      || (html.match(/data-item=["']?(\d+)/i) || [])[1]
-      || "item";
+    const identity = inventoryElementIdentity(element);
     const bonuses = item.bonuses.map(bonus => `${bonus.id}:${bonus.value ?? ""}`).join(",");
-    return `inventory|${unique || `${itemId}|${index}`}|${item.name}|${item.damage}|${item.accuracy}|${bonuses}`;
+    return `inventory|${identity.armoryId || `${identity.itemId || "item"}|${index}`}|${item.name}|${item.damage}|${item.accuracy}|${bonuses}`;
   }
 
   function parseInventoryWeapon(element, index) {
     const source = inventoryElementSource(element);
-    const damage = numberFrom((source.match(/\b(?:Damage|DMG)\s*[:=-]?\s*([\d.]+)/i) || [])[1]) || 0;
-    const accuracy = numberFrom((source.match(/\b(?:Accuracy|ACC)\s*[:=-]?\s*([\d.]+)/i) || [])[1]) || 0;
-    const quality = numberFrom((source.match(/\bQuality\s*[:=-]?\s*([\d.]+)/i) || [])[1]);
+    const identity = inventoryElementIdentity(element, source);
+    const visibleName = inventoryItemName(element, source);
+    const detail = cachedInventoryDetail(identity, visibleName);
+    const damage = detail?.damage ?? numberFrom((source.match(/\b(?:Damage|DMG)\s*[:=-]?\s*([\d.]+)/i) || [])[1]) ?? 0;
+    const accuracy = detail?.accuracy ?? numberFrom((source.match(/\b(?:Accuracy|ACC)\s*[:=-]?\s*([\d.]+)/i) || [])[1]) ?? 0;
+    const quality = detail?.quality ?? numberFrom((source.match(/\bQuality\s*[:=-]?\s*([\d.]+)/i) || [])[1]);
+    const visibleImageElement = element.querySelector("img");
+    const visibleImage = visibleImageElement?.currentSrc
+      || visibleImageElement?.getAttribute("src")
+      || visibleImageElement?.getAttribute("data-src")
+      || visibleImageElement?.getAttribute("data-lazy-src")
+      || "";
     const item = {
-      name: inventoryItemName(element, source),
+      name: detail?.name || visibleName,
       damage,
       accuracy,
       quality,
       bid: 0,
-      bonuses: bonusDetails(source),
-      color: cardColor(element),
+      bonuses: detail?.bonuses?.length ? detail.bonuses : bonusDetails(source),
+      color: detail?.color || cardColor(element),
+      imageUrl: detail?.imageUrl || visibleImage,
+      armoryId: identity.armoryId || detail?.armoryId || "",
+      itemId: identity.itemId || detail?.itemId || "",
       inventoryItem: true,
       observedAt: Date.now(),
       historySettings: { ...inventorySettingsFromControls(), doubleOnly: false }
@@ -2250,23 +2407,20 @@
             <div class="caf-clean-inventory-meta caf-clean-inventory-bonus">${escapeHtml(itemBonusText(item))}</div>
           </div>
         </div>
-        <button type="button" class="caf-clean-history caf-clean-inventory-history" data-idle-label="Auction History" data-history-state="idle" aria-expanded="false">Auction History ▼</button>
-        <div class="caf-clean-history-box"></div>
+        <details class="caf-clean-inventory-history-shell">
+          <summary class="caf-clean-history caf-clean-inventory-history" data-idle-label="Auction History" data-history-state="idle">Auction History</summary>
+          <div class="caf-clean-history-box"></div>
+        </details>
       `;
-      const sourceImage = sourceElement?.querySelector("img");
-      if (sourceImage?.complete && sourceImage.naturalWidth && sourceImage.naturalHeight) {
-        try {
-          const canvas = document.createElement("canvas");
-          canvas.width = sourceImage.naturalWidth;
-          canvas.height = sourceImage.naturalHeight;
-          canvas.getContext("2d")?.drawImage(sourceImage, 0, 0);
-          article.querySelector(".caf-clean-inventory-image").appendChild(canvas);
-        } catch {}
+      const imageUrl = item.imageUrl || sourceElement?.querySelector("img")?.src || "";
+      if (imageUrl) {
+        const image = document.createElement("img");
+        image.src = imageUrl;
+        image.alt = item.name;
+        article.querySelector(".caf-clean-inventory-image").appendChild(image);
       }
-      article.querySelector(".caf-clean-history").addEventListener("click", async event => {
-        event.preventDefault();
-        event.stopPropagation();
-        await toggleInventoryHistory(item, article);
+      article.querySelector(".caf-clean-inventory-history-shell").addEventListener("toggle", async event => {
+        if (event.currentTarget.open) await toggleInventoryHistory(item, article);
       });
       list.appendChild(article);
     });
@@ -2294,33 +2448,30 @@
     }
     const complete = parsed.filter(entry => entry.item.damage > 0 && entry.item.accuracy > 0).length;
     const bonusCount = parsed.filter(entry => entry.item.bonuses.length).length;
-    setInventoryStatus(`Loaded ${parsed.length} weapon(s) from the visible inventory: ${complete} with visible stats and ${bonusCount} with visible bonuses.`);
+    const pictureCount = parsed.filter(entry => entry.item.imageUrl).length;
+    const missingDetailNote = complete < parsed.length
+      ? " For a weapon still showing ?, manually open that Torn weapon's native details once, close it, then tap Load Weapons again."
+      : "";
+    setInventoryStatus(`Loaded ${parsed.length} weapon(s): ${complete} with stats, ${bonusCount} with bonuses, and ${pictureCount} with pictures.${missingDetailNote}`);
     return parsed.map(entry => entry.item);
   }
 
   async function toggleInventoryHistory(item, article, forceOpen = false) {
     const button = article?.querySelector(".caf-clean-inventory-history");
     const box = article?.querySelector(".caf-clean-history-box");
-    if (!button || !box) {
+    const shell = article?.querySelector(".caf-clean-inventory-history-shell");
+    if (!button || !box || !shell) {
       setInventoryStatus(`Could not open Auction House history for ${item?.name || "this weapon"}.`, true);
       return null;
     }
     if (button.dataset.historyState === "loading") return null;
 
     const alreadyLoaded = button.dataset.historyState === "loaded";
-    const isOpen = box.style.display !== "none" && button.getAttribute("aria-expanded") === "true";
-    if (alreadyLoaded && !forceOpen) {
-      const willOpen = !isOpen;
-      box.style.display = willOpen ? "block" : "none";
-      button.setAttribute("aria-expanded", String(willOpen));
-      button.textContent = `Auction History ${willOpen ? "▲" : "▼"}`;
-      if (willOpen) box.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      return null;
-    }
+    if (forceOpen) shell.open = true;
+    if (alreadyLoaded) return null;
 
     item.historySettings = { ...saveInventorySettings(), doubleOnly: false };
     button.dataset.historyState = "loading";
-    button.setAttribute("aria-expanded", "true");
     button.textContent = "Auction History — checking...";
     box.style.display = "block";
     box.innerHTML = `<span class="caf-clean-muted">Opening Auction House history for ${escapeHtml(item.name)}...</span>`;
@@ -2340,8 +2491,7 @@
       return null;
     } finally {
       button.disabled = false;
-      button.setAttribute("aria-expanded", "true");
-      button.textContent = "Auction History ▲";
+      button.textContent = "Auction History";
     }
   }
 
@@ -3458,6 +3608,50 @@
       } catch {}
       return response;
     };
+  }
+
+  function installInventoryResponseCapture() {
+    const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+    if (!pageWindow) return;
+
+    if (pageWindow.fetch && !pageWindow.__cafCleanInventoryFetchCapture) {
+      const originalFetch = pageWindow.fetch;
+      pageWindow.__cafCleanInventoryFetchCapture = true;
+      pageWindow.fetch = async function (...args) {
+        const response = await originalFetch.apply(this, args);
+        try {
+          const target = args[0];
+          const url = typeof target === "string" ? target : String(target?.url || target || "");
+          if (/item\.php|sid=inventory/i.test(url)) {
+            response.clone().json().then(cacheInventoryDetailResponse).catch(() => {});
+          }
+        } catch {}
+        return response;
+      };
+    }
+
+    const XHR = pageWindow.XMLHttpRequest;
+    if (XHR?.prototype && !XHR.prototype.__cafCleanInventoryCapture) {
+      const originalOpen = XHR.prototype.open;
+      const originalSend = XHR.prototype.send;
+      XHR.prototype.__cafCleanInventoryCapture = true;
+      XHR.prototype.open = function (method, url) {
+        this.__cafCleanInventoryUrl = String(url || "");
+        return originalOpen.apply(this, arguments);
+      };
+      XHR.prototype.send = function () {
+        this.addEventListener("load", function () {
+          try {
+            if (!/item\.php|sid=inventory/i.test(this.__cafCleanInventoryUrl || "")) return;
+            const payload = this.responseType === "json"
+              ? this.response
+              : JSON.parse(this.responseText || "null");
+            cacheInventoryDetailResponse(payload);
+          } catch {}
+        });
+        return originalSend.apply(this, arguments);
+      };
+    }
   }
 
   function defaultMarketSettings() {
@@ -4830,7 +5024,7 @@
     panel.innerHTML = `
       <button type="button" class="caf-clean-inventory-toggle">CAF Inventory AH History (${inventoryItems.size}) ${collapsed ? "▶" : "▼"}</button>
       <div class="caf-clean-inventory-body" style="display:${collapsed ? "none" : "block"}">
-        <div class="caf-clean-inventory-note">Open Torn's Weapons, Primary, Secondary, or Melee inventory view, then load the weapon cards Torn has already rendered. CAF will not equip, move, sell, or otherwise change an item.</div>
+        <div class="caf-clean-inventory-note">Open Torn's Weapons, Primary, Secondary, or Melee inventory view, then load the weapon cards Torn has already rendered. If a weapon lacks stats or quality, manually open its native Torn details once, close it, and tap Load again. CAF observes that foreground response but will not request details, equip, move, sell, or otherwise change an item.</div>
         <div class="caf-clean-inventory-controls">
           <label>History sales
             <select id="caf-clean-inventory-count">
@@ -4846,7 +5040,7 @@
         <div class="caf-clean-inventory-list"></div>
         <details class="caf-clean-inventory-disclosure">
           <summary>Data use</summary>
-          <div>Load reads only inventory cards already rendered on this visible page and keeps their snapshots only in page memory. An Auction History tap sends the parsed item name, visible stats, and visible bonuses to the disclosed external Supabase history service. No Torn password, cookie, API key, inventory request, or game action is sent.</div>
+          <div>Load reads only inventory cards already rendered on this visible page. When the player manually opens Torn's native item details, CAF may observe that already-requested foreground response to fill the picture, color, stats, quality, and bonuses. Snapshots remain only in page memory. An Auction History tap sends parsed item details to the disclosed external Supabase history service. No Torn password, cookie, API key, additional inventory request, or game action is sent.</div>
         </details>
       </div>
     `;
@@ -5035,6 +5229,7 @@
   }
 
   installMarketFetchCapture();
+  installInventoryResponseCapture();
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", initialize, { once: true });
   } else {
