@@ -573,8 +573,8 @@ class BmgDatabaseTests(unittest.TestCase):
         decisions = registry["decisions"]
         event_ids = [item["event_id"] for item in decisions]
         self.assertEqual(len(event_ids), len(set(event_ids)))
-        self.assertEqual(25, len(decisions))
-        self.assertEqual(24, sum(item["decision"] == "confirmed" for item in decisions))
+        self.assertEqual(42, len(decisions))
+        self.assertEqual(41, sum(item["decision"] == "confirmed" for item in decisions))
         self.assertEqual(1, sum(item["decision"] == "rejected" for item in decisions))
         for item in decisions:
             self.assertIn(item["decision"], {"confirmed", "rejected"})
@@ -702,6 +702,75 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertEqual(2, len({
             selection["source_selection_key"] for selection in exact_score["selections"]
         }))
+
+    def test_api_football_fixture_stats_map_provider_teams_to_home_and_away(self) -> None:
+        fixture = {
+            "fixture": {
+                "id": 54321,
+                "date": "2026-08-10T19:00:00+00:00",
+                "status": {"short": "FT", "long": "Match Finished"},
+            },
+            "league": {
+                "id": 999,
+                "name": "Test Premier League",
+                "country": "Testland",
+                "season": 2026,
+                "round": "Regular Season - 1",
+            },
+            "teams": {
+                "home": {"id": 11, "name": "North FC"},
+                "away": {"id": 12, "name": "South United"},
+            },
+            "goals": {"home": 2, "away": 1},
+        }
+        reference = api_football.transform_fixture_refresh_capture(
+            fixture, "2026-08-10T21:00:00Z"
+        )
+        with self.connection:
+            api_football.import_reference_capture(self.db_path, reference)
+
+        # API response ordering is not contractual, so deliberately put away first.
+        payload = {
+            "response": [
+                {
+                    "team": {"id": 12, "name": "South United"},
+                    "statistics": [
+                        {"type": "Shots on Goal", "value": 3},
+                        {"type": "Ball Possession", "value": "40%"},
+                    ],
+                },
+                {
+                    "team": {"id": 11, "name": "North FC"},
+                    "statistics": [
+                        {"type": "Shots on Goal", "value": 7},
+                        {"type": "Ball Possession", "value": "60%"},
+                    ],
+                },
+            ]
+        }
+        capture = api_football.transform_fixture_statistics(
+            payload, 54321, "2026-08-13T22:00:00Z"
+        )
+        with self.connection:
+            counts = api_football.import_fixture_statistics_capture(
+                self.connection, capture
+            )
+
+        self.assertEqual(2, counts["stats"])
+        shots = self.connection.execute(
+            "SELECT home_value, away_value FROM match_stats WHERE stat_key = 'shots on goal'"
+        ).fetchone()
+        self.assertEqual((7.0, 3.0), tuple(shots))
+        possession = self.connection.execute(
+            "SELECT home_raw, away_raw, home_value, away_value FROM match_stats "
+            "WHERE stat_key = 'ball possession'"
+        ).fetchone()
+        self.assertEqual(("60%", "40%", 60.0, 40.0), tuple(possession))
+        with self.connection:
+            second = api_football.import_fixture_statistics_capture(
+                self.connection, capture
+            )
+        self.assertEqual(0, second["captures"])
 
     def test_team_alias_bridge_requires_one_known_side_and_keeps_evidence(self) -> None:
         bmg.import_file(self.connection, FIXTURE)

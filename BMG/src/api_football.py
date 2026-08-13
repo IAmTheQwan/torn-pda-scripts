@@ -33,6 +33,7 @@ DEFAULT_REVIEWED_MAPPINGS = PROJECT_DIR / "config" / "api-football-reviewed-mapp
 DEFAULT_REVIEWED_BACKFILL_REPORT = PROJECT_DIR / "data" / "api-football-reviewed-backfill.json"
 DEFAULT_BASE_URL = "https://v3.football.api-sports.io"
 SOURCE = "api-football"
+FIXTURE_STATS_SCHEMA = "bmg.api-football-fixture-stats.v1"
 
 
 class ApiFootballError(RuntimeError):
@@ -1188,6 +1189,188 @@ def command_collect_odds(args: argparse.Namespace) -> None:
         print("Imported " + ", ".join(f"{key}={value}" for key, value in imported.items()))
 
 
+def transform_fixture_statistics(
+    payload: dict[str, Any], fixture_id: int, observed_at: str
+) -> dict[str, Any]:
+    """Normalize API-Football's two team-oriented stat lists without losing raw values."""
+    teams: list[dict[str, Any]] = []
+    for item in payload.get("response") or []:
+        if not isinstance(item, dict):
+            continue
+        team = item.get("team") if isinstance(item.get("team"), dict) else {}
+        source_team_id = bmg.clean_text(team.get("id"))
+        if not source_team_id:
+            continue
+        statistics = []
+        for stat in item.get("statistics") or []:
+            if not isinstance(stat, dict):
+                continue
+            name = bmg.clean_text(stat.get("type"))
+            if name:
+                statistics.append({"name": name, "raw": stat.get("value")})
+        teams.append(
+            {
+                "source_team_id": source_team_id,
+                "team": bmg.clean_text(team.get("name")),
+                "statistics": statistics,
+            }
+        )
+    compact_time = re.sub(r"[^0-9]", "", observed_at)[:14]
+    return {
+        "schema_version": FIXTURE_STATS_SCHEMA,
+        "capture_id": f"api-football-stats-{fixture_id}-{compact_time}",
+        "observed_at": observed_at,
+        "source": "api-football-stats",
+        "page_url": f"{DEFAULT_BASE_URL}/fixtures/statistics?fixture={fixture_id}",
+        "source_match_id": str(fixture_id),
+        "teams": teams,
+    }
+
+
+def import_fixture_statistics_capture(
+    connection: sqlite3.Connection, capture: dict[str, Any]
+) -> dict[str, int]:
+    """Attach a normalized API-Football statistic capture to an existing fixture."""
+    if capture.get("schema_version") != FIXTURE_STATS_SCHEMA:
+        raise ValueError("Unsupported API-Football fixture-statistics schema.")
+    capture_id = bmg.clean_text(capture.get("capture_id"))
+    observed_at = bmg.clean_text(capture.get("observed_at"))
+    source_match_id = bmg.clean_text(capture.get("source_match_id"))
+    if not capture_id or not observed_at or not source_match_id:
+        raise ValueError("Fixture-statistics captures need capture, observation, and fixture IDs.")
+    if connection.execute(
+        "SELECT 1 FROM reference_capture_runs WHERE capture_id = ?", (capture_id,)
+    ).fetchone():
+        return {"captures": 0, "fixtures_with_stats": 0, "stats": 0}
+    match = connection.execute(
+        """
+        SELECT sm.match_id, home_source.source_team_id AS home_source_team_id,
+               away_source.source_team_id AS away_source_team_id
+        FROM match_sources ms
+        JOIN sports_matches sm ON sm.match_id = ms.match_id
+        JOIN team_sources home_source
+          ON home_source.team_id = sm.home_team_id AND home_source.source = ?
+        JOIN team_sources away_source
+          ON away_source.team_id = sm.away_team_id AND away_source.source = ?
+        WHERE ms.source = ? AND ms.source_match_id = ?
+        """,
+        (SOURCE, SOURCE, SOURCE, source_match_id),
+    ).fetchone()
+    if match is None:
+        raise ValueError(
+            f"Fixture statistics match {source_match_id!r} is not imported for {SOURCE!r}."
+        )
+    team_stats = {
+        bmg.clean_text(team.get("source_team_id")): team
+        for team in capture.get("teams") or []
+        if isinstance(team, dict) and bmg.clean_text(team.get("source_team_id"))
+    }
+    home = team_stats.get(bmg.clean_text(match["home_source_team_id"]), {})
+    away = team_stats.get(bmg.clean_text(match["away_source_team_id"]), {})
+    by_name: dict[str, dict[str, Any]] = {}
+    for side, team in (("home", home), ("away", away)):
+        for stat in team.get("statistics") or []:
+            if not isinstance(stat, dict):
+                continue
+            name = bmg.clean_text(stat.get("name"))
+            if not name:
+                continue
+            entry = by_name.setdefault(bmg.canonical(name), {"name": name})
+            entry[side] = stat.get("raw")
+    raw_json = json.dumps(capture, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    connection.execute(
+        """
+        INSERT INTO reference_capture_runs (
+            capture_id, schema_version, observed_at, source, page_url, display_timezone,
+            competition_count, season_count, match_count, imported_at, raw_json
+        ) VALUES (?, ?, ?, ?, ?, 'UTC', 0, 0, 1, ?, ?)
+        """,
+        (
+            capture_id,
+            FIXTURE_STATS_SCHEMA,
+            observed_at,
+            bmg.clean_text(capture.get("source")) or "api-football-stats",
+            bmg.clean_text(capture.get("page_url")),
+            bmg.utc_now(),
+            raw_json,
+        ),
+    )
+    stat_count = 0
+    for stat_key, stat in sorted(by_name.items()):
+        home_raw = bmg.clean_text(stat.get("home"))
+        away_raw = bmg.clean_text(stat.get("away"))
+        home_value, home_numerator, home_denominator = bmg.parse_stat_value(home_raw)
+        away_value, away_numerator, away_denominator = bmg.parse_stat_value(away_raw)
+        connection.execute(
+            """
+            INSERT INTO match_stats (
+                capture_id, match_id, period, stat_group, stat_key, stat_name,
+                home_raw, away_raw, home_value, away_value,
+                home_numerator, home_denominator, away_numerator, away_denominator,
+                observed_at
+            ) VALUES (?, ?, 'overall', 'api-football', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                capture_id,
+                int(match["match_id"]),
+                stat_key,
+                stat["name"],
+                home_raw,
+                away_raw,
+                home_value,
+                away_value,
+                home_numerator,
+                home_denominator,
+                away_numerator,
+                away_denominator,
+                observed_at,
+            ),
+        )
+        stat_count += 1
+    return {
+        "captures": 1,
+        "fixtures_with_stats": 1 if stat_count else 0,
+        "stats": stat_count,
+    }
+
+
+def command_collect_fixture_stats(args: argparse.Namespace) -> None:
+    client = make_client(args.env)
+    observed_at = utc_now()
+    captures = [
+        transform_fixture_statistics(
+            client.get("fixtures/statistics", {"fixture": fixture_id}),
+            fixture_id,
+            observed_at,
+        )
+        for fixture_id in args.fixture_ids
+    ]
+    output = args.output or (
+        PROJECT_DIR / "exports" / f"api-football-stats-{observed_at.replace(':', '')}.json"
+    )
+    write_json(output, {"captures": captures})
+    imported: dict[str, int] = {}
+    if args.import_db:
+        connection = bmg.open_database(args.import_db.resolve())
+        try:
+            bmg.initialize_database(connection)
+            with connection:
+                for capture in captures:
+                    bmg.merge_counts(
+                        imported, import_fixture_statistics_capture(connection, capture)
+                    )
+        finally:
+            connection.close()
+    fixtures_with_stats = sum(bool(capture["teams"]) for capture in captures)
+    print(
+        f"fixtures={len(captures)}; fixtures_with_stats={fixtures_with_stats}; "
+        f"stat_rows={sum(len(team['statistics']) for capture in captures for team in capture['teams'])}; "
+        f"API requests={client.requests_used}; output={output}"
+    )
+    if imported:
+        print("Imported " + ", ".join(f"{key}={value}" for key, value in imported.items()))
+
+
 def command_settle_review(args: argparse.Namespace) -> None:
     connection = bmg.open_database(args.db.resolve())
     try:
@@ -1273,6 +1456,14 @@ def build_parser() -> argparse.ArgumentParser:
     odds.add_argument("--output", type=Path)
     odds.add_argument("--import-db", type=Path, default=DEFAULT_DB)
 
+    fixture_stats = subparsers.add_parser(
+        "collect-fixture-stats",
+        help="collect shots, possession, corners, cards, and other fixture statistics",
+    )
+    fixture_stats.add_argument("fixture_ids", type=int, nargs="+")
+    fixture_stats.add_argument("--output", type=Path)
+    fixture_stats.add_argument("--import-db", type=Path, default=DEFAULT_DB)
+
     settle = subparsers.add_parser(
         "settle-review",
         help="refresh a paper run's API-Football fixtures, then settle every final decision",
@@ -1318,6 +1509,8 @@ def main(argv: list[str] | None = None) -> int:
             command_collect_season(args)
         elif args.command == "collect-odds":
             command_collect_odds(args)
+        elif args.command == "collect-fixture-stats":
+            command_collect_fixture_stats(args)
         elif args.command == "settle-review":
             command_settle_review(args)
         elif args.command == "backfill-exact":

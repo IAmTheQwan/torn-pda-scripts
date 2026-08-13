@@ -117,6 +117,27 @@ payload inside the private capture archive, transforms it to
 disposable database for the first validation; import into the live database
 only after team names, dates, scores, and season identity are checked.
 
+## Fixture-statistics collection
+
+For fixtures that are already in the canonical match network, collect the
+provider's team-level match detail with:
+
+```powershell
+python .\BMG\src\api_football.py collect-fixture-stats `
+  FIXTURE_ID [FIXTURE_ID ...]
+```
+
+The command preserves the raw private response and maps each provider team ID
+back to the canonical fixture's home/away roles. Shots, expected goals when
+available, possession, corners, fouls, cards, saves, and passing statistics are
+normalized into `match_stats`. Team order in the provider response is not
+trusted. A zero-stat response is retained as coverage evidence so future jobs
+can avoid repeatedly requesting an unsupported fixture.
+
+This data is feature material, not an automatic betting signal. A model must
+define its training cutoff and validate any stat-derived feature on held-out
+matches before BMG can use it in a live decision.
+
 ## Odds retention
 
 Pre-match odds are only retained by the provider for seven days and live odds

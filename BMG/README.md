@@ -126,6 +126,7 @@ state. The first milestone is trustworthy data.
    python .\BMG\src\api_football.py backfill-reviewed --dry-run
    python .\BMG\src\api_football.py backfill-reviewed
    python .\BMG\src\api_football.py collect-odds FIXTURE_ID [FIXTURE_ID ...]
+   python .\BMG\src\api_football.py collect-fixture-stats FIXTURE_ID [FIXTURE_ID ...]
    python .\BMG\src\api_football.py settle-review [FORECAST_RUN_ID]
    ```
 
