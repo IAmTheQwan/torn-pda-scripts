@@ -17,6 +17,7 @@ import bmg  # noqa: E402
 
 FIXTURE = PROJECT_DIR / "tests" / "fixtures" / "capture-history-v1.json"
 FLASHSCORE_FIXTURE = PROJECT_DIR / "tests" / "fixtures" / "flashscore-league-v1.json"
+MARKET_ODDS_FIXTURE = PROJECT_DIR / "tests" / "fixtures" / "market-odds-v1.json"
 
 
 class BmgDatabaseTests(unittest.TestCase):
@@ -257,6 +258,94 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertEqual(0, second["captures"])
         self.assertEqual(1, self.count("reference_capture_runs"))
         self.assertEqual(2, self.count("sports_matches"))
+
+    def test_modeling_schema_tracks_complete_slates_and_timestamped_external_odds(self) -> None:
+        bmg.import_file(self.connection, FIXTURE)
+        self.assertEqual(4, self.count("capture_events"))
+        bmg.import_flashscore_file(self.connection, FLASHSCORE_FIXTURE)
+        first = bmg.import_market_odds_file(self.connection, MARKET_ODDS_FIXTURE)
+        self.assertEqual(2, first["captures"])
+        self.assertEqual(4, first["markets"])
+        self.assertEqual(10, first["selections"])
+        self.assertEqual(10, first["odds"])
+        self.assertEqual(2, self.count("match_markets"))
+        self.assertEqual(5, self.count("match_market_selections"))
+        self.assertEqual(10, self.count("match_odds_observations"))
+
+        prices = self.connection.execute(
+            """
+            SELECT moo.observed_at, moo.odds_decimal
+            FROM match_odds_observations moo
+            JOIN match_market_selections mms ON mms.match_selection_id = moo.match_selection_id
+            WHERE mms.source_selection_key = 'home'
+            ORDER BY moo.observed_at
+            """
+        ).fetchall()
+        self.assertEqual([(row["observed_at"], row["odds_decimal"]) for row in prices], [
+            ("2026-05-24T13:00:00Z", 1.8),
+            ("2026-05-24T14:55:00Z", 1.72),
+        ])
+        second = bmg.import_market_odds_file(self.connection, MARKET_ODDS_FIXTURE)
+        self.assertEqual(0, second["captures"])
+        self.assertEqual(10, self.count("match_odds_observations"))
+
+    def test_exact_reconciliation_outcome_sync_and_research_slate_are_idempotent(self) -> None:
+        bmg.import_flashscore_file(self.connection, FLASHSCORE_FIXTURE)
+        capture = {
+            "schema_version": "bmg.capture.v1",
+            "capture_id": "torn-slate-fixture",
+            "observed_at": "2026-05-24T12:00:00Z",
+            "source": "torn-visible-bookie-dom",
+            "events": [{
+                "source_event_id": "torn-arsenal-chelsea",
+                "sport": "football",
+                "title": "Arsenal v Chelsea - Premier League 2025/2026",
+                "league": "Premier League 2025/2026 (England 1)",
+                "home_team": "Arsenal FC",
+                "away_team": "Chelsea",
+                "scheduled_at": "2026-05-24T15:00:00Z",
+                "captured_as_complete": True,
+                "markets": [],
+            }],
+            "bets": [],
+        }
+        bmg.import_capture(self.connection, capture)
+        result = bmg.reconcile_event_matches(self.connection, confirm_exact=True)
+        self.assertEqual(1, result["confirmed"])
+        link = self.connection.execute("SELECT * FROM event_match_links").fetchone()
+        self.assertEqual(1, link["confirmed"])
+
+        first_sync = bmg.sync_confirmed_outcomes(self.connection)
+        second_sync = bmg.sync_confirmed_outcomes(self.connection)
+        self.assertEqual(1, first_sync["outcomes"])
+        self.assertEqual(0, second_sync["outcomes"])
+        outcome = self.connection.execute("SELECT * FROM event_outcomes").fetchone()
+        self.assertEqual((2.0, 1.0, "home"), (outcome["home_score"], outcome["away_score"], outcome["winner"]))
+
+        slate = bmg.create_research_slate(
+            self.connection, "torn-slate-fixture", capture_complete=True, note="fixture slate"
+        )
+        self.assertEqual(1, slate["events"])
+        slate_event = self.connection.execute("SELECT * FROM research_slate_events").fetchone()
+        self.assertEqual("confirmed", slate_event["mapping_status"])
+
+    def test_backtests_must_be_strictly_out_of_sample(self) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO model_versions (name, version, sport, algorithm, created_at)
+            VALUES ('baseline', '0.1', 'football', 'elo-poisson', '2026-08-13T00:00:00Z')
+            """
+        )
+        model_id = int(self.connection.execute("SELECT model_version_id FROM model_versions").fetchone()[0])
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.connection.execute(
+                """
+                INSERT INTO backtest_runs (
+                    backtest_run_id, model_version_id, created_at, training_end, test_start, test_end
+                ) VALUES ('leaky', ?, '2026-08-13T00:00:00Z', '2026-06-01', '2026-05-01', '2026-07-01')
+                """,
+                (model_id,),
+            )
 
 
 if __name__ == "__main__":

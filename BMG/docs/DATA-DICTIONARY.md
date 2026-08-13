@@ -34,6 +34,7 @@ suspension state.
 - `bets` — stake, accepted price, state, payout, and profit.
 - `history_event_details` — immutable raw expanded-dropdown records and completeness counts.
 - `bankroll_snapshots` — wallet, Bookie, stocks, other liquid value, and total.
+- `capture_events` — explicit event membership in a capture, including unpriced slate entries.
 
 ## Flashscore foreground capture (`bmg.flashscore-league.v1`)
 
@@ -63,12 +64,21 @@ when the visible row includes a time and BMG can resolve the timezone safely.
 - `match_markets`, `match_market_selections`, `match_odds_observations` — external
   odds-ready tables; Torn prices stay in their existing tables and join via the match link.
 
+## Modeling and evaluation entities
+
+- `research_slates`, `research_slate_events` — the full candidate pool at a decision time.
+- `model_versions` — immutable model identity, feature specification, and training cutoff.
+- `team_rating_snapshots` — as-of team strength and uncertainty states.
+- `forecast_runs`, `match_forecasts` — timestamped probability distributions and fair odds.
+- `decision_records` — every pick, pass, or rejection with prices, edge, EV, and stake rule.
+- `match_market_settlements` — rules-aware win/loss/push/void evidence.
+- `forecast_evaluations` — calibration, profit, closing odds, and closing-line value.
+- `backtest_runs`, `backtest_metrics` — chronological test definitions and results.
+
 Money is stored as whole Torn dollars (`INTEGER`). Decimal odds use `REAL` and are
 validated above zero. Times are stored as UTC ISO text; raw source times are also
 retained when ambiguity exists.
 
-## Required analysis metadata (planned)
-
-Each future pick must store model/version, probability, fair odds, observed odds,
-decision time, stake rule, rejection reasons, and closing odds. Without those
-fields, win rate alone cannot distinguish edge from luck.
+These entities implement the required analysis metadata. Without a recorded
+information cutoff and full slate denominator, a forecast is not eligible for a
+backtest.

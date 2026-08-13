@@ -1,0 +1,76 @@
+{
+  "captures": [
+    {
+      "schema_version": "bmg.market-odds.v1",
+      "capture_id": "odds-fixture-open",
+      "observed_at": "2026-05-24T13:00:00Z",
+      "source": "flashscore-visible-browser",
+      "page_url": "https://www.flashscore.com/match/fixture/odds/",
+      "bookmaker": "Fixture Book",
+      "matches": [
+        {
+          "source_match_id": "fixture-match-1",
+          "markets": [
+            {
+              "source_market_key": "1x2-full-time",
+              "name": "1X2",
+              "market_type": "three_way",
+              "period": "full_time",
+              "selections": [
+                {"source_selection_key": "home", "name": "Arsenal", "odds_decimal": 1.80},
+                {"source_selection_key": "draw", "name": "Draw", "odds_decimal": 3.60},
+                {"source_selection_key": "away", "name": "Chelsea", "odds_decimal": 4.50}
+              ]
+            },
+            {
+              "source_market_key": "total-2.5-full-time",
+              "name": "Over/Under 2.5",
+              "market_type": "total",
+              "period": "full_time",
+              "selections": [
+                {"source_selection_key": "over-2.5", "name": "Over 2.5", "line": 2.5, "odds_decimal": 1.91},
+                {"source_selection_key": "under-2.5", "name": "Under 2.5", "line": 2.5, "odds_decimal": 1.91}
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schema_version": "bmg.market-odds.v1",
+      "capture_id": "odds-fixture-close",
+      "observed_at": "2026-05-24T14:55:00Z",
+      "source": "flashscore-visible-browser",
+      "page_url": "https://www.flashscore.com/match/fixture/odds/",
+      "bookmaker": "Fixture Book",
+      "matches": [
+        {
+          "source_match_id": "fixture-match-1",
+          "markets": [
+            {
+              "source_market_key": "1x2-full-time",
+              "name": "1X2",
+              "market_type": "three_way",
+              "period": "full_time",
+              "selections": [
+                {"source_selection_key": "home", "name": "Arsenal", "odds_decimal": 1.72},
+                {"source_selection_key": "draw", "name": "Draw", "odds_decimal": 3.75},
+                {"source_selection_key": "away", "name": "Chelsea", "odds_decimal": 4.80}
+              ]
+            },
+            {
+              "source_market_key": "total-2.5-full-time",
+              "name": "Over/Under 2.5",
+              "market_type": "total",
+              "period": "full_time",
+              "selections": [
+                {"source_selection_key": "over-2.5", "name": "Over 2.5", "line": 2.5, "odds_decimal": 1.82},
+                {"source_selection_key": "under-2.5", "name": "Under 2.5", "line": 2.5, "odds_decimal": 2.00}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

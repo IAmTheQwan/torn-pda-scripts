@@ -51,6 +51,21 @@ state. The first milestone is trustworthy data.
    2025/26 results and final standings plus the full 2026/27 fixture list. See
    `docs/FLASHSCORE-WORKFLOW.md` for the repeatable league workflow.
 
+7. Build the reviewed outcome/modeling bridge and inspect research readiness:
+
+   ```powershell
+   python .\BMG\src\bmg.py reconcile
+   python .\BMG\src\bmg.py reconciliation-review
+   python .\BMG\src\bmg.py reconcile --confirm-exact
+   python .\BMG\src\bmg.py sync-outcomes
+   python .\BMG\src\bmg.py modeling-summary
+   python .\BMG\src\bmg.py history-performance --sport football
+   ```
+
+   Timestamped external price captures import with `import-odds`. Full schema,
+   slate, forecast, decision, settlement, and backtest details are in
+   `docs/MODELING.md`.
+
 For a smoke test without Torn data:
 
 ```powershell

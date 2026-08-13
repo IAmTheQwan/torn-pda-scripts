@@ -23,6 +23,7 @@ SCHEMA_FILES = sorted((PROJECT_DIR / "schema").glob("[0-9][0-9][0-9]_*.sql"))
 STARTING_BANKROLL = 57_365_830
 TORN_OPTION_CAP = 1_000_000_000
 CAPTURE_SCHEMA = "bmg.capture.v1"
+MARKET_ODDS_SCHEMA = "bmg.market-odds.v1"
 
 
 def utc_now() -> str:
@@ -145,7 +146,9 @@ def apply_schema(connection: sqlite3.Connection) -> None:
             if column not in existing:
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_bets_settled_at ON bets (settled_at DESC)")
-    connection.execute("PRAGMA user_version = 3")
+    connection.execute("PRAGMA user_version = 4")
+    backfill_capture_events(connection)
+    connection.commit()
 
 
 def latest_bankroll(connection: sqlite3.Connection) -> sqlite3.Row | None:
@@ -184,6 +187,70 @@ def capture_objects(payload: Any) -> list[dict[str, Any]]:
     if not all(isinstance(capture, dict) for capture in captures):
         raise ValueError("Each capture must be a JSON object.")
     return captures
+
+
+def bet_event_stub(bet: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source_event_id": bet.get("source_event_id") or bet.get("game_id"),
+        "sport": bet.get("sport"),
+        "title": bet.get("event_title") or bet.get("match_title"),
+        "league": bet.get("league") or bet.get("competition"),
+        "home_team": bet.get("home_team"),
+        "away_team": bet.get("away_team"),
+        "visible_status": bet.get("status"),
+        "settled_at": bet.get("settled_at"),
+        "finished_text": bet.get("finished_text"),
+    }
+
+
+def backfill_capture_events(connection: sqlite3.Connection) -> int:
+    """Recover capture membership for databases created before schema v4."""
+    if not connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'capture_events'"
+    ).fetchone():
+        return 0
+    if connection.execute(
+        "SELECT 1 FROM schema_meta WHERE key = 'capture_events_backfilled_v4' AND value = '1'"
+    ).fetchone():
+        return 0
+    inserted = 0
+    rows = connection.execute("SELECT capture_id, raw_json FROM capture_runs").fetchall()
+    for row in rows:
+        try:
+            capture = json.loads(row["raw_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(capture, dict):
+            continue
+        records: list[tuple[dict[str, Any], bool]] = []
+        records.extend(
+            (event, bool(event.get("captured_as_complete")))
+            for event in (capture.get("events") or [])
+            if isinstance(event, dict)
+        )
+        records.extend(
+            (bet_event_stub(bet), False)
+            for bet in (capture.get("bets") or [])
+            if isinstance(bet, dict)
+        )
+        for event, complete in records:
+            event_row = connection.execute(
+                "SELECT event_id FROM events WHERE event_uid = ?", (event_identity(event),)
+            ).fetchone()
+            if not event_row:
+                continue
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO capture_events (capture_id, event_id, captured_as_complete)
+                VALUES (?, ?, ?)
+                """,
+                (row["capture_id"], int(event_row[0]), 1 if complete else 0),
+            )
+            inserted += max(0, cursor.rowcount)
+    connection.execute(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('capture_events_backfilled_v4', '1')"
+    )
+    return inserted
 
 
 def event_identity(event: dict[str, Any]) -> str:
@@ -384,6 +451,15 @@ def import_event(
     observed_at: str,
 ) -> dict[str, int]:
     event_id = upsert_event(connection, event, observed_at)
+    connection.execute(
+        """
+        INSERT INTO capture_events (capture_id, event_id, captured_as_complete)
+        VALUES (?, ?, ?)
+        ON CONFLICT(capture_id, event_id) DO UPDATE SET
+            captured_as_complete = MAX(capture_events.captured_as_complete, excluded.captured_as_complete)
+        """,
+        (capture_id, event_id, 1 if event.get("captured_as_complete") is True else 0),
+    )
     counts = {"events": 1, "markets": 0, "selections": 0, "odds": 0, "outcomes": 0}
     markets = [market for market in (event.get("markets") or []) if isinstance(market, dict)]
     base_keys = [market_identity(market) for market in markets]
@@ -451,18 +527,15 @@ def import_bet(
     bet: dict[str, Any],
     observed_at: str,
 ) -> None:
-    event_stub = {
-        "source_event_id": bet.get("source_event_id") or bet.get("game_id"),
-        "sport": bet.get("sport"),
-        "title": bet.get("event_title") or bet.get("match_title"),
-        "league": bet.get("league") or bet.get("competition"),
-        "home_team": bet.get("home_team"),
-        "away_team": bet.get("away_team"),
-        "visible_status": bet.get("status"),
-        "settled_at": bet.get("settled_at"),
-        "finished_text": bet.get("finished_text"),
-    }
+    event_stub = bet_event_stub(bet)
     event_id = upsert_event(connection, event_stub, observed_at)
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO capture_events (capture_id, event_id, captured_as_complete)
+        VALUES (?, ?, 0)
+        """,
+        (capture_id, event_id),
+    )
     market = {
         "name": bet.get("market_name") or "Unknown bet market",
         "market_type": bet.get("market_type") or "other",
@@ -1426,6 +1499,489 @@ def import_flashscore_file(connection: sqlite3.Connection, path: Path) -> dict[s
     return total
 
 
+def market_odds_capture_objects(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        raise ValueError("Market-odds export must be a JSON object.")
+    captures = payload.get("captures") if isinstance(payload.get("captures"), list) else [payload]
+    if not all(isinstance(capture, dict) for capture in captures):
+        raise ValueError("Every market-odds capture must be a JSON object.")
+    return captures
+
+
+def import_market_odds_capture(
+    connection: sqlite3.Connection, capture: dict[str, Any]
+) -> dict[str, int]:
+    if clean_text(capture.get("schema_version")) != MARKET_ODDS_SCHEMA:
+        raise ValueError(f"Unsupported market-odds schema; expected {MARKET_ODDS_SCHEMA!r}.")
+    capture_id = clean_text(capture.get("capture_id"))
+    observed_at = clean_text(capture.get("observed_at"))
+    source = clean_text(capture.get("source")) or "visible-market-odds"
+    if not capture_id or not observed_at:
+        raise ValueError("Every market-odds capture needs capture_id and observed_at.")
+    if connection.execute(
+        "SELECT 1 FROM reference_capture_runs WHERE capture_id = ?", (capture_id,)
+    ).fetchone():
+        return {"captures": 0, "matches": 0, "markets": 0, "selections": 0, "odds": 0}
+    matches = [row for row in (capture.get("matches") or []) if isinstance(row, dict)]
+    raw_json = json.dumps(capture, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    connection.execute(
+        """
+        INSERT INTO reference_capture_runs (
+            capture_id, schema_version, observed_at, source, page_url, display_timezone,
+            competition_count, season_count, match_count, imported_at, raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
+        """,
+        (
+            capture_id,
+            MARKET_ODDS_SCHEMA,
+            observed_at,
+            source,
+            clean_text(capture.get("page_url")),
+            clean_text(capture.get("display_timezone")),
+            len(matches),
+            utc_now(),
+            raw_json,
+        ),
+    )
+    counts = {"captures": 1, "matches": 0, "markets": 0, "selections": 0, "odds": 0}
+    default_bookmaker = clean_text(capture.get("bookmaker"))
+    for match in matches:
+        match_source = clean_text(match.get("match_source")) or source
+        source_match_id = clean_text(match.get("source_match_id"))
+        match_row = connection.execute(
+            "SELECT match_id FROM match_sources WHERE source = ? AND source_match_id = ?",
+            (match_source, source_match_id),
+        ).fetchone()
+        if not match_row:
+            raise ValueError(
+                f"Odds match {source_match_id!r} is not imported for source {match_source!r}; "
+                "import its fixture/results capture first."
+            )
+        match_id = int(match_row[0])
+        counts["matches"] += 1
+        for market in (match.get("markets") or []):
+            if not isinstance(market, dict):
+                continue
+            name = clean_text(market.get("name")) or "Unknown market"
+            period = clean_text(market.get("period")) or market_period(name) or "full_time"
+            market_type = canonical(market.get("market_type")) or classify_market(name)
+            source_market_key = clean_text(market.get("source_market_key")) or stable_hash(
+                market_type, period, name
+            )
+            connection.execute(
+                """
+                INSERT INTO match_markets (
+                    match_id, source, source_market_key, name, market_type, period,
+                    first_observed_at, last_observed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(match_id, source, source_market_key) DO UPDATE SET
+                    name = excluded.name,
+                    market_type = excluded.market_type,
+                    period = excluded.period,
+                    last_observed_at = excluded.last_observed_at
+                """,
+                (match_id, source, source_market_key, name, market_type, period, observed_at, observed_at),
+            )
+            market_id = int(
+                connection.execute(
+                    """
+                    SELECT match_market_id FROM match_markets
+                    WHERE match_id = ? AND source = ? AND source_market_key = ?
+                    """,
+                    (match_id, source, source_market_key),
+                ).fetchone()[0]
+            )
+            counts["markets"] += 1
+            for selection in (market.get("selections") or []):
+                if not isinstance(selection, dict):
+                    continue
+                selection_name = clean_text(selection.get("name")) or "Unknown selection"
+                selection_key = clean_text(selection.get("source_selection_key")) or stable_hash(
+                    selection_name, selection.get("handicap"), selection.get("line")
+                )
+                connection.execute(
+                    """
+                    INSERT INTO match_market_selections (
+                        match_market_id, source_selection_key, name, handicap, line
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(match_market_id, source_selection_key) DO UPDATE SET
+                        name = excluded.name,
+                        handicap = COALESCE(excluded.handicap, match_market_selections.handicap),
+                        line = COALESCE(excluded.line, match_market_selections.line)
+                    """,
+                    (
+                        market_id,
+                        selection_key,
+                        selection_name,
+                        optional_float(selection.get("handicap")),
+                        optional_float(selection.get("line")),
+                    ),
+                )
+                selection_id = int(
+                    connection.execute(
+                        """
+                        SELECT match_selection_id FROM match_market_selections
+                        WHERE match_market_id = ? AND source_selection_key = ?
+                        """,
+                        (market_id, selection_key),
+                    ).fetchone()[0]
+                )
+                counts["selections"] += 1
+                odds = optional_float(selection.get("odds_decimal"))
+                if odds is None or odds <= 0:
+                    continue
+                bookmaker = clean_text(selection.get("bookmaker")) or default_bookmaker
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO match_odds_observations (
+                        capture_id, match_selection_id, bookmaker, observed_at, odds_decimal, available
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        capture_id,
+                        selection_id,
+                        bookmaker,
+                        clean_text(selection.get("observed_at")) or observed_at,
+                        odds,
+                        0 if selection.get("available") is False else 1,
+                    ),
+                )
+                counts["odds"] += 1
+    return counts
+
+
+def import_market_odds_file(connection: sqlite3.Connection, path: Path) -> dict[str, int]:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    total: dict[str, int] = {}
+    with connection:
+        for capture in market_odds_capture_objects(payload):
+            merge_counts(total, import_market_odds_capture(connection, capture))
+    return total
+
+
+def team_lookup_keys(value: Any) -> set[str]:
+    base = canonical(value)
+    if not base:
+        return set()
+    tokens = base.split()
+    expanded = ["united" if token == "utd" else token for token in tokens]
+    keys = {base, " ".join(expanded)}
+    for candidate in list(keys):
+        candidate_tokens = candidate.split()
+        if candidate_tokens and candidate_tokens[0] == "fc":
+            keys.add(" ".join(candidate_tokens[1:]))
+        if candidate_tokens and candidate_tokens[-1] == "fc":
+            keys.add(" ".join(candidate_tokens[:-1]))
+    return {key for key in keys if key}
+
+
+def parse_iso_date(value: Any) -> datetime | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def reconcile_event_matches(
+    connection: sqlite3.Connection,
+    *,
+    sport: str = "football",
+    max_day_gap: int = 1,
+    confirm_exact: bool = False,
+) -> dict[str, int]:
+    if max_day_gap < 0:
+        raise ValueError("max_day_gap cannot be negative.")
+    team_map: dict[str, set[int]] = defaultdict(set)
+    for row in connection.execute("SELECT team_id, name FROM sports_teams WHERE sport = ?", (canonical(sport),)):
+        for key in team_lookup_keys(row["name"]):
+            team_map[key].add(int(row["team_id"]))
+    for row in connection.execute(
+        """
+        SELECT ta.team_id, ta.alias
+        FROM team_aliases ta JOIN sports_teams st ON st.team_id = ta.team_id
+        WHERE st.sport = ?
+        """,
+        (canonical(sport),),
+    ):
+        for key in team_lookup_keys(row["alias"]):
+            team_map[key].add(int(row["team_id"]))
+
+    counts = {"events_scanned": 0, "unmapped": 0, "candidates": 0, "confirmed": 0}
+    events = connection.execute(
+        """
+        SELECT * FROM events
+        WHERE sport = ? AND home_team <> '' AND away_team <> ''
+        ORDER BY COALESCE(scheduled_at, settled_at), event_id
+        """,
+        (canonical(sport),),
+    ).fetchall()
+    for event in events:
+        counts["events_scanned"] += 1
+        home_ids: set[int] = set()
+        away_ids: set[int] = set()
+        for key in team_lookup_keys(event["home_team"]):
+            home_ids.update(team_map.get(key, set()))
+        for key in team_lookup_keys(event["away_team"]):
+            away_ids.update(team_map.get(key, set()))
+        event_date = parse_iso_date(event["scheduled_at"] or event["settled_at"])
+        if not home_ids or not away_ids or event_date is None:
+            counts["unmapped"] += 1
+            continue
+        placeholders_home = ",".join("?" for _ in home_ids)
+        placeholders_away = ",".join("?" for _ in away_ids)
+        rows = connection.execute(
+            f"""
+            SELECT sm.match_id, sm.scheduled_at, sm.scheduled_date, sc.name AS competition
+            FROM sports_matches sm
+            LEFT JOIN sports_competitions sc ON sc.competition_id = sm.competition_id
+            WHERE sm.home_team_id IN ({placeholders_home})
+              AND sm.away_team_id IN ({placeholders_away})
+              AND COALESCE(sm.scheduled_date, substr(sm.scheduled_at, 1, 10)) IS NOT NULL
+            """,
+            (*sorted(home_ids), *sorted(away_ids)),
+        ).fetchall()
+        candidates: list[tuple[int, sqlite3.Row, bool]] = []
+        for row in rows:
+            match_date = parse_iso_date(row["scheduled_date"] or row["scheduled_at"])
+            if match_date is None:
+                continue
+            gap = abs((match_date.date() - event_date.date()).days)
+            if gap > max_day_gap:
+                continue
+            league_key = canonical(event["league"])
+            competition_key = canonical(row["competition"])
+            league_matches = bool(competition_key and competition_key in league_key)
+            candidates.append((gap, row, league_matches))
+        if not candidates:
+            counts["unmapped"] += 1
+            continue
+        candidates.sort(key=lambda item: (item[0], 0 if item[2] else 1, int(item[1]["match_id"])))
+        best_gap, _, best_league = candidates[0]
+        best = [item for item in candidates if item[0] == best_gap and item[2] == best_league]
+        for gap, row, league_matches in candidates:
+            exact = gap == 0
+            confidence = 0.99 if exact and league_matches else 0.96 if exact else 0.88
+            should_confirm = confirm_exact and exact and len(best) == 1 and int(best[0][1]["match_id"]) == int(row["match_id"])
+            connection.execute(
+                """
+                INSERT INTO event_match_links (
+                    event_id, match_id, link_method, confidence, confirmed, linked_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id, match_id) DO UPDATE SET
+                    link_method = excluded.link_method,
+                    confidence = MAX(event_match_links.confidence, excluded.confidence),
+                    confirmed = MAX(event_match_links.confirmed, excluded.confirmed),
+                    linked_at = excluded.linked_at
+                """,
+                (
+                    int(event["event_id"]),
+                    int(row["match_id"]),
+                    "exact-team-alias/date" + ("/competition" if league_matches else ""),
+                    confidence,
+                    1 if should_confirm else 0,
+                    utc_now(),
+                ),
+            )
+            counts["candidates"] += 1
+            if should_confirm:
+                counts["confirmed"] += 1
+    connection.commit()
+    return counts
+
+
+def sync_confirmed_outcomes(connection: sqlite3.Connection) -> dict[str, int]:
+    rows = connection.execute(
+        """
+        SELECT e.event_id, e.event_uid, sm.match_id, sm.status, sm.home_score, sm.away_score,
+               sm.last_observed_at, ms.source, ms.source_match_id, ms.source_url
+        FROM event_match_links eml
+        JOIN events e ON e.event_id = eml.event_id
+        JOIN sports_matches sm ON sm.match_id = eml.match_id
+        LEFT JOIN match_sources ms ON ms.match_id = sm.match_id
+        WHERE eml.confirmed = 1
+          AND sm.status = 'finished'
+          AND sm.home_score IS NOT NULL
+          AND sm.away_score IS NOT NULL
+        ORDER BY e.event_id, ms.source
+        """
+    ).fetchall()
+    counts = {"eligible": 0, "captures": 0, "outcomes": 0}
+    seen_pairs: set[tuple[int, int]] = set()
+    for row in rows:
+        pair = (int(row["event_id"]), int(row["match_id"]))
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        counts["eligible"] += 1
+        capture_id = "outcome-reconciliation:" + stable_hash(
+            row["event_uid"], row["match_id"], row["home_score"], row["away_score"], row["status"]
+        )
+        observed_at = clean_text(row["last_observed_at"]) or utc_now()
+        evidence = {
+            "schema_version": "bmg.outcome-reconciliation.v1",
+            "event_uid": row["event_uid"],
+            "match_id": row["match_id"],
+            "source": row["source"],
+            "source_match_id": row["source_match_id"],
+            "source_url": row["source_url"],
+            "home_score": row["home_score"],
+            "away_score": row["away_score"],
+        }
+        cursor = connection.execute(
+            """
+            INSERT OR IGNORE INTO capture_runs (
+                capture_id, schema_version, observed_at, source, page_url, page_hash,
+                event_count, bet_count, imported_at, raw_json
+            ) VALUES (?, 'bmg.outcome-reconciliation.v1', ?, 'confirmed-reference-link', ?, '', 1, 0, ?, ?)
+            """,
+            (
+                capture_id,
+                observed_at,
+                clean_text(row["source_url"]),
+                utc_now(),
+                json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            ),
+        )
+        counts["captures"] += max(0, cursor.rowcount)
+        winner = "draw"
+        if float(row["home_score"]) > float(row["away_score"]):
+            winner = "home"
+        elif float(row["away_score"]) > float(row["home_score"]):
+            winner = "away"
+        outcome_cursor = connection.execute(
+            """
+            INSERT OR IGNORE INTO event_outcomes (
+                capture_id, event_id, observed_at, status, home_score, away_score, winner, raw_score
+            ) VALUES (?, ?, ?, 'finished', ?, ?, ?, ?)
+            """,
+            (
+                capture_id,
+                int(row["event_id"]),
+                observed_at,
+                float(row["home_score"]),
+                float(row["away_score"]),
+                winner,
+                f"{row['home_score']}-{row['away_score']}",
+            ),
+        )
+        counts["outcomes"] += max(0, outcome_cursor.rowcount)
+        connection.execute(
+            "INSERT OR IGNORE INTO capture_events (capture_id, event_id, captured_as_complete) VALUES (?, ?, 1)",
+            (capture_id, int(row["event_id"])),
+        )
+    connection.commit()
+    return counts
+
+
+def create_research_slate(
+    connection: sqlite3.Connection,
+    capture_id: str,
+    *,
+    slate_id: str | None = None,
+    sport: str = "football",
+    capture_complete: bool = False,
+    note: str = "",
+) -> dict[str, int | str]:
+    capture = connection.execute(
+        "SELECT capture_id, source, observed_at FROM capture_runs WHERE capture_id = ?", (capture_id,)
+    ).fetchone()
+    if not capture:
+        raise ValueError(f"Unknown Torn capture_id {capture_id!r}.")
+    rows = connection.execute(
+        """
+        SELECT ce.event_id,
+               (SELECT eml.match_id FROM event_match_links eml
+                WHERE eml.event_id = ce.event_id
+                ORDER BY eml.confirmed DESC, eml.confidence DESC, eml.match_id LIMIT 1) AS match_id,
+               (SELECT eml.confirmed FROM event_match_links eml
+                WHERE eml.event_id = ce.event_id
+                ORDER BY eml.confirmed DESC, eml.confidence DESC, eml.match_id LIMIT 1) AS confirmed
+        FROM capture_events ce JOIN events e ON e.event_id = ce.event_id
+        WHERE ce.capture_id = ? AND e.sport = ?
+        ORDER BY ce.event_id
+        """,
+        (capture_id, canonical(sport)),
+    ).fetchall()
+    if not rows:
+        raise ValueError("That capture has no matching slate events.")
+    final_slate_id = clean_text(slate_id) or f"slate:{capture_id}:{canonical(sport)}"
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO research_slates (
+                slate_id, source, sport, observed_at, capture_complete, event_count, created_at, note
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(slate_id) DO UPDATE SET
+                capture_complete = MAX(research_slates.capture_complete, excluded.capture_complete),
+                event_count = excluded.event_count,
+                note = CASE WHEN excluded.note <> '' THEN excluded.note ELSE research_slates.note END
+            """,
+            (
+                final_slate_id,
+                capture["source"],
+                canonical(sport),
+                capture["observed_at"],
+                1 if capture_complete else 0,
+                len(rows),
+                utc_now(),
+                clean_text(note),
+            ),
+        )
+        for row in rows:
+            status = "unmapped" if row["match_id"] is None else "confirmed" if row["confirmed"] else "candidate"
+            connection.execute(
+                """
+                INSERT INTO research_slate_events (
+                    slate_id, event_id, capture_id, match_id, mapping_status
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(slate_id, event_id) DO UPDATE SET
+                    capture_id = excluded.capture_id,
+                    match_id = excluded.match_id,
+                    mapping_status = excluded.mapping_status
+                """,
+                (final_slate_id, int(row["event_id"]), capture_id, row["match_id"], status),
+            )
+    return {"slate_id": final_slate_id, "events": len(rows)}
+
+
+def register_model_version(connection: sqlite3.Connection, args: argparse.Namespace) -> None:
+    feature_spec = json.loads(args.feature_spec)
+    if not isinstance(feature_spec, dict):
+        raise ValueError("--feature-spec must be a JSON object.")
+    with connection:
+        if args.active:
+            connection.execute("UPDATE model_versions SET active = 0 WHERE sport = ?", (canonical(args.sport),))
+        connection.execute(
+            """
+            INSERT INTO model_versions (
+                name, version, sport, algorithm, feature_spec_json, training_cutoff,
+                created_at, active, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(name, version) DO UPDATE SET
+                algorithm = excluded.algorithm,
+                feature_spec_json = excluded.feature_spec_json,
+                training_cutoff = excluded.training_cutoff,
+                active = excluded.active,
+                notes = excluded.notes
+            """,
+            (
+                clean_text(args.name),
+                clean_text(args.version),
+                canonical(args.sport),
+                clean_text(args.algorithm),
+                json.dumps(feature_spec, sort_keys=True, separators=(",", ":")),
+                clean_text(args.training_cutoff) or None,
+                utc_now(),
+                1 if args.active else 0,
+                clean_text(args.notes),
+            ),
+        )
+    print(f"Registered model {args.name} {args.version}{' (active)' if args.active else ''}.")
+
+
 def risk_limits(bankroll: int) -> dict[str, int]:
     return {
         "reserve": math.floor(bankroll * 0.70),
@@ -1478,6 +2034,22 @@ def print_summary(connection: sqlite3.Connection) -> None:
         "match_stats",
         "h2h_snapshots",
         "h2h_snapshot_matches",
+        "capture_events",
+        "event_match_links",
+        "match_markets",
+        "match_market_selections",
+        "match_odds_observations",
+        "research_slates",
+        "research_slate_events",
+        "model_versions",
+        "team_rating_snapshots",
+        "forecast_runs",
+        "match_forecasts",
+        "decision_records",
+        "match_market_settlements",
+        "forecast_evaluations",
+        "backtest_runs",
+        "backtest_metrics",
     ]
     for table in tables:
         count = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -1538,6 +2110,170 @@ def print_sports_summary(connection: sqlite3.Connection) -> None:
     teams = int(connection.execute("SELECT COUNT(*) FROM sports_teams").fetchone()[0])
     matches = int(connection.execute("SELECT COUNT(*) FROM sports_matches").fetchone()[0])
     print(f"reference totals: competitions={competitions}, teams={teams}, matches={matches}, stats={stats}, h2h_rows={h2h}")
+
+
+def print_modeling_summary(connection: sqlite3.Connection) -> None:
+    values = {
+        "finished reference matches": connection.execute(
+            "SELECT COUNT(*) FROM sports_matches WHERE status = 'finished' AND home_score IS NOT NULL AND away_score IS NOT NULL"
+        ).fetchone()[0],
+        "reference match-stat rows": connection.execute("SELECT COUNT(*) FROM match_stats").fetchone()[0],
+        "confirmed Torn/match links": connection.execute(
+            "SELECT COUNT(*) FROM event_match_links WHERE confirmed = 1"
+        ).fetchone()[0],
+        "candidate Torn/match links": connection.execute(
+            "SELECT COUNT(*) FROM event_match_links WHERE confirmed = 0"
+        ).fetchone()[0],
+        "reconciled Torn outcomes": connection.execute(
+            "SELECT COUNT(*) FROM event_outcomes WHERE capture_id LIKE 'outcome-reconciliation:%'"
+        ).fetchone()[0],
+        "Torn odds observations": connection.execute("SELECT COUNT(*) FROM odds_observations").fetchone()[0],
+        "external odds observations": connection.execute(
+            "SELECT COUNT(*) FROM match_odds_observations"
+        ).fetchone()[0],
+        "research slates": connection.execute("SELECT COUNT(*) FROM research_slates").fetchone()[0],
+        "model versions": connection.execute("SELECT COUNT(*) FROM model_versions").fetchone()[0],
+        "team rating snapshots": connection.execute("SELECT COUNT(*) FROM team_rating_snapshots").fetchone()[0],
+        "forecasts": connection.execute("SELECT COUNT(*) FROM match_forecasts").fetchone()[0],
+        "decisions (picks and passes)": connection.execute("SELECT COUNT(*) FROM decision_records").fetchone()[0],
+        "evaluated decisions": connection.execute("SELECT COUNT(*) FROM forecast_evaluations").fetchone()[0],
+        "backtest runs": connection.execute("SELECT COUNT(*) FROM backtest_runs").fetchone()[0],
+    }
+    print("BMG modeling database coverage")
+    for label, value in values.items():
+        print(f"  {label:31} {int(value):>10,}")
+    linked_bets = int(
+        connection.execute(
+            """
+            SELECT COUNT(DISTINCT b.external_bet_id)
+            FROM bets b JOIN event_match_links eml ON eml.event_id = b.event_id
+            WHERE eml.confirmed = 1
+            """
+        ).fetchone()[0]
+    )
+    total_bets = int(connection.execute("SELECT COUNT(*) FROM bets").fetchone()[0])
+    print(f"  linked historical wagers       {linked_bets:>10,} / {total_bets:,}")
+    print("Data readiness is not model validation; forecasts still require chronological out-of-sample testing.")
+
+
+def print_reconciliation_review(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        """
+        SELECT e.source_event_id, e.title AS torn_title, e.league, e.scheduled_at AS torn_scheduled,
+               e.settled_at AS torn_settled, eml.confidence, eml.confirmed, eml.link_method,
+               sm.match_id, sm.scheduled_at, sm.scheduled_date, sm.status,
+               ht.name AS home_team, at.name AS away_team, sc.name AS competition,
+               sm.home_score, sm.away_score
+        FROM event_match_links eml
+        JOIN events e ON e.event_id = eml.event_id
+        JOIN sports_matches sm ON sm.match_id = eml.match_id
+        JOIN sports_teams ht ON ht.team_id = sm.home_team_id
+        JOIN sports_teams at ON at.team_id = sm.away_team_id
+        LEFT JOIN sports_competitions sc ON sc.competition_id = sm.competition_id
+        ORDER BY eml.confirmed DESC, eml.confidence DESC,
+                 COALESCE(sm.scheduled_at, sm.scheduled_date), e.source_event_id
+        """
+    ).fetchall()
+    if not rows:
+        print("No Torn/reference reconciliation candidates.")
+        return
+    for row in rows:
+        marker = "CONFIRMED" if row["confirmed"] else "candidate"
+        score = ""
+        if row["home_score"] is not None and row["away_score"] is not None:
+            score = f" {row['home_score']:g}-{row['away_score']:g}"
+        print(f"[{marker} {float(row['confidence']):.2f}] Torn {row['source_event_id']}: {row['torn_title']}")
+        print(
+            f"  -> match {row['match_id']}: {row['home_team']} v {row['away_team']} "
+            f"({row['competition'] or 'unknown'}, {row['scheduled_at'] or row['scheduled_date']}){score}"
+        )
+        print(f"  method={row['link_method']}; Torn time={row['torn_scheduled'] or row['torn_settled'] or 'unknown'}")
+
+
+def performance_rows(
+    connection: sqlite3.Connection, group_expression: str, sport: str | None = None
+) -> list[sqlite3.Row]:
+    sport_filter = canonical(sport) if sport else ""
+    return connection.execute(
+        f"""
+        SELECT {group_expression} AS segment,
+               COUNT(*) AS bets,
+               SUM(CASE WHEN b.status IN ('win', 'loss') THEN 1 ELSE 0 END) AS resolved,
+               SUM(CASE WHEN b.status = 'win' THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN b.status = 'loss' THEN 1 ELSE 0 END) AS losses,
+               SUM(CASE WHEN b.status = 'refund' THEN 1 ELSE 0 END) AS refunds,
+               SUM(b.stake) AS staked,
+               SUM(COALESCE(
+                   b.profit,
+                   CASE
+                       WHEN b.status = 'win' AND b.payout IS NOT NULL THEN b.payout - b.stake
+                       WHEN b.status = 'loss' THEN -b.stake
+                       WHEN b.status = 'refund' THEN 0
+                   END,
+                   0
+               )) AS net
+        FROM bets b
+        LEFT JOIN events e ON e.event_id = b.event_id
+        LEFT JOIN markets m ON m.market_id = b.market_id
+        WHERE b.status IN ('win', 'loss', 'refund')
+          AND (? = '' OR e.sport = ?)
+        GROUP BY segment
+        HAVING COUNT(*) > 0
+        ORDER BY SUM(b.stake) DESC, COUNT(*) DESC
+        """,
+        (sport_filter, sport_filter),
+    ).fetchall()
+
+
+def print_performance_section(title: str, rows: list[sqlite3.Row], limit: int = 20) -> None:
+    print(title)
+    if not rows:
+        print("  no settled bets")
+        return
+    for row in rows[:limit]:
+        resolved = int(row["resolved"] or 0)
+        wins = int(row["wins"] or 0)
+        staked = int(row["staked"] or 0)
+        net = int(row["net"] or 0)
+        win_rate = wins / resolved if resolved else 0
+        roi = net / staked if staked else 0
+        print(
+            f"  {clean_text(row['segment']) or 'unknown':38.38} "
+            f"bets={int(row['bets']):>5,} win={win_rate:>6.1%} "
+            f"staked={money(staked):>15} net={money(net):>15} ROI={roi:>7.2%}"
+        )
+
+
+def print_history_performance(connection: sqlite3.Connection, sport: str | None = None) -> None:
+    label = f" ({canonical(sport)})" if sport else ""
+    print_performance_section(
+        f"Historical settled-wager performance{label}", performance_rows(connection, "'overall'", sport), 1
+    )
+    if not sport:
+        print_performance_section(
+            "By sport", performance_rows(connection, "COALESCE(NULLIF(e.sport, ''), 'unknown')")
+        )
+    print_performance_section(
+        "By Torn market type",
+        performance_rows(connection, "COALESCE(NULLIF(m.market_type, ''), 'unknown')", sport),
+    )
+    odds_band = """
+        CASE
+            WHEN b.odds_decimal IS NULL THEN 'unknown odds'
+            WHEN b.odds_decimal < 1.25 THEN '1.00-1.24'
+            WHEN b.odds_decimal < 1.50 THEN '1.25-1.49'
+            WHEN b.odds_decimal < 2.00 THEN '1.50-1.99'
+            WHEN b.odds_decimal < 3.00 THEN '2.00-2.99'
+            WHEN b.odds_decimal < 5.00 THEN '3.00-4.99'
+            ELSE '5.00+'
+        END
+    """
+    print_performance_section("By accepted decimal-odds band", performance_rows(connection, odds_band, sport))
+    print_performance_section(
+        "Largest historical league samples",
+        performance_rows(connection, "COALESCE(NULLIF(e.league, ''), 'unknown')", sport),
+    )
+    print("Descriptive only: these segments reveal behavior and data-quality targets, not a causal betting edge.")
 
 
 def latest_market_odds(connection: sqlite3.Connection) -> Iterable[sqlite3.Row]:
@@ -1651,10 +2387,55 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reference_parser.add_argument("paths", type=Path, nargs="+")
 
+    odds_parser = subparsers.add_parser(
+        "import-odds", help="import source-neutral timestamped market-odds captures"
+    )
+    odds_parser.add_argument("paths", type=Path, nargs="+")
+
     subparsers.add_parser("summary", help="show database row counts and latest bankroll")
     subparsers.add_parser("sports-summary", help="show imported league, season, match, stats, and H2H coverage")
+    subparsers.add_parser("modeling-summary", help="show reconciliation, odds, forecast, and backtest readiness")
+    subparsers.add_parser("reconciliation-review", help="show every Torn/reference match-link candidate")
+    history_parser = subparsers.add_parser(
+        "history-performance", help="describe settled wager results by market, odds band, and league"
+    )
+    history_parser.add_argument("--sport", help="optional canonical sport filter, such as football")
     subparsers.add_parser("risk", help="show bankroll guardrails")
     subparsers.add_parser("opportunities", help="show latest mathematical market-review candidates")
+
+    reconcile_parser = subparsers.add_parser(
+        "reconcile", help="link Torn football events to imported canonical matches"
+    )
+    reconcile_parser.add_argument("--sport", default="football")
+    reconcile_parser.add_argument("--max-day-gap", type=int, default=1)
+    reconcile_parser.add_argument(
+        "--confirm-exact",
+        action="store_true",
+        help="confirm only unique exact-team, same-date matches; otherwise store review candidates",
+    )
+
+    subparsers.add_parser(
+        "sync-outcomes", help="copy scores from confirmed match links into auditable Torn outcomes"
+    )
+
+    slate_parser = subparsers.add_parser(
+        "slate", help="create/update a research slate from one Torn capture"
+    )
+    slate_parser.add_argument("capture_id")
+    slate_parser.add_argument("--slate-id")
+    slate_parser.add_argument("--sport", default="football")
+    slate_parser.add_argument("--complete", action="store_true")
+    slate_parser.add_argument("--note", default="")
+
+    model_parser = subparsers.add_parser("model-register", help="register an auditable model version")
+    model_parser.add_argument("name")
+    model_parser.add_argument("version")
+    model_parser.add_argument("--sport", default="football")
+    model_parser.add_argument("--algorithm", required=True)
+    model_parser.add_argument("--feature-spec", default="{}")
+    model_parser.add_argument("--training-cutoff")
+    model_parser.add_argument("--active", action="store_true")
+    model_parser.add_argument("--notes", default="")
 
     bankroll_parser = subparsers.add_parser("bankroll", help="record a manual/API bankroll snapshot")
     bankroll_parser.add_argument("--wallet", type=int, default=0)
@@ -1707,14 +2488,49 @@ def main(argv: list[str] | None = None) -> int:
                     "h2h_matches",
                 ]
                 print("Imported " + ", ".join(f"{key}={total.get(key, 0)}" for key in ordered))
+            elif args.command == "import-odds":
+                total = {}
+                for path in args.paths:
+                    merge_counts(total, import_market_odds_file(connection, path.resolve()))
+                ordered = ["captures", "matches", "markets", "selections", "odds"]
+                print("Imported " + ", ".join(f"{key}={total.get(key, 0)}" for key in ordered))
             elif args.command == "summary":
                 print_summary(connection)
             elif args.command == "sports-summary":
                 print_sports_summary(connection)
+            elif args.command == "modeling-summary":
+                print_modeling_summary(connection)
+            elif args.command == "reconciliation-review":
+                print_reconciliation_review(connection)
+            elif args.command == "history-performance":
+                print_history_performance(connection, args.sport)
             elif args.command == "risk":
                 print_risk(connection)
             elif args.command == "opportunities":
                 print_opportunities(connection)
+            elif args.command == "reconcile":
+                result = reconcile_event_matches(
+                    connection,
+                    sport=args.sport,
+                    max_day_gap=args.max_day_gap,
+                    confirm_exact=args.confirm_exact,
+                )
+                print("Reconciled " + ", ".join(f"{key}={value}" for key, value in result.items()))
+            elif args.command == "sync-outcomes":
+                result = sync_confirmed_outcomes(connection)
+                print("Synced " + ", ".join(f"{key}={value}" for key, value in result.items()))
+            elif args.command == "slate":
+                result = create_research_slate(
+                    connection,
+                    args.capture_id,
+                    slate_id=args.slate_id,
+                    sport=args.sport,
+                    capture_complete=args.complete,
+                    note=args.note,
+                )
+                print(f"Recorded {result['slate_id']} with {result['events']} events.")
+            elif args.command == "model-register":
+                register_model_version(connection, args)
             elif args.command == "bankroll":
                 add_bankroll_snapshot(connection, args)
         return 0
