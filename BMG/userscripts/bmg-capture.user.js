@@ -313,7 +313,9 @@
         if (!isBookiePage() || /^#\/your-bets(?:\/|$)/i.test(location.hash)) {
             throw new Error('Open a Bookie event first.');
         }
-        const cards = expandedEventCards();
+        const expandedCards = expandedEventCards();
+        const activeCards = expandedCards.filter(card => card.classList.contains('active'));
+        const cards = (activeCards.length ? activeCards : expandedCards).slice(0, 1);
         if (!cards.length) throw new Error('Manually open a Bookie event first.');
         const controls = cards.flatMap(card => additionalMarketControls(card).slice(0, 1));
         if (!controls.length) {
