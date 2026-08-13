@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     value TEXT NOT NULL
 );
 
-INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', '1');
+INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', '2');
 
 CREATE TABLE IF NOT EXISTS capture_runs (
     capture_id TEXT PRIMARY KEY,
@@ -30,10 +30,12 @@ CREATE TABLE IF NOT EXISTS events (
     home_team TEXT NOT NULL DEFAULT '',
     away_team TEXT NOT NULL DEFAULT '',
     scheduled_at TEXT,
+    settled_at TEXT,
     visible_status TEXT NOT NULL DEFAULT '',
     first_observed_at TEXT NOT NULL,
     last_observed_at TEXT NOT NULL,
-    raw_state_text TEXT NOT NULL DEFAULT ''
+    raw_state_text TEXT NOT NULL DEFAULT '',
+    raw_finished_text TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_schedule ON events (scheduled_at, sport);
@@ -117,13 +119,30 @@ CREATE TABLE IF NOT EXISTS bets (
     odds_decimal REAL CHECK (odds_decimal IS NULL OR odds_decimal > 0),
     payout INTEGER CHECK (payout IS NULL OR payout >= 0),
     profit INTEGER,
+    settled_at TEXT,
     first_observed_at TEXT NOT NULL,
     last_observed_at TEXT NOT NULL,
-    raw_text TEXT NOT NULL DEFAULT ''
+    raw_text TEXT NOT NULL DEFAULT '',
+    raw_selection_text TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_bets_event_status ON bets (event_id, status);
 CREATE INDEX IF NOT EXISTS idx_bets_last_seen ON bets (last_observed_at DESC);
+CREATE TABLE IF NOT EXISTS history_event_details (
+    detail_id TEXT PRIMARY KEY,
+    source_event_id TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    sport TEXT NOT NULL DEFAULT 'unknown',
+    title TEXT NOT NULL DEFAULT '',
+    market_count INTEGER NOT NULL DEFAULT 0 CHECK (market_count >= 0),
+    selection_count INTEGER NOT NULL DEFAULT 0 CHECK (selection_count >= 0),
+    additional_expansion_passes INTEGER NOT NULL DEFAULT 0 CHECK (additional_expansion_passes >= 0),
+    additional_controls_remaining INTEGER NOT NULL DEFAULT 0 CHECK (additional_controls_remaining >= 0),
+    raw_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_history_details_event
+    ON history_event_details (source_event_id, captured_at DESC);
 
 CREATE TABLE IF NOT EXISTS bankroll_snapshots (
     bankroll_snapshot_id INTEGER PRIMARY KEY,
@@ -139,4 +158,4 @@ CREATE TABLE IF NOT EXISTS bankroll_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_bankroll_time ON bankroll_snapshots (observed_at DESC);
 
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;

@@ -4,7 +4,9 @@ BMG is a local-first research system for Torn Bookie. It records the odds and
 outcomes you are allowed to see, keeps an auditable history in SQLite, and adds
 bankroll guardrails before any pick is considered.
 
-The current research phase is intentionally scoped to **football/soccer only**.
+The current odds research and future betting phase is intentionally scoped to
+**football/soccer only**. Historical My Bets archival captures every sport so
+the lifetime record can be reconciled exactly and retained without data loss.
 
 The project starts with a betting bankroll of **$57,365,830**. It does not place
 bets, click through games, refresh Torn pages, or exploit stale/misleading event
@@ -30,6 +32,12 @@ state. The first milestone is trustworthy data.
    python .\BMG\src\bmg.py summary
    python .\BMG\src\bmg.py risk
    python .\BMG\src\bmg.py opportunities
+   ```
+
+   Expanded historical dropdown archives use NDJSON and import separately:
+
+   ```powershell
+   python .\BMG\src\bmg.py import-details .\BMG\exports\history-*\expanded-events.ndjson
    ```
 
 For a smoke test without Torn data:

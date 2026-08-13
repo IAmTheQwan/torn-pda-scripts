@@ -9,6 +9,11 @@
 - `events[]` — fixtures and every already-loaded market row.
 - `bets[]` — visible Pending/Won/Lost/Refunded My Bets entries.
 
+The full-history My Bets export retains all sports, raw row attributes,
+settlement timestamp text, and every individual wager even when Torn groups
+several wagers under one game row. Expanded dropdowns are stored as newline-
+delimited `bmg.history-event-detail.v1` records so collection is resumable.
+
 An event contains source ID, sport, title, league/competition, participants,
 scheduled time, visible state/score, markets, raw state text, a capture-complete
 flag, and the visible count of additional options remaining. A market contains
@@ -27,6 +32,7 @@ suspension state.
 - `odds_observations` — append-only price/status at capture time.
 - `event_outcomes` — visible or provider-resolved event scores/status.
 - `bets` — stake, accepted price, state, payout, and profit.
+- `history_event_details` — immutable raw expanded-dropdown records and completeness counts.
 - `bankroll_snapshots` — wallet, Bookie, stocks, other liquid value, and total.
 
 Money is stored as whole Torn dollars (`INTEGER`). Decimal odds use `REAL` and are

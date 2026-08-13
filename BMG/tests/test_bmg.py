@@ -166,6 +166,57 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertEqual(4, self.count("selections"))
         self.assertEqual(4, self.count("odds_observations"))
 
+    def test_expanded_history_detail_is_raw_and_relational(self) -> None:
+        detail = {
+            "schema_version": "bmg.history-event-detail.v1",
+            "source_event_id": "historic-9001",
+            "captured_at": "2026-08-13T05:30:00Z",
+            "sport": "Football",
+            "title": "Old Home v Old Away - Archive League",
+            "league": "Archive League",
+            "home_team": "Old Home",
+            "away_team": "Old Away",
+            "settled_at": "2025-01-02T03:04:05Z",
+            "finished_text": "Finished at 03:04:05 - 02/01/2025",
+            "additional_expansion_passes": 1,
+            "additional_controls_remaining": 0,
+            "markets": [
+                {
+                    "name": "Over/Under 2.5 Total Goals Ordinary time",
+                    "selections": [
+                        {
+                            "name": "Over 2.5 Total Goals",
+                            "raw_result_text": "Over 2.5 Total Goals+$5m",
+                            "odds_decimal": 1.91,
+                            "available": True,
+                            "suspended": False,
+                        },
+                        {
+                            "name": "Under 2.5 Total Goals",
+                            "raw_result_text": "Under 2.5 Total Goals",
+                            "odds_decimal": 1.88,
+                            "available": True,
+                            "suspended": False,
+                        },
+                    ],
+                }
+            ],
+        }
+        first = bmg.import_history_detail(self.connection, detail)
+        second = bmg.import_history_detail(self.connection, detail)
+        self.assertEqual(1, first["details"])
+        self.assertEqual(0, second["details"])
+        self.assertEqual(1, self.count("history_event_details"))
+        self.assertEqual(1, self.count("events"))
+        self.assertEqual(1, self.count("markets"))
+        self.assertEqual(2, self.count("selections"))
+        self.assertEqual(2, self.count("odds_observations"))
+        event = self.connection.execute("SELECT * FROM events").fetchone()
+        self.assertEqual("2025-01-02T03:04:05Z", event["settled_at"])
+        market = self.connection.execute("SELECT * FROM markets").fetchone()
+        self.assertEqual("total", market["market_type"])
+        self.assertEqual("Ordinary Time", market["period"])
+
 
 if __name__ == "__main__":
     unittest.main()

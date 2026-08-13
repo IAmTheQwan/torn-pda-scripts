@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import sqlite3
 import sys
 from collections import defaultdict
@@ -27,6 +28,21 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def parse_torn_finished_at(value: Any) -> tuple[str | None, str]:
+    text = clean_text(value)
+    match = re.search(
+        r"Finished at\s+(\d{1,2}):(\d{2}):(\d{2})\s+-\s+(\d{1,2})/(\d{1,2})/(\d{4})",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None, ""
+    hour, minute, second, day, month, year = (int(part) for part in match.groups())
+    settled_at = datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc)
+    finished_text = match.group(0)
+    return settled_at.isoformat().replace("+00:00", "Z"), finished_text
+
+
 def clean_text(value: Any) -> str:
     return " ".join(str(value or "").split())
 
@@ -35,6 +51,47 @@ def canonical(value: Any) -> str:
     return " ".join(
         "".join(character.lower() if character.isalnum() else " " for character in clean_text(value)).split()
     )
+
+
+def classify_market(value: Any) -> str:
+    name = canonical(value)
+    if "3 way" in name:
+        return "three_way"
+    if "asian handicap" in name:
+        return "asian_handicap"
+    if "handicap" in name or "spread" in name:
+        return "spread"
+    if any(term in name for term in ("over under", "total goals", "total points", "total games", "total sets", "total rounds")):
+        return "total"
+    if "both teams" in name and "score" in name:
+        return "both_teams_to_score"
+    if "correct score" in name:
+        return "correct_score"
+    if any(term in name for term in ("moneyline", "match winner", "to win", "winner", "2 way")):
+        return "moneyline"
+    return "other"
+
+
+def market_period(value: Any) -> str:
+    text = clean_text(value)
+    lowered = text.lower()
+    for period in (
+        "ordinary time",
+        "full time",
+        "full event",
+        "full match",
+        "first half",
+        "second half",
+        "first period",
+        "second period",
+        "third period",
+        "first set",
+        "second set",
+        "third set",
+    ):
+        if period in lowered:
+            return period.title()
+    return ""
 
 
 def stable_hash(*parts: Any) -> str:
@@ -70,6 +127,23 @@ def open_database(path: Path) -> sqlite3.Connection:
 
 def apply_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
+    migrations = {
+        "events": {
+            "settled_at": "TEXT",
+            "raw_finished_text": "TEXT NOT NULL DEFAULT ''",
+        },
+        "bets": {
+            "settled_at": "TEXT",
+            "raw_selection_text": "TEXT NOT NULL DEFAULT ''",
+        },
+    }
+    for table, columns in migrations.items():
+        existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        for column, declaration in columns.items():
+            if column not in existing:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_bets_settled_at ON bets (settled_at DESC)")
+    connection.execute("PRAGMA user_version = 2")
 
 
 def latest_bankroll(connection: sqlite3.Connection) -> sqlite3.Row | None:
@@ -137,18 +211,22 @@ def upsert_event(
         "home_team": home_team,
         "away_team": away_team,
         "scheduled_at": clean_text(event.get("scheduled_at")) or None,
+        "settled_at": clean_text(event.get("settled_at")) or None,
         "visible_status": clean_text(event.get("visible_status") or event.get("status")),
         "observed_at": observed_at,
         "raw_state_text": clean_text(event.get("raw_state_text")),
+        "raw_finished_text": clean_text(event.get("raw_finished_text") or event.get("finished_text")),
     }
     connection.execute(
         """
         INSERT INTO events (
             event_uid, source_event_id, sport, title, league, home_team, away_team,
-            scheduled_at, visible_status, first_observed_at, last_observed_at, raw_state_text
+            scheduled_at, settled_at, visible_status, first_observed_at, last_observed_at,
+            raw_state_text, raw_finished_text
         ) VALUES (
             :event_uid, :source_event_id, :sport, :title, :league, :home_team, :away_team,
-            :scheduled_at, :visible_status, :observed_at, :observed_at, :raw_state_text
+            :scheduled_at, :settled_at, :visible_status, :observed_at, :observed_at,
+            :raw_state_text, :raw_finished_text
         )
         ON CONFLICT(event_uid) DO UPDATE SET
             source_event_id = CASE WHEN excluded.source_event_id <> '' THEN excluded.source_event_id ELSE events.source_event_id END,
@@ -158,9 +236,11 @@ def upsert_event(
             home_team = CASE WHEN excluded.home_team <> '' THEN excluded.home_team ELSE events.home_team END,
             away_team = CASE WHEN excluded.away_team <> '' THEN excluded.away_team ELSE events.away_team END,
             scheduled_at = COALESCE(excluded.scheduled_at, events.scheduled_at),
+            settled_at = COALESCE(excluded.settled_at, events.settled_at),
             visible_status = CASE WHEN excluded.visible_status <> '' THEN excluded.visible_status ELSE events.visible_status END,
             last_observed_at = excluded.last_observed_at,
-            raw_state_text = CASE WHEN excluded.raw_state_text <> '' THEN excluded.raw_state_text ELSE events.raw_state_text END
+            raw_state_text = CASE WHEN excluded.raw_state_text <> '' THEN excluded.raw_state_text ELSE events.raw_state_text END,
+            raw_finished_text = CASE WHEN excluded.raw_finished_text <> '' THEN excluded.raw_finished_text ELSE events.raw_finished_text END
         """,
         values,
     )
@@ -377,6 +457,8 @@ def import_bet(
         "home_team": bet.get("home_team"),
         "away_team": bet.get("away_team"),
         "visible_status": bet.get("status"),
+        "settled_at": bet.get("settled_at"),
+        "finished_text": bet.get("finished_text"),
     }
     event_id = upsert_event(connection, event_stub, observed_at)
     market = {
@@ -407,7 +489,8 @@ def import_bet(
         INSERT INTO bets (
             external_bet_id, capture_id, event_id, market_id, selection_id, status,
             stake, odds_decimal, payout, profit, first_observed_at, last_observed_at, raw_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            , settled_at, raw_selection_text
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(external_bet_id) DO UPDATE SET
             capture_id = excluded.capture_id,
             event_id = excluded.event_id,
@@ -418,8 +501,10 @@ def import_bet(
             odds_decimal = COALESCE(excluded.odds_decimal, bets.odds_decimal),
             payout = COALESCE(excluded.payout, bets.payout),
             profit = COALESCE(excluded.profit, bets.profit),
+            settled_at = COALESCE(excluded.settled_at, bets.settled_at),
             last_observed_at = excluded.last_observed_at,
-            raw_text = CASE WHEN excluded.raw_text <> '' THEN excluded.raw_text ELSE bets.raw_text END
+            raw_text = CASE WHEN excluded.raw_text <> '' THEN excluded.raw_text ELSE bets.raw_text END,
+            raw_selection_text = CASE WHEN excluded.raw_selection_text <> '' THEN excluded.raw_selection_text ELSE bets.raw_selection_text END
         """,
         (
             external_id,
@@ -435,6 +520,8 @@ def import_bet(
             observed_at,
             observed_at,
             clean_text(bet.get("raw_text")),
+            clean_text(bet.get("settled_at")) or None,
+            clean_text(bet.get("raw_selection_name") or bet.get("selection_name")),
         ),
     )
 
@@ -502,6 +589,165 @@ def import_file(connection: sqlite3.Connection, path: Path) -> dict[str, int]:
     return total
 
 
+def detail_market(market: dict[str, Any], detail_complete: bool) -> dict[str, Any]:
+    market_name = clean_text(market.get("name")) or "Unknown market"
+    selections = []
+    for selection in market.get("selections") or []:
+        if not isinstance(selection, dict):
+            continue
+        selections.append(
+            {
+                "name": clean_text(selection.get("name")) or "Unknown selection",
+                "raw_name": clean_text(selection.get("raw_result_text") or selection.get("name")),
+                "odds_decimal": optional_float(selection.get("odds_decimal")),
+                "suspended": bool(selection.get("suspended")),
+                "available": selection.get("available") is not False,
+            }
+        )
+    return {
+        "name": market_name,
+        "market_type": canonical(market.get("market_type")) or classify_market(market_name),
+        "period": clean_text(market.get("period")) or market_period(market_name),
+        "captured_as_complete": detail_complete,
+        "selections": selections,
+    }
+
+
+def import_history_detail(connection: sqlite3.Connection, detail: dict[str, Any]) -> dict[str, int]:
+    source_event_id = clean_text(detail.get("source_event_id"))
+    captured_at = clean_text(detail.get("captured_at"))
+    if not source_event_id or not captured_at:
+        raise ValueError("Every history detail needs source_event_id and captured_at.")
+    raw_json = json.dumps(detail, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    detail_id = "history-detail:" + stable_hash(source_event_id, captured_at, raw_json)
+    settled_at = clean_text(detail.get("settled_at")) or None
+    finished_text = clean_text(detail.get("finished_text"))
+    parsed_settled_at, parsed_finished_text = parse_torn_finished_at(
+        " ".join(
+            [
+                finished_text,
+                clean_text(detail.get("raw_text")),
+                " ".join(clean_text(value) for value in (detail.get("titles") or [])),
+            ]
+        )
+    )
+    settled_at = settled_at or parsed_settled_at
+    finished_text = finished_text or parsed_finished_text
+
+    def backfill_settlement() -> None:
+        if not settled_at:
+            return
+        event_row = connection.execute(
+            "SELECT event_id FROM events WHERE event_uid = ?", (f"torn:{source_event_id.lower()}",)
+        ).fetchone()
+        if not event_row:
+            return
+        event_id = int(event_row[0])
+        connection.execute(
+            """
+            UPDATE events
+            SET settled_at = COALESCE(settled_at, ?),
+                raw_finished_text = CASE WHEN raw_finished_text = '' THEN ? ELSE raw_finished_text END
+            WHERE event_id = ?
+            """,
+            (settled_at, finished_text, event_id),
+        )
+        connection.execute(
+            "UPDATE bets SET settled_at = COALESCE(settled_at, ?) WHERE event_id = ?",
+            (settled_at, event_id),
+        )
+
+    if connection.execute(
+        "SELECT 1 FROM history_event_details WHERE detail_id = ?", (detail_id,)
+    ).fetchone():
+        backfill_settlement()
+        return {"captures": 0, "events": 0, "markets": 0, "selections": 0, "odds": 0, "outcomes": 0, "bets": 0, "details": 0}
+
+    markets = [market for market in (detail.get("markets") or []) if isinstance(market, dict)]
+    selection_count = sum(
+        len([selection for selection in (market.get("selections") or []) if isinstance(selection, dict)])
+        for market in markets
+    )
+    expansion_passes = max(0, whole_dollars(detail.get("additional_expansion_passes")))
+    controls_remaining = max(0, whole_dollars(detail.get("additional_controls_remaining")))
+    detail_complete = controls_remaining == 0
+    connection.execute(
+        """
+        INSERT INTO history_event_details (
+            detail_id, source_event_id, captured_at, sport, title, market_count,
+            selection_count, additional_expansion_passes, additional_controls_remaining, raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            detail_id,
+            source_event_id,
+            captured_at,
+            canonical(detail.get("sport")) or "unknown",
+            clean_text(detail.get("title")),
+            len(markets),
+            selection_count,
+            expansion_passes,
+            controls_remaining,
+            raw_json,
+        ),
+    )
+    capture = {
+        "schema_version": CAPTURE_SCHEMA,
+        "capture_id": detail_id,
+        "observed_at": captured_at,
+        "source": "torn-visible-mybets-expanded-dom",
+        "page_url": "https://www.torn.com/page.php?sid=bookie",
+        "page_hash": f"#/your-bets/{source_event_id}",
+        "events": [
+            {
+                "source_event_id": source_event_id,
+                "sport": detail.get("sport"),
+                "title": detail.get("title"),
+                "league": detail.get("league"),
+                "home_team": detail.get("home_team"),
+                "away_team": detail.get("away_team"),
+                "settled_at": settled_at,
+                "finished_text": finished_text,
+                "visible_status": "finished",
+                "captured_as_complete": detail_complete,
+                "markets": [detail_market(market, detail_complete) for market in markets],
+            }
+        ],
+        "bets": [],
+    }
+    counts = import_capture(connection, capture)
+    backfill_settlement()
+    counts["details"] = 1
+    return counts
+
+
+def import_history_details_file(connection: sqlite3.Connection, path: Path) -> dict[str, int]:
+    latest_by_event: dict[str, dict[str, Any]] = {}
+
+    def detail_rank(value: dict[str, Any]) -> tuple[int, str]:
+        markets = value.get("markets") if isinstance(value.get("markets"), list) else []
+        complete = bool(markets) and whole_dollars(value.get("additional_controls_remaining")) == 0
+        return (1 if complete else 0, clean_text(value.get("captured_at")))
+
+    for line_number, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), start=1):
+        if not line.strip():
+            continue
+        detail = json.loads(line)
+        if not isinstance(detail, dict):
+            raise ValueError(f"History detail line {line_number} is not a JSON object.")
+        source_event_id = clean_text(detail.get("source_event_id"))
+        if not source_event_id:
+            raise ValueError(f"History detail line {line_number} has no source_event_id.")
+        current = latest_by_event.get(source_event_id)
+        if current is None or detail_rank(detail) >= detail_rank(current):
+            latest_by_event[source_event_id] = detail
+    total: dict[str, int] = {}
+    with connection:
+        for detail in latest_by_event.values():
+            merge_counts(total, import_history_detail(connection, detail))
+    return total
+
+
 def risk_limits(bankroll: int) -> dict[str, int]:
     return {
         "reserve": math.floor(bankroll * 0.70),
@@ -542,6 +788,7 @@ def print_summary(connection: sqlite3.Connection) -> None:
         "odds_observations",
         "event_outcomes",
         "bets",
+        "history_event_details",
         "bankroll_snapshots",
     ]
     for table in tables:
@@ -655,6 +902,9 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser = subparsers.add_parser("import", help="import one or more userscript JSON exports")
     import_parser.add_argument("paths", type=Path, nargs="+")
 
+    detail_parser = subparsers.add_parser("import-details", help="import expanded My Bets NDJSON details")
+    detail_parser.add_argument("paths", type=Path, nargs="+")
+
     subparsers.add_parser("summary", help="show database row counts and latest bankroll")
     subparsers.add_parser("risk", help="show bankroll guardrails")
     subparsers.add_parser("opportunities", help="show latest mathematical market-review candidates")
@@ -688,6 +938,12 @@ def main(argv: list[str] | None = None) -> int:
                 for path in args.paths:
                     merge_counts(total, import_file(connection, path.resolve()))
                 ordered = ["captures", "events", "markets", "selections", "odds", "outcomes", "bets"]
+                print("Imported " + ", ".join(f"{key}={total.get(key, 0)}" for key in ordered))
+            elif args.command == "import-details":
+                total = {}
+                for path in args.paths:
+                    merge_counts(total, import_history_details_file(connection, path.resolve()))
+                ordered = ["details", "captures", "events", "markets", "selections", "odds"]
                 print("Imported " + ", ".join(f"{key}={total.get(key, 0)}" for key in ordered))
             elif args.command == "summary":
                 print_summary(connection)

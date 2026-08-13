@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         BMG Visible Bookie Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.3.2
-// @description  Manually capture already-loaded Torn Bookie odds and My Bets outcomes for local BMG analysis
+// @version      0.3.3
+// @description  Manually capture Torn football odds and all-sport My Bets outcomes for local BMG analysis
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
 // @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
@@ -464,15 +464,14 @@
             const gameId = String(link.getAttribute('href') || '').match(/#\/your-bets\/([^/?#]+)/i)?.[1] || '';
             if (!gameId) return;
             const sport = canonical(link.closest('li')?.querySelector('li.game')?.getAttribute('title')) || 'unknown';
-            if (FOOTBALL_ONLY && sport !== 'football') return;
             const fixture = fixtureForMyBet(link);
-            const groups = titleValuesForMyBet(link).map(value => {
+            const wagerParts = [...new Set(titleValuesForMyBet(link).flatMap(value => {
                 return String(value).replace(/<br\s*\/?>/gi, '\n')
                     .split(/\n(?=(?:Pending|Won|Lost|Refunded)\s)/i)
-                    .map(parseMyBetPart)
-                    .filter(Boolean);
-            }).filter(group => group.length);
-            const parsedBets = groups.sort((left, right) => right.length - left.length)[0] || [];
+                    .map(cleanText)
+                    .filter(part => /^(?:Pending|Won|Lost|Refunded)\b/i.test(part));
+            }))];
+            const parsedBets = wagerParts.map(parseMyBetPart).filter(Boolean);
             parsedBets.forEach(bet => {
                     const handicapMatch = bet.selection_name.match(/\(\s*([+-]?\d+(?:[.,]\d+)?)\s*\)\s*$/);
                     const rawSelectionName = bet.selection_name;
@@ -584,8 +583,8 @@
         panel.id = PANEL_ID;
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:250px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:13px;margin-bottom:5px">BMG Capture v0.3.2</div>
-            <div style="color:#bbb;font-size:10px;line-height:1.35;margin-bottom:8px">Football only. Click a football game yourself; BMG expands and captures it. It never opens the next game or places a bet.</div>
+            <div style="font-weight:800;font-size:13px;margin-bottom:5px">BMG Capture v0.3.3</div>
+            <div style="color:#bbb;font-size:10px;line-height:1.35;margin-bottom:8px">Football odds only; My Bets captures every sport. Click a football game yourself and BMG expands it. It never opens the next game or places a bet.</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
                 <button type="button" data-action="expand-capture">Expand + capture</button>
                 <button type="button" data-action="capture">Capture expanded</button>
