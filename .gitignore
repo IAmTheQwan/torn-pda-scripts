@@ -2,3 +2,13 @@
 *.suo
 *.user
 *.sqlite
+BMG/.env
+BMG/data/*
+!BMG/data/.gitkeep
+BMG/exports/*
+!BMG/exports/.gitkeep
+BMG/**/*.sqlite-*
+BMG/**/*.db
+BMG/**/*.db-*
+BMG/__pycache__/
+BMG/**/__pycache__/

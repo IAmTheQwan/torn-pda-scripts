@@ -1,0 +1,170 @@
+{
+  "schema_version": "bmg.export.v1",
+  "generated_at": "2026-08-12T13:01:00Z",
+  "captures": [
+    {
+      "schema_version": "bmg.capture.v1",
+      "capture_id": "00000000-0000-4000-8000-000000000001",
+      "observed_at": "2026-08-12T12:00:00Z",
+      "source": "torn-visible-bookie-dom",
+      "page_url": "https://www.torn.com/page.php?sid=bookie",
+      "page_hash": "#/football/9001",
+      "events": [
+        {
+          "source_event_id": "9001",
+          "sport": "football",
+          "title": "North City v South United - Test League",
+          "league": "Test League",
+          "home_team": "North City",
+          "away_team": "South United",
+          "participants": ["North City", "South United"],
+          "scheduled_at": "2026-08-13T18:00:00.000Z",
+          "visible_status": "Due to start",
+          "raw_state_text": "Due to start at 18:00 - 13/08/2026 TCT",
+          "outcome": {"status": "Due to start", "home_score": null, "away_score": null, "winner": "", "raw_score": ""},
+          "markets": [
+            {
+              "market_key": "3 way ordinary time|ordinary time",
+              "name": "3-Way Ordinary time",
+              "market_type": "three_way",
+              "period": "Ordinary time",
+              "captured_as_complete": true,
+              "selections": [
+                {"selection_key": "north city|h:|l:", "name": "North City", "raw_name": "North City", "handicap": null, "line": null, "odds_decimal": 2.1, "suspended": false, "available": true},
+                {"selection_key": "draw|h:|l:", "name": "Draw", "raw_name": "Draw", "handicap": null, "line": null, "odds_decimal": 3.2, "suspended": false, "available": true},
+                {"selection_key": "south united|h:|l:", "name": "South United", "raw_name": "South United", "handicap": null, "line": null, "odds_decimal": 3.4, "suspended": false, "available": true}
+              ]
+            }
+          ]
+        },
+        {
+          "source_event_id": "9002",
+          "sport": "tennis",
+          "title": "Alex Alpha v Ben Beta - Test Open",
+          "league": "Test Open",
+          "home_team": "Alex Alpha",
+          "away_team": "Ben Beta",
+          "participants": ["Alex Alpha", "Ben Beta"],
+          "scheduled_at": "2026-08-13T19:00:00.000Z",
+          "visible_status": "Due to start",
+          "raw_state_text": "Due to start at 19:00 - 13/08/2026 TCT",
+          "markets": [
+            {
+              "market_key": "match winner|full match",
+              "name": "Match Winner Full match",
+              "market_type": "moneyline",
+              "period": "Full match",
+              "captured_as_complete": true,
+              "selections": [
+                {"selection_key": "alex alpha|h:|l:", "name": "Alex Alpha", "raw_name": "Alex Alpha", "handicap": null, "line": null, "odds_decimal": 2.1, "suspended": false, "available": true},
+                {"selection_key": "ben beta|h:|l:", "name": "Ben Beta", "raw_name": "Ben Beta", "handicap": null, "line": null, "odds_decimal": 2.1, "suspended": false, "available": true}
+              ]
+            }
+          ]
+        }
+      ],
+      "bets": [
+        {
+          "external_bet_id": "torn-mybets:test-bet-1",
+          "source_event_id": "9001",
+          "sport": "football",
+          "event_title": "North City v South United - Test League",
+          "league": "Test League",
+          "home_team": "North City",
+          "away_team": "South United",
+          "status": "pending",
+          "stake": 100000,
+          "odds_decimal": 2.1,
+          "selection_name": "North City",
+          "market_name": "3-Way Ordinary time",
+          "market_type": "three_way",
+          "period": "Ordinary time",
+          "payout": null,
+          "profit": null,
+          "raw_text": "Pending sanitized test bet"
+        }
+      ]
+    },
+    {
+      "schema_version": "bmg.capture.v1",
+      "capture_id": "00000000-0000-4000-8000-000000000002",
+      "observed_at": "2026-08-12T13:00:00Z",
+      "source": "torn-visible-bookie-dom",
+      "page_url": "https://www.torn.com/page.php?sid=bookie",
+      "page_hash": "#/football/9001",
+      "events": [
+        {
+          "source_event_id": "9001",
+          "sport": "football",
+          "title": "North City v South United - Test League",
+          "league": "Test League",
+          "home_team": "North City",
+          "away_team": "South United",
+          "scheduled_at": "2026-08-13T18:00:00.000Z",
+          "visible_status": "Finished",
+          "raw_state_text": "Finished",
+          "outcome": {"status": "Finished", "home_score": 2, "away_score": 1, "winner": "home", "raw_score": "2 - 1"},
+          "markets": [
+            {
+              "market_key": "3 way ordinary time|ordinary time",
+              "name": "3-Way Ordinary time",
+              "market_type": "three_way",
+              "period": "Ordinary time",
+              "captured_as_complete": true,
+              "selections": [
+                {"selection_key": "north city|h:|l:", "name": "North City", "raw_name": "North City", "odds_decimal": 2.2, "suspended": false, "available": true},
+                {"selection_key": "draw|h:|l:", "name": "Draw", "raw_name": "Draw", "odds_decimal": 3.1, "suspended": false, "available": true},
+                {"selection_key": "south united|h:|l:", "name": "South United", "raw_name": "South United", "odds_decimal": 3.25, "suspended": false, "available": true}
+              ]
+            }
+          ]
+        },
+        {
+          "source_event_id": "9002",
+          "sport": "tennis",
+          "title": "Alex Alpha v Ben Beta - Test Open",
+          "league": "Test Open",
+          "home_team": "Alex Alpha",
+          "away_team": "Ben Beta",
+          "scheduled_at": "2026-08-13T19:00:00.000Z",
+          "visible_status": "Due to start",
+          "raw_state_text": "Due to start at 19:00 - 13/08/2026 TCT",
+          "markets": [
+            {
+              "market_key": "match winner|full match",
+              "name": "Match Winner Full match",
+              "market_type": "moneyline",
+              "period": "Full match",
+              "captured_as_complete": true,
+              "selections": [
+                {"selection_key": "alex alpha|h:|l:", "name": "Alex Alpha", "raw_name": "Alex Alpha", "odds_decimal": 2.08, "suspended": false, "available": true},
+                {"selection_key": "ben beta|h:|l:", "name": "Ben Beta", "raw_name": "Ben Beta", "odds_decimal": 2.12, "suspended": false, "available": true}
+              ]
+            }
+          ]
+        }
+      ],
+      "bets": [
+        {
+          "external_bet_id": "torn-mybets:test-bet-1",
+          "source_event_id": "9001",
+          "sport": "football",
+          "event_title": "North City v South United - Test League",
+          "league": "Test League",
+          "home_team": "North City",
+          "away_team": "South United",
+          "status": "win",
+          "stake": 100000,
+          "odds_decimal": 2.1,
+          "selection_name": "North City",
+          "market_name": "3-Way Ordinary time",
+          "market_type": "three_way",
+          "period": "Ordinary time",
+          "payout": 210000,
+          "profit": 110000,
+          "raw_text": "Won sanitized test bet"
+        }
+      ]
+    }
+  ]
+}
