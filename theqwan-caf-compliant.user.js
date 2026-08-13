@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.26.0
+// @version      1.26.1
 // @description  Foreground-only Auction House, Item Market, and inventory history with bonus filters and local snapshot tools
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -2419,8 +2419,15 @@
         image.alt = item.name;
         article.querySelector(".caf-clean-inventory-image").appendChild(image);
       }
-      article.querySelector(".caf-clean-inventory-history-shell").addEventListener("toggle", async event => {
-        if (event.currentTarget.open) await toggleInventoryHistory(item, article);
+      const historyShell = article.querySelector(".caf-clean-inventory-history-shell");
+      const historySummary = article.querySelector(".caf-clean-inventory-history");
+      historySummary.addEventListener("click", () => {
+        // Some Torn PDA webviews apply the native <details> open state but do
+        // not dispatch its toggle event. Start the lookup from the trusted tap.
+        if (!historyShell.open) void toggleInventoryHistory(item, article);
+      });
+      historyShell.addEventListener("toggle", event => {
+        if (event.currentTarget.open) void toggleInventoryHistory(item, article);
       });
       list.appendChild(article);
     });
