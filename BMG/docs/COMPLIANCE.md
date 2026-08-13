@@ -14,6 +14,8 @@ Last verified against official sources: 2026-08-13.
 
 - Process Torn API data through documented endpoints and access levels.
 - Parse data already loaded on the Torn page the player is actively viewing.
+- From an explicit foreground click, activate Torn's additional-options control
+  for the currently open event.
 - Save and analyze local snapshots after a direct Capture action.
 - Query independent sports data providers under their terms.
 - Calculate implied probabilities, expected value, exposure, and dutching stakes.
@@ -21,7 +23,8 @@ Last verified against official sources: 2026-08-13.
 ## Out of scope
 
 - Additional non-API Torn requests initiated by a timer or script.
-- Automatic page cycling, refreshes, market expansion, clicks, or bet placement.
+- Automatic page cycling, refreshes, opening events, unattended clicks, or bet
+  placement.
 - Reading or monitoring Torn from hidden/background pages.
 - CAPTCHA bypass, rate-limit evasion, credential sharing, or undisclosed export.
 - Acting on a game known to be underway while Torn incorrectly presents it as not

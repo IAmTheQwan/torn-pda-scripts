@@ -47,10 +47,31 @@
                             <span class="input-money-group"><input class="amount" value="Suspended"></span>
                         </li>
                     </ul>
+                    <button type="button" id="additional-options">Show 2 additional betting options</button>
                 </div>
             </li>
         </ul>
     </main>
+    <script>
+        document.getElementById('additional-options').addEventListener('click', event => {
+            event.currentTarget.insertAdjacentHTML('beforebegin', `
+                <ul class="bets-wrap">
+                    <li class="market-name-cell"><span class="bold">Both Teams To Score Ordinary time</span></li>
+                    <li class="bets">
+                        <span class="bet-cell result">Yes</span>
+                        <span class="bet-cell odds decimal">x1.91</span>
+                        <span class="input-money-group"><input class="amount" value=""></span>
+                    </li>
+                    <li class="bets">
+                        <span class="bet-cell result">No</span>
+                        <span class="bet-cell odds decimal">x1.87</span>
+                        <span class="input-money-group"><input class="amount" value=""></span>
+                    </li>
+                </ul>
+            `);
+            event.currentTarget.remove();
+        }, { once: true });
+    </script>
     <script src="../../userscripts/bmg-capture.user.js"></script>
 </body>
 </html>

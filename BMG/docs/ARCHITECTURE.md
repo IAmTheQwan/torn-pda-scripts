@@ -30,13 +30,15 @@ Torn data from silently leaving the device.
 The userscript observes only:
 
 - Torn's currently visible Bookie or My Bets page;
-- event cards and market rows Torn already loaded after the player manually
-  opened them;
+- event cards and market rows Torn loaded after the player manually opened the
+  event; an explicit **Expand active** click may activate Torn's own additional
+  options control for that visible event;
 - one direct click on BMG's Capture button.
 
-It does not open additional markets, cycle pages, fetch Torn URLs, monitor a
-hidden tab, notify from background observations, or place a bet. IndexedDB stores
-the resulting local snapshot; Export outbox is another direct user action.
+It does not open events, cycle pages, refresh, operate from a hidden tab, notify
+from background observations, or place a bet. Expansion is limited to the open
+visible event and occurs only from the player's direct button press. IndexedDB
+stores the resulting local snapshot; Export outbox is another direct user action.
 
 ## Stable identities
 

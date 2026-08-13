@@ -1,9 +1,11 @@
 // ==UserScript==
 // @name         BMG Visible Bookie Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.1.0
+// @version      0.2.0
 // @description  Manually capture already-loaded Torn Bookie odds and My Bets outcomes for local BMG analysis
 // @author       TheQwan
+// @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
+// @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
 // @match        https://www.torn.com/page.php*
 // @grant        none
 // @run-at       document-idle
@@ -238,6 +240,7 @@
         const markets = Array.from(card.querySelectorAll('.info-wrap ul.bets-wrap'))
             .map(parseMarket)
             .filter(market => market.selections.length);
+        const additionalMarkets = additionalMarketControls(card);
         return {
             source_event_id: route.source_event_id,
             sport: route.sport,
@@ -250,9 +253,24 @@
             visible_status: stateText,
             raw_state_text: stateTitle,
             route_href: route.href,
+            captured_as_complete: additionalMarkets.length === 0,
+            additional_markets_remaining: additionalMarkets.reduce((sum, control) => {
+                const count = cleanText(control.textContent).match(/show\s+(\d+)\s+additional betting options/i)?.[1];
+                return sum + Number(count || 0);
+            }, 0),
             outcome: parseOutcome(card, stateText),
             markets
         };
+    }
+
+    function additionalMarketControls(card) {
+        return Array.from(card.querySelectorAll('a, button')).filter(control => {
+            const text = cleanText(control.textContent);
+            const disabled = control.disabled
+                || control.getAttribute('aria-disabled') === 'true'
+                || control.classList.contains('disabled');
+            return !disabled && /show(?:\s+\d+)?\s+additional betting options/i.test(text);
+        });
     }
 
     function expandedEventCards() {
@@ -264,6 +282,50 @@
                 || (info.style.display !== 'none' && getComputedStyle(info).display !== 'none');
             return hasLoadedMarkets && expanded;
         });
+    }
+
+    function waitForAdditionalMarkets(cards, initialMarketCount, timeoutMs = 8000) {
+        return new Promise(resolve => {
+            let settleTimer = null;
+            const finish = () => {
+                observer.disconnect();
+                clearTimeout(timeoutTimer);
+                if (settleTimer) clearTimeout(settleTimer);
+                resolve(cards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0));
+            };
+            const scheduleFinish = () => {
+                const currentCount = cards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0);
+                if (currentCount <= initialMarketCount) return;
+                if (settleTimer) clearTimeout(settleTimer);
+                settleTimer = setTimeout(finish, 500);
+            };
+            const observer = new MutationObserver(scheduleFinish);
+            cards.forEach(card => observer.observe(card, { childList: true, subtree: true }));
+            const timeoutTimer = setTimeout(finish, timeoutMs);
+            scheduleFinish();
+        });
+    }
+
+    async function expandActiveEvents() {
+        if (document.visibilityState !== 'visible') {
+            throw new Error('Bring Torn Bookie to the foreground before expanding markets.');
+        }
+        if (!isBookiePage() || /^#\/your-bets(?:\/|$)/i.test(location.hash)) {
+            throw new Error('Open a Bookie event first.');
+        }
+        const cards = expandedEventCards();
+        if (!cards.length) throw new Error('Manually open a Bookie event first.');
+        const controls = cards.flatMap(card => additionalMarketControls(card).slice(0, 1));
+        if (!controls.length) {
+            return {
+                requested: 0,
+                market_count: cards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0)
+            };
+        }
+        const initialMarketCount = cards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0);
+        controls.forEach(control => control.click());
+        const marketCount = await waitForAdditionalMarkets(cards, initialMarketCount);
+        return { requested: controls.length, market_count: marketCount };
     }
 
     function titleValuesForMyBet(link) {
@@ -410,9 +472,10 @@
         panel.id = PANEL_ID;
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:250px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:13px;margin-bottom:5px">BMG Capture v0.1.0</div>
-            <div style="color:#bbb;font-size:10px;line-height:1.35;margin-bottom:8px">Manual foreground capture only. Open a game/market yourself; BMG makes no Torn request and places no bet.</div>
+            <div style="font-weight:800;font-size:13px;margin-bottom:5px">BMG Capture v0.2.0</div>
+            <div style="color:#bbb;font-size:10px;line-height:1.35;margin-bottom:8px">Manual foreground actions only. Open a game yourself; BMG places no bet.</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+                <button type="button" data-action="expand">Expand active</button>
                 <button type="button" data-action="capture">Capture expanded</button>
                 <button type="button" data-action="export">Export outbox</button>
                 <button type="button" data-action="copy">Copy latest</button>
@@ -428,6 +491,18 @@
             status.style.color = error ? '#ff8b8b' : '#8ecbff';
         };
 
+        panel.querySelector('[data-action="expand"]').addEventListener('click', async () => {
+            try {
+                show('Requesting additional markets for the open event…');
+                const result = await expandActiveEvents();
+                show(result.requested
+                    ? `Expansion finished with ${result.market_count} loaded market(s). Press Capture expanded.`
+                    : `No additional-options control found; ${result.market_count} market(s) are already loaded.`);
+            } catch (error) {
+                show(error.message || String(error), true);
+            }
+        });
+
         panel.querySelector('[data-action="capture"]').addEventListener('click', async () => {
             try {
                 const capture = buildCapture();
@@ -436,7 +511,8 @@
                     && document.documentElement.dataset.bmgTestFixture === 'true') {
                     panel.dataset.bmgLastCapture = JSON.stringify(capture);
                 }
-                show(`Saved ${capture.events.length} event(s), ${capture.events.reduce((sum, event) => sum + event.markets.length, 0)} market(s), and ${capture.bets.length} bet row(s).`);
+                const partialEvents = capture.events.filter(event => !event.captured_as_complete).length;
+                show(`Saved ${capture.events.length} event(s), ${capture.events.reduce((sum, event) => sum + event.markets.length, 0)} market(s), and ${capture.bets.length} bet row(s).${partialEvents ? ` Warning: ${partialEvents} event(s) still showed additional options.` : ''}`);
             } catch (error) {
                 show(error.message || String(error), true);
             }
