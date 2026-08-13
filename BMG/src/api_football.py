@@ -458,8 +458,12 @@ def audit_catalog(
 FINISHED_STATUSES = {"FT", "AET", "PEN"}
 
 
-def match_status(short: Any) -> str:
+def match_status(short: Any, *, preserve_technical_finish: bool = False) -> str:
     code = str(short or "").upper()
+    if preserve_technical_finish and code == "AET":
+        return "finished_after_extra_time"
+    if preserve_technical_finish and code == "PEN":
+        return "finished_after_penalties"
     if code in FINISHED_STATUSES:
         return "finished"
     if code == "AWD":
@@ -602,6 +606,64 @@ def transform_season_capture(
         },
         "standings": standing_snapshots,
         "matches": transformed_matches,
+        "match_details": [],
+    }
+
+
+def transform_fixture_refresh_capture(item: dict[str, Any], observed_at: str) -> dict[str, Any]:
+    fixture = item.get("fixture") if isinstance(item.get("fixture"), dict) else {}
+    teams = item.get("teams") if isinstance(item.get("teams"), dict) else {}
+    home = teams.get("home") if isinstance(teams.get("home"), dict) else {}
+    away = teams.get("away") if isinstance(teams.get("away"), dict) else {}
+    goals = item.get("goals") if isinstance(item.get("goals"), dict) else {}
+    league = item.get("league") if isinstance(item.get("league"), dict) else {}
+    status = fixture.get("status") if isinstance(fixture.get("status"), dict) else {}
+    fixture_id = int(fixture.get("id") or 0)
+    league_id = int(league.get("id") or 0)
+    season_year = int(league.get("season") or 0)
+    if not fixture_id or not league_id or not season_year:
+        raise ApiFootballError("Fixture refresh response omitted fixture, league, or season identity.")
+    scheduled_at = str(fixture.get("date") or "")
+    compact_time = re.sub(r"[^0-9]", "", observed_at)[:14]
+    return {
+        "schema_version": "bmg.sports-league.v1",
+        "capture_id": f"api-football-fixture-{fixture_id}-{compact_time}",
+        "observed_at": observed_at,
+        "source": SOURCE,
+        "page_url": f"{DEFAULT_BASE_URL}/fixtures?id={fixture_id}",
+        "display_timezone": "UTC",
+        "competition": {
+            "sport": "football",
+            "country": league.get("country") or "",
+            "name": league.get("name") or "Unknown competition",
+            "source_slug": str(league_id),
+            "source_url": "",
+            "provider_raw": league,
+        },
+        "season": {
+            "name": str(season_year),
+            "source_season_id": f"{league_id}:{season_year}",
+            "source_url": "",
+            "is_current": True,
+        },
+        "standings": [],
+        "matches": [{
+            "source_match_id": str(fixture_id),
+            "source_url": "",
+            "round": league.get("round") or "",
+            "scheduled_at": scheduled_at,
+            "scheduled_date": scheduled_at[:10] if scheduled_at else None,
+            "raw_scheduled_local": scheduled_at,
+            "status": match_status(status.get("short"), preserve_technical_finish=True),
+            "provider_status": status,
+            "home_team": home.get("name"),
+            "home_team_id": str(home.get("id") or ""),
+            "away_team": away.get("name"),
+            "away_team_id": str(away.get("id") or ""),
+            "home_score": goals.get("home"),
+            "away_score": goals.get("away"),
+            "provider_raw": item,
+        }],
         "match_details": [],
     }
 
@@ -1126,6 +1188,62 @@ def command_collect_odds(args: argparse.Namespace) -> None:
         print("Imported " + ", ".join(f"{key}={value}" for key, value in imported.items()))
 
 
+def command_settle_review(args: argparse.Namespace) -> None:
+    connection = bmg.open_database(args.db.resolve())
+    try:
+        bmg.initialize_database(connection)
+        run_id = bmg.resolve_forecast_run(connection, args.run_id)
+        fixture_rows = connection.execute(
+            """
+            SELECT DISTINCT ms.source_match_id
+            FROM match_forecasts mf
+            JOIN match_sources ms ON ms.match_id = mf.match_id
+            WHERE mf.forecast_run_id = ? AND ms.source = ?
+            ORDER BY ms.source_match_id
+            """,
+            (run_id, SOURCE),
+        ).fetchall()
+        fixture_ids = [int(row[0]) for row in fixture_rows if str(row[0]).isdigit()]
+        if not fixture_ids:
+            raise ApiFootballError(f"Forecast run {run_id!r} has no API-Football fixture IDs.")
+        client = make_client(args.env)
+        observed_at = utc_now()
+        captures: list[dict[str, Any]] = []
+        for fixture_id in fixture_ids:
+            payload = client.get("fixtures", {"id": fixture_id})
+            response = [item for item in (payload.get("response") or []) if isinstance(item, dict)]
+            if len(response) != 1:
+                raise ApiFootballError(
+                    f"Fixture {fixture_id} returned {len(response)} records; expected exactly one."
+                )
+            captures.append(transform_fixture_refresh_capture(response[0], observed_at))
+        capture_output = args.capture_output or (
+            PROJECT_DIR / "exports" / f"api-football-review-refresh-{re.sub(r'[^0-9]', '', observed_at)[:14]}.json"
+        )
+        write_json(capture_output, {"captures": captures})
+        imported: dict[str, int] = {}
+        with connection:
+            for capture in captures:
+                bmg.merge_counts(imported, bmg.import_flashscore_capture(connection, capture))
+        settlement = bmg.settle_review(connection, run_id=run_id)
+        report = bmg.render_settlement_review(settlement)
+        print(
+            f"Refreshed fixtures={len(captures)}; API requests={client.requests_used}; "
+            f"capture={capture_output}"
+        )
+        print("Imported " + ", ".join(f"{key}={value}" for key, value in imported.items()))
+        print(report)
+        if args.output:
+            output = args.output.resolve()
+            output.parent.mkdir(parents=True, exist_ok=True)
+            temporary = output.with_suffix(output.suffix + ".tmp")
+            temporary.write_text(report, encoding="utf-8")
+            temporary.replace(output)
+            print(f"Report written to {output}")
+    finally:
+        connection.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env", type=Path, default=DEFAULT_ENV)
@@ -1154,6 +1272,15 @@ def build_parser() -> argparse.ArgumentParser:
     odds.add_argument("fixture_ids", type=int, nargs="+")
     odds.add_argument("--output", type=Path)
     odds.add_argument("--import-db", type=Path, default=DEFAULT_DB)
+
+    settle = subparsers.add_parser(
+        "settle-review",
+        help="refresh a paper run's API-Football fixtures, then settle every final decision",
+    )
+    settle.add_argument("run_id", nargs="?", help="forecast run ID; defaults to latest")
+    settle.add_argument("--db", type=Path, default=DEFAULT_DB)
+    settle.add_argument("--capture-output", type=Path)
+    settle.add_argument("--output", type=Path)
 
     backfill = subparsers.add_parser(
         "backfill-exact", help="resume the exact name/country/season coverage tier"
@@ -1191,6 +1318,8 @@ def main(argv: list[str] | None = None) -> int:
             command_collect_season(args)
         elif args.command == "collect-odds":
             command_collect_odds(args)
+        elif args.command == "settle-review":
+            command_settle_review(args)
         elif args.command == "backfill-exact":
             command_backfill_exact(args)
         elif args.command == "backfill-reviewed":

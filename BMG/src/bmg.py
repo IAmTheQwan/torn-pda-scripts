@@ -146,6 +146,9 @@ def apply_schema(connection: sqlite3.Connection) -> None:
             "settled_at": "TEXT",
             "raw_selection_text": "TEXT NOT NULL DEFAULT ''",
         },
+        "forecast_evaluations": {
+            "evaluation_metadata_json": "TEXT NOT NULL DEFAULT '{}'",
+        },
     }
     for table, columns in migrations.items():
         existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
@@ -153,7 +156,7 @@ def apply_schema(connection: sqlite3.Connection) -> None:
             if column not in existing:
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_bets_settled_at ON bets (settled_at DESC)")
-    connection.execute("PRAGMA user_version = 6")
+    connection.execute("PRAGMA user_version = 7")
     backfill_capture_events(connection)
     connection.commit()
 
@@ -2952,6 +2955,7 @@ def run_daily_paper_review(
     min_ev: float = 0.03,
     kelly_fraction: float = 0.25,
     max_bankroll_fraction: float = 0.01,
+    snapshot_label: str = "",
     run_id: str | None = None,
     notes: str = "",
 ) -> dict[str, Any]:
@@ -2981,6 +2985,7 @@ def run_daily_paper_review(
     bankroll_snapshot_id = int(bankroll_row["bankroll_snapshot_id"]) if bankroll_row else None
     config = {
         "review_date": resolved_date,
+        "snapshot_label": clean_text(snapshot_label),
         "min_books": min_books,
         "min_ev": min_ev,
         "kelly_fraction": kelly_fraction,
@@ -3260,6 +3265,7 @@ def render_daily_paper_review(result: dict[str, Any]) -> str:
         f"# BMG daily paper review — {result['review_date']}",
         "",
         f"- Run: `{result['run_id']}`",
+        f"- Snapshot label: {result['config'].get('snapshot_label') or 'unlabeled'}",
         f"- Frozen slate: `{result['slate_id']}`",
         f"- Events: {result['events']}",
         f"- Displayed markets reviewed: {counts.get('markets', 0)}",
@@ -3297,6 +3303,427 @@ def render_daily_paper_review(result: dict[str, Any]) -> str:
     lines.extend([
         "",
         "The engine does not assume a standard market menu. Missing markets are absent, displayed but unsupported markets are retained in coverage, and only complete settlement-compatible surfaces with enough timestamp-safe bookmaker comparisons can create decisions.",
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def forecast_review_descriptor(market_type: Any, line: Any) -> dict[str, Any] | None:
+    market_kind = canonical(market_type).replace(" ", "_")
+    if market_kind == "three_way":
+        return {
+            "kind": "three_way",
+            "external_market": "Match Winner",
+            "external_market_aliases": ("1X2",),
+            "roles": ("home", "draw", "away"),
+            "line": None,
+        }
+    if market_kind == "both_teams_to_score":
+        return {
+            "kind": "both_teams_to_score",
+            "external_market": "Both Teams Score",
+            "external_market_aliases": ("Both Teams to Score",),
+            "roles": ("yes", "no"),
+            "line": None,
+        }
+    if market_kind == "total":
+        parsed_line = optional_float(line)
+        if parsed_line is None:
+            return None
+        return {
+            "kind": "total",
+            "external_market": "Goals Over/Under",
+            "external_market_aliases": (f"Over/Under {parsed_line:g}",),
+            "roles": ("over", "under"),
+            "line": parsed_line,
+        }
+    return None
+
+
+def fixture_settlement_disposition(status: Any, home_score: Any, away_score: Any) -> str:
+    normalized = canonical(status)
+    if normalized == "finished" and optional_float(home_score) is not None and optional_float(away_score) is not None:
+        return "finished"
+    if normalized in {"canc", "cancelled", "canceled", "void"}:
+        return "void"
+    if normalized in {
+        "awarded", "walkover", "abandoned",
+        "finished after extra time", "finished after penalties",
+    }:
+        return "manual_review"
+    return "pending"
+
+
+def football_selection_result(
+    market_type: Any,
+    selection_key: Any,
+    line: Any,
+    home_score: Any,
+    away_score: Any,
+) -> str:
+    market_kind = canonical(market_type).replace(" ", "_")
+    selection = canonical(selection_key)
+    home = optional_float(home_score)
+    away = optional_float(away_score)
+    if home is None or away is None:
+        return "unknown"
+    if market_kind == "three_way":
+        winner = "draw"
+        if home > away:
+            winner = "home"
+        elif away > home:
+            winner = "away"
+        return "win" if selection == winner else "loss" if selection in {"home", "draw", "away"} else "unknown"
+    if market_kind == "both_teams_to_score":
+        outcome = "yes" if home > 0 and away > 0 else "no"
+        return "win" if selection == outcome else "loss" if selection in {"yes", "no"} else "unknown"
+    if market_kind == "total":
+        parsed_line = optional_float(line)
+        if parsed_line is None or selection not in {"over", "under"}:
+            return "unknown"
+        total = home + away
+        if math.isclose(total, parsed_line, abs_tol=1e-9):
+            return "push"
+        won = total > parsed_line if selection == "over" else total < parsed_line
+        return "win" if won else "loss"
+    return "unknown"
+
+
+def resolve_forecast_run(connection: sqlite3.Connection, run_id: str | None) -> str:
+    if run_id:
+        row = connection.execute(
+            "SELECT forecast_run_id FROM forecast_runs WHERE forecast_run_id = ?", (run_id,)
+        ).fetchone()
+    else:
+        row = connection.execute(
+            """
+            SELECT fr.forecast_run_id
+            FROM forecast_runs fr
+            WHERE EXISTS (
+                SELECT 1 FROM match_forecasts mf
+                JOIN decision_records dr ON dr.forecast_id = mf.forecast_id
+                WHERE mf.forecast_run_id = fr.forecast_run_id
+            )
+            ORDER BY fr.created_at DESC, fr.forecast_run_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    if not row:
+        raise ValueError("No forecast run with decisions was found.")
+    return str(row[0])
+
+
+def settle_review(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str | None = None,
+    evaluated_at: str | None = None,
+) -> dict[str, Any]:
+    """Settle final fixtures and score an immutable paper-review decision set."""
+    final_run_id = resolve_forecast_run(connection, run_id)
+    if evaluated_at:
+        parsed_evaluation_time = parse_iso_datetime(evaluated_at)
+        if parsed_evaluation_time is None:
+            raise ValueError("evaluated_at must be an ISO date-time.")
+        now = parsed_evaluation_time.isoformat().replace("+00:00", "Z")
+    else:
+        now = utc_now()
+    rows = connection.execute(
+        """
+        SELECT dr.decision_id, dr.action, dr.recommended_stake, dr.observed_odds,
+               mf.forecast_id, mf.match_id, mf.market_type, mf.period,
+               mf.selection_key, mf.selection_name, mf.line,
+               mf.predicted_probability, mf.feature_as_of,
+               sm.scheduled_at, sm.status AS match_status,
+               sm.home_score, sm.away_score, sm.last_observed_at,
+               ht.name AS home_team, at.name AS away_team,
+               COALESCE((
+                   SELECT GROUP_CONCAT(ordered_source.reference, ',')
+                   FROM (
+                       SELECT ms.source || ':' || ms.source_match_id AS reference
+                       FROM match_sources ms
+                       WHERE ms.match_id = sm.match_id
+                       ORDER BY ms.source, ms.source_match_id
+                   ) ordered_source
+               ), 'canonical-reference') AS result_sources
+        FROM match_forecasts mf
+        JOIN decision_records dr ON dr.forecast_id = mf.forecast_id
+        JOIN sports_matches sm ON sm.match_id = mf.match_id
+        JOIN sports_teams ht ON ht.team_id = sm.home_team_id
+        JOIN sports_teams at ON at.team_id = sm.away_team_id
+        WHERE mf.forecast_run_id = ?
+        ORDER BY mf.match_id, mf.forecast_id
+        """,
+        (final_run_id,),
+    ).fetchall()
+    if not rows:
+        raise ValueError(f"Forecast run {final_run_id!r} has no decisions.")
+
+    fixture_rows: dict[int, sqlite3.Row] = {}
+    for row in rows:
+        fixture_rows[int(row["match_id"])] = row
+    fixture_counts: dict[str, int] = defaultdict(int)
+    pending_fixtures: list[dict[str, Any]] = []
+    for match_id, row in fixture_rows.items():
+        disposition = fixture_settlement_disposition(
+            row["match_status"], row["home_score"], row["away_score"]
+        )
+        fixture_counts[disposition] += 1
+        if disposition in {"pending", "manual_review"}:
+            pending_fixtures.append({
+                "match_id": match_id,
+                "event": f"{row['home_team']} v {row['away_team']}",
+                "scheduled_at": row["scheduled_at"],
+                "status": row["match_status"],
+                "disposition": disposition,
+            })
+
+    counts: dict[str, int] = defaultdict(int)
+    ruleset = "bmg-football-ordinary-time-v1"
+    with connection:
+        for row in rows:
+            counts["decisions"] += 1
+            disposition = fixture_settlement_disposition(
+                row["match_status"], row["home_score"], row["away_score"]
+            )
+            if disposition in {"pending", "manual_review"}:
+                counts[disposition] += 1
+                continue
+            result = "void" if disposition == "void" else football_selection_result(
+                row["market_type"],
+                row["selection_key"],
+                row["line"],
+                row["home_score"],
+                row["away_score"],
+            )
+            line_key = "" if row["line"] is None else f"{float(row['line']):g}"
+            settlement_key = (
+                f"{canonical(row['market_type'])}:{canonical(row['period'])}:"
+                f"{canonical(row['selection_key'])}:line:{line_key}"
+            )
+            raw_settlement = {
+                "match_status": row["match_status"],
+                "home_team": row["home_team"],
+                "away_team": row["away_team"],
+                "home_score": row["home_score"],
+                "away_score": row["away_score"],
+                "scheduled_at": row["scheduled_at"],
+                "last_observed_at": row["last_observed_at"],
+                "result_sources": row["result_sources"],
+            }
+            existing_settlement = connection.execute(
+                """
+                SELECT settlement_id, result, raw_json
+                FROM match_market_settlements
+                WHERE match_id = ? AND settlement_key = ? AND ruleset = ?
+                """,
+                (int(row["match_id"]), settlement_key, ruleset),
+            ).fetchone()
+            raw_json = json.dumps(raw_settlement, sort_keys=True, separators=(",", ":"))
+            connection.execute(
+                """
+                INSERT INTO match_market_settlements (
+                    match_id, settlement_key, market_type, period, selection_key,
+                    line, ruleset, result, settled_at, source, raw_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'canonical-reference', ?)
+                ON CONFLICT(match_id, settlement_key, ruleset) DO UPDATE SET
+                    result = excluded.result,
+                    settled_at = excluded.settled_at,
+                    source = excluded.source,
+                    raw_json = excluded.raw_json
+                """,
+                (
+                    int(row["match_id"]),
+                    settlement_key,
+                    row["market_type"],
+                    row["period"],
+                    row["selection_key"],
+                    row["line"],
+                    ruleset,
+                    result,
+                    row["last_observed_at"] or now,
+                    raw_json,
+                ),
+            )
+            settlement = connection.execute(
+                """
+                SELECT settlement_id FROM match_market_settlements
+                WHERE match_id = ? AND settlement_key = ? AND ruleset = ?
+                """,
+                (int(row["match_id"]), settlement_key, ruleset),
+            ).fetchone()
+            if existing_settlement is None:
+                counts["settlements_inserted"] += 1
+            elif existing_settlement["result"] != result or existing_settlement["raw_json"] != raw_json:
+                counts["settlements_updated"] += 1
+            else:
+                counts["settlements_existing"] += 1
+            counts[result] += 1
+            if result == "unknown":
+                continue
+
+            actual_outcome = 1.0 if result == "win" else 0.0 if result == "loss" else None
+            predicted_probability = min(max(float(row["predicted_probability"]), 1e-12), 1 - 1e-12)
+            brier_score = None
+            log_loss = None
+            if actual_outcome is not None:
+                brier_score = (predicted_probability - actual_outcome) ** 2
+                log_loss = -(
+                    actual_outcome * math.log(predicted_probability)
+                    + (1 - actual_outcome) * math.log(1 - predicted_probability)
+                )
+
+            stake = int(row["recommended_stake"] or 0)
+            odds = optional_float(row["observed_odds"])
+            realized_profit = None
+            if row["action"] in {"paper_pick", "bet"} and result in {"win", "loss", "push", "void"}:
+                if result == "win" and odds is not None:
+                    realized_profit = int(round(stake * (odds - 1)))
+                elif result == "loss":
+                    realized_profit = -stake
+                else:
+                    realized_profit = 0
+            elif row["action"] in {"pass", "reject"}:
+                realized_profit = 0
+
+            closing_odds = None
+            closing_line_value = None
+            closing_consensus: dict[str, Any] = {
+                "book_count": 0, "probabilities": {}, "captures": []
+            }
+            descriptor = forecast_review_descriptor(row["market_type"], row["line"])
+            closing_cutoff = row["scheduled_at"]
+            if descriptor is not None and closing_cutoff:
+                closing_consensus = external_market_consensus(
+                    connection,
+                    match_id=int(row["match_id"]),
+                    descriptor=descriptor,
+                    home_team=row["home_team"],
+                    away_team=row["away_team"],
+                    information_cutoff=closing_cutoff,
+                )
+                role = canonical(row["selection_key"])
+                closing_probability = closing_consensus["probabilities"].get(role)
+                if closing_probability and float(closing_probability) > 0:
+                    closing_odds = 1 / float(closing_probability)
+                    if odds is not None:
+                        closing_line_value = odds / closing_odds - 1
+
+            evaluation_metadata = {
+                "closing_definition": "normalized median of latest complete per-bookmaker de-vigged probabilities observed no later than scheduled kickoff",
+                "closing_formula": "accepted_torn_decimal_odds / closing_consensus_fair_odds - 1",
+                "closing_cutoff": closing_cutoff,
+                "closing_bookmaker_count": int(closing_consensus["book_count"]),
+                "closing_capture_ids": closing_consensus["captures"],
+                "forecast_feature_as_of": row["feature_as_of"],
+                "result_sources": row["result_sources"],
+            }
+            metadata_json = json.dumps(evaluation_metadata, sort_keys=True, separators=(",", ":"))
+            existing_evaluation = connection.execute(
+                "SELECT * FROM forecast_evaluations WHERE decision_id = ?", (row["decision_id"],)
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO forecast_evaluations (
+                    decision_id, settlement_id, evaluated_at, actual_outcome,
+                    realized_profit, brier_score, log_loss, closing_odds,
+                    closing_line_value, notes, evaluation_metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(decision_id) DO UPDATE SET
+                    settlement_id = excluded.settlement_id,
+                    evaluated_at = excluded.evaluated_at,
+                    actual_outcome = excluded.actual_outcome,
+                    realized_profit = excluded.realized_profit,
+                    brier_score = excluded.brier_score,
+                    log_loss = excluded.log_loss,
+                    closing_odds = excluded.closing_odds,
+                    closing_line_value = excluded.closing_line_value,
+                    notes = excluded.notes,
+                    evaluation_metadata_json = excluded.evaluation_metadata_json
+                """,
+                (
+                    row["decision_id"],
+                    int(settlement["settlement_id"]),
+                    now,
+                    actual_outcome,
+                    realized_profit,
+                    brier_score,
+                    log_loss,
+                    closing_odds,
+                    closing_line_value,
+                    "Paper settlement evaluation; no wager is inferred from a paper decision.",
+                    metadata_json,
+                ),
+            )
+            counts["evaluations_updated" if existing_evaluation else "evaluations_inserted"] += 1
+
+    metrics = connection.execute(
+        """
+        SELECT COUNT(fe.decision_id) AS evaluations,
+               SUM(CASE WHEN dr.action = 'paper_pick' AND fe.decision_id IS NOT NULL THEN 1 ELSE 0 END) AS settled_picks,
+               SUM(CASE WHEN dr.action = 'paper_pick' AND mms.result = 'win' THEN 1 ELSE 0 END) AS pick_wins,
+               SUM(CASE WHEN dr.action = 'paper_pick' AND mms.result = 'loss' THEN 1 ELSE 0 END) AS pick_losses,
+               SUM(CASE WHEN dr.action = 'paper_pick' AND mms.result = 'push' THEN 1 ELSE 0 END) AS pick_pushes,
+               SUM(CASE WHEN dr.action = 'paper_pick' AND mms.result = 'void' THEN 1 ELSE 0 END) AS pick_voids,
+               SUM(CASE WHEN dr.action = 'paper_pick' AND mms.result IN ('win', 'loss')
+                        THEN dr.recommended_stake ELSE 0 END) AS stake_at_risk,
+               SUM(CASE WHEN dr.action = 'paper_pick' THEN COALESCE(fe.realized_profit, 0) ELSE 0 END) AS paper_profit,
+               AVG(fe.brier_score) AS average_brier,
+               AVG(fe.log_loss) AS average_log_loss,
+               AVG(CASE WHEN dr.action = 'paper_pick' THEN fe.closing_line_value END) AS average_pick_clv,
+               SUM(CASE WHEN fe.closing_odds IS NOT NULL THEN 1 ELSE 0 END) AS closing_prices
+        FROM match_forecasts mf
+        JOIN decision_records dr ON dr.forecast_id = mf.forecast_id
+        LEFT JOIN forecast_evaluations fe ON fe.decision_id = dr.decision_id
+        LEFT JOIN match_market_settlements mms ON mms.settlement_id = fe.settlement_id
+        WHERE mf.forecast_run_id = ?
+        """,
+        (final_run_id,),
+    ).fetchone()
+    return {
+        "run_id": final_run_id,
+        "evaluated_at": now,
+        "fixtures": {
+            "total": len(fixture_rows),
+            **{key: int(value) for key, value in fixture_counts.items()},
+        },
+        "pending_fixtures": pending_fixtures,
+        "counts": dict(counts),
+        "metrics": {key: metrics[key] for key in metrics.keys()},
+    }
+
+
+def render_settlement_review(result: dict[str, Any]) -> str:
+    fixtures = result["fixtures"]
+    metrics = result["metrics"]
+    stake_at_risk = int(metrics["stake_at_risk"] or 0)
+    profit = int(metrics["paper_profit"] or 0)
+    roi = profit / stake_at_risk if stake_at_risk else None
+    lines = [
+        f"# BMG settlement review — {result['run_id']}",
+        "",
+        f"- Evaluated at: {result['evaluated_at']}",
+        f"- Fixtures: {fixtures.get('total', 0)} total; {fixtures.get('finished', 0)} finished; {fixtures.get('void', 0)} void; {fixtures.get('pending', 0)} pending; {fixtures.get('manual_review', 0)} manual review",
+        f"- Evaluated decisions: {int(metrics['evaluations'] or 0)}",
+        f"- Paper picks settled: {int(metrics['settled_picks'] or 0)} ({int(metrics['pick_wins'] or 0)} wins, {int(metrics['pick_losses'] or 0)} losses, {int(metrics['pick_pushes'] or 0)} pushes, {int(metrics['pick_voids'] or 0)} voids)",
+        f"- Paper stake at risk: {money(stake_at_risk)}",
+        f"- Hypothetical profit/loss: {money(profit)}",
+        f"- Paper ROI: {roi:.2%}" if roi is not None else "- Paper ROI: not available",
+        f"- Mean Brier score: {float(metrics['average_brier']):.6f}" if metrics["average_brier"] is not None else "- Mean Brier score: not available",
+        f"- Mean log loss: {float(metrics['average_log_loss']):.6f}" if metrics["average_log_loss"] is not None else "- Mean log loss: not available",
+        f"- Mean paper-pick closing-line value: {float(metrics['average_pick_clv']):.2%}" if metrics["average_pick_clv"] is not None else "- Mean paper-pick closing-line value: not available",
+        f"- Decisions with closing consensus: {int(metrics['closing_prices'] or 0)}",
+    ]
+    if result["pending_fixtures"]:
+        lines.extend(["", "## Not settled", "", "| Fixture | Scheduled | Provider status | Disposition |", "|---|---|---|---|"])
+        for fixture in result["pending_fixtures"]:
+            lines.append(
+                f"| {fixture['event']} | {fixture['scheduled_at'] or 'unknown'} | "
+                f"{fixture['status'] or 'unknown'} | {fixture['disposition'].replace('_', ' ')} |"
+            )
+    lines.extend([
+        "",
+        "Closing-line value compares the recorded Torn price with the normalized median consensus from each bookmaker's latest complete surface observed no later than scheduled kickoff. Later observations are excluded.",
         "",
     ])
     return "\n".join(lines)
@@ -4303,9 +4730,24 @@ def build_parser() -> argparse.ArgumentParser:
     daily_review_parser.add_argument("--min-ev", type=float, default=0.03)
     daily_review_parser.add_argument("--kelly-fraction", type=float, default=0.25)
     daily_review_parser.add_argument("--max-bankroll-fraction", type=float, default=0.01)
+    daily_review_parser.add_argument(
+        "--snapshot-label", default="", help="stage such as morning, pre-kickoff, or ad-hoc"
+    )
     daily_review_parser.add_argument("--run-id")
     daily_review_parser.add_argument("--notes", default="")
     daily_review_parser.add_argument(
+        "--output", type=Path, help="optional Markdown report path (BMG/data is ignored by Git)"
+    )
+
+    settle_review_parser = subparsers.add_parser(
+        "settle-review",
+        help="settle final fixtures and evaluate a paper-review run against pre-kickoff closing prices",
+    )
+    settle_review_parser.add_argument(
+        "run_id", nargs="?", help="forecast run ID; defaults to the latest run with decisions"
+    )
+    settle_review_parser.add_argument("--evaluated-at", help="optional UTC ISO evaluation timestamp")
+    settle_review_parser.add_argument(
         "--output", type=Path, help="optional Markdown report path (BMG/data is ignored by Git)"
     )
 
@@ -4504,10 +4946,26 @@ def main(argv: list[str] | None = None) -> int:
                     min_ev=args.min_ev,
                     kelly_fraction=args.kelly_fraction,
                     max_bankroll_fraction=args.max_bankroll_fraction,
+                    snapshot_label=args.snapshot_label,
                     run_id=args.run_id,
                     notes=args.notes,
                 )
                 report = render_daily_paper_review(result)
+                print(report)
+                if args.output:
+                    output = args.output.resolve()
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    temporary = output.with_suffix(output.suffix + ".tmp")
+                    temporary.write_text(report, encoding="utf-8")
+                    temporary.replace(output)
+                    print(f"Report written to {output}")
+            elif args.command == "settle-review":
+                result = settle_review(
+                    connection,
+                    run_id=args.run_id,
+                    evaluated_at=args.evaluated_at,
+                )
+                report = render_settlement_review(result)
                 print(report)
                 if args.output:
                     output = args.output.resolve()

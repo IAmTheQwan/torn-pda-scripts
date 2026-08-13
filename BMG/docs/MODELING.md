@@ -85,7 +85,7 @@ nil are excluded even when their displayed reciprocal sum is below one.
 
    ```powershell
    python .\BMG\src\bmg.py daily-review --date 2026-08-13 `
-     --min-books 5 --min-ev 0.03 `
+     --snapshot-label morning --min-books 5 --min-ev 0.03 `
      --output .\BMG\data\paper-review-2026-08-13.md
    ```
 
@@ -101,7 +101,37 @@ nil are excluded even when their displayed reciprocal sum is below one.
    a bankroll-percentage cap, and the Torn $1B option cap. The command never
    places a bet.
 
-7. Register a predictive model only when its implementation and features are frozen:
+7. Near kickoff, manually capture Torn again, import a new external odds
+   snapshot, register the new Torn capture as a research slate, and create a
+   second immutable review:
+
+   ```powershell
+   python .\BMG\src\bmg.py daily-review --date 2026-08-13 `
+     --snapshot-label pre-kickoff `
+     --output .\BMG\data\paper-review-2026-08-13-pre-kickoff.md
+   ```
+
+   The daily aggregate uses the latest registered capture for each event at
+   that moment. Because the capture IDs and information cutoffs differ, the
+   morning and pre-kickoff forecasts coexist rather than overwriting each
+   other. A game that gains or loses betting options is evaluated against its
+   own displayed market surface at each snapshot.
+
+8. Refresh terminal fixture evidence and settle a review:
+
+   ```powershell
+   python .\BMG\src\api_football.py settle-review FORECAST_RUN_ID `
+     --output .\BMG\data\settlement-review-2026-08-13.md
+   ```
+
+   The evaluator scores every binary forecast with Brier score and log loss,
+   calculates hypothetical paper profit only for paper picks, and records
+   closing-line value as `accepted Torn odds / closing consensus fair odds -
+   1`. Closing consensus uses the latest complete per-bookmaker surface no
+   later than scheduled kickoff. Post-kickoff observations cannot leak into it.
+   Passes are scored for calibration but carry zero hypothetical stake.
+
+9. Register a predictive model only when its implementation and features are frozen:
 
    ```powershell
    python .\BMG\src\bmg.py model-register bmg-football 0.1.0 `
@@ -110,7 +140,7 @@ nil are excluded even when their displayed reciprocal sum is below one.
      --training-cutoff 2026-05-31 --active
    ```
 
-8. Inspect readiness and descriptive wager history:
+10. Inspect readiness and descriptive wager history:
 
    ```powershell
    python .\BMG\src\bmg.py modeling-summary

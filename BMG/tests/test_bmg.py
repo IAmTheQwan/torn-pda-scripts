@@ -585,6 +585,47 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertEqual("awarded", api_football.match_status("AWD"))
         self.assertEqual("walkover", api_football.match_status("WO"))
         self.assertEqual("finished", api_football.match_status("FT"))
+        self.assertEqual("finished", api_football.match_status("AET"))
+        self.assertEqual("finished", api_football.match_status("PEN"))
+        self.assertEqual(
+            "finished_after_extra_time",
+            api_football.match_status("AET", preserve_technical_finish=True),
+        )
+        self.assertEqual(
+            "finished_after_penalties",
+            api_football.match_status("PEN", preserve_technical_finish=True),
+        )
+
+    def test_api_football_fixture_refresh_preserves_final_status_and_score_evidence(self) -> None:
+        item = {
+            "fixture": {
+                "id": 12345,
+                "date": "2026-05-20T19:45:00+00:00",
+                "status": {"short": "FT", "long": "Match Finished"},
+            },
+            "league": {
+                "id": 999,
+                "name": "Test Premier League",
+                "country": "Testland",
+                "season": 2025,
+                "round": "Regular Season - 38",
+            },
+            "teams": {
+                "home": {"id": 11, "name": "North FC"},
+                "away": {"id": 12, "name": "South United"},
+            },
+            "goals": {"home": 2, "away": 1},
+        }
+        capture = api_football.transform_fixture_refresh_capture(
+            item, "2026-05-20T22:00:00Z"
+        )
+
+        self.assertEqual("api-football-fixture-12345-20260520220000", capture["capture_id"])
+        self.assertEqual("999:2025", capture["season"]["source_season_id"])
+        self.assertEqual("finished", capture["matches"][0]["status"])
+        self.assertEqual((2, 1), (
+            capture["matches"][0]["home_score"], capture["matches"][0]["away_score"]
+        ))
 
     def test_api_football_odds_transform_keeps_bookmakers_and_shared_selections(self) -> None:
         payload = {
@@ -873,8 +914,10 @@ class BmgDatabaseTests(unittest.TestCase):
             review_date="2026-05-24",
             min_books=1,
             min_ev=0.03,
+            snapshot_label="morning",
             run_id="depth-aware-paper-review",
         )
+        self.assertEqual("morning", result["config"]["snapshot_label"])
         self.assertEqual(3, result["counts"]["markets"])
         self.assertEqual(1, result["counts"]["eligible"])
         self.assertEqual(1, result["counts"]["partial_torn"])
@@ -891,6 +934,40 @@ class BmgDatabaseTests(unittest.TestCase):
             features = json.loads(row["features_json"])
             self.assertEqual(["odds-fixture-open"], features["external_capture_ids"])
             self.assertNotIn("odds-fixture-close", features["external_capture_ids"])
+
+        settlement = bmg.settle_review(
+            self.connection,
+            run_id="depth-aware-paper-review",
+            evaluated_at="2026-05-24T17:00:00Z",
+        )
+        self.assertEqual(1, settlement["fixtures"]["finished"])
+        self.assertEqual(3, settlement["metrics"]["evaluations"])
+        self.assertGreater(settlement["metrics"]["paper_profit"], 0)
+        self.assertEqual(3, self.count("match_market_settlements"))
+        self.assertEqual(3, self.count("forecast_evaluations"))
+        results = self.connection.execute(
+            "SELECT result, COUNT(*) count FROM match_market_settlements GROUP BY result"
+        ).fetchall()
+        self.assertEqual({"loss": 2, "win": 1}, {row["result"]: row["count"] for row in results})
+        metadata = json.loads(self.connection.execute(
+            """
+            SELECT evaluation_metadata_json
+            FROM forecast_evaluations fe
+            JOIN decision_records dr USING(decision_id)
+            WHERE dr.action = 'paper_pick'
+            """
+        ).fetchone()[0])
+        self.assertEqual(["odds-fixture-close"], metadata["closing_capture_ids"])
+        self.assertEqual("2026-05-24T15:00:00Z", metadata["closing_cutoff"])
+
+        repeated = bmg.settle_review(
+            self.connection,
+            run_id="depth-aware-paper-review",
+            evaluated_at="2026-05-24T17:05:00Z",
+        )
+        self.assertEqual(3, repeated["counts"]["settlements_existing"])
+        self.assertEqual(3, self.count("match_market_settlements"))
+        self.assertEqual(3, self.count("forecast_evaluations"))
 
     def test_review_market_support_rejects_push_lines_and_nonstandard_surfaces(self) -> None:
         def rows(line: float) -> list[dict[str, object]]:
@@ -916,6 +993,22 @@ class BmgDatabaseTests(unittest.TestCase):
         )
         self.assertIsNone(descriptor)
         self.assertEqual("unsupported_market", status)
+
+    def test_football_settlement_rules_cover_wins_losses_pushes_voids_and_pending(self) -> None:
+        self.assertEqual("win", bmg.football_selection_result("three_way", "home", None, 2, 1))
+        self.assertEqual("loss", bmg.football_selection_result("three_way", "draw", None, 2, 1))
+        self.assertEqual("win", bmg.football_selection_result("both_teams_to_score", "yes", None, 2, 1))
+        self.assertEqual("loss", bmg.football_selection_result("both_teams_to_score", "no", None, 2, 1))
+        self.assertEqual("win", bmg.football_selection_result("total", "over", 2.5, 2, 1))
+        self.assertEqual("loss", bmg.football_selection_result("total", "under", 2.5, 2, 1))
+        self.assertEqual("push", bmg.football_selection_result("total", "over", 3.0, 2, 1))
+        self.assertEqual("void", bmg.fixture_settlement_disposition("canc", None, None))
+        self.assertEqual("pending", bmg.fixture_settlement_disposition("postponed", None, None))
+        self.assertEqual("manual_review", bmg.fixture_settlement_disposition("awarded", 3, 0))
+        self.assertEqual(
+            "manual_review",
+            bmg.fixture_settlement_disposition("finished_after_extra_time", 2, 1),
+        )
 
     def test_exact_reconciliation_outcome_sync_and_research_slate_are_idempotent(self) -> None:
         bmg.import_flashscore_file(self.connection, FLASHSCORE_FIXTURE)

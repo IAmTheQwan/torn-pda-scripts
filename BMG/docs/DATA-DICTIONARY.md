@@ -91,7 +91,9 @@ cannot silently distort the other's ETA.
   run, with captured selection depth, completeness, external book count, and
   an explicit eligibility or rejection status.
 - `match_market_settlements` — rules-aware win/loss/push/void evidence.
-- `forecast_evaluations` — calibration, profit, closing odds, and closing-line value.
+- `forecast_evaluations` — calibration, hypothetical profit, closing odds,
+  closing-line value, and JSON evidence naming the closing captures, book count,
+  cutoff, formula, and result sources.
 - `backtest_runs`, `backtest_metrics` — chronological test definitions and results.
 
 Money is stored as whole Torn dollars (`INTEGER`). Decimal odds use `REAL` and are

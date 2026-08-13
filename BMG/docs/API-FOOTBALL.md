@@ -72,6 +72,26 @@ The transformed capture retains provider fixture ID, bookmaker, market, line,
 selection, decimal price, and provider update time. The API key remains in the
 ignored `.env` file and is never written to the capture.
 
+## Refresh and settle a paper review
+
+```powershell
+python .\BMG\src\api_football.py settle-review [FORECAST_RUN_ID] `
+  --output .\BMG\data\settlement-review-YYYY-MM-DD.md
+```
+
+The forecast run supplies the exact API-Football fixture IDs, so this uses one
+fixture request per distinct match rather than refreshing a league. Each raw
+fixture response is transformed into the source-neutral reference capture and
+imported before evaluation. Finished scored fixtures settle; live, scheduled,
+postponed, or suspended fixtures remain pending. Cancelled fixtures void.
+Awarded, walkover, and abandoned statuses require manual review.
+Extra-time and penalty finishes also require manual review because ordinary-time
+Torn markets cannot be settled from an ambiguous final-score field.
+
+Running the command again is safe. Settlement and evaluation identities are
+stable, while a corrected final provider score can update the stored result and
+derived metrics. The API key is never written to the capture or report.
+
 Add mappings only after confirming that a rename or stage label denotes the
 same competition. Common names in the wrong country and similar-looking cup or
 league labels must remain outside the registry.

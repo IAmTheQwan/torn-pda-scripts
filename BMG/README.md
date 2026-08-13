@@ -74,7 +74,10 @@ state. The first milestone is trustworthy data.
    python .\BMG\src\bmg.py modeling-summary
    python .\BMG\src\bmg.py history-performance --sport football
    python .\BMG\src\bmg.py daily-review --date 2026-08-13 `
+     --snapshot-label morning `
      --output .\BMG\data\paper-review-2026-08-13.md
+   python .\BMG\src\api_football.py settle-review `
+     --output .\BMG\data\settlement-review-2026-08-13.md
    ```
 
    `team-alias-audit` only marks aliases automatic when a known opponent,
@@ -87,6 +90,10 @@ state. The first milestone is trustworthy data.
    UTC date and records every displayed market's review status. It does not
    assume every game exposes the same menu: incomplete, unsupported, unmapped,
    or thinly priced surfaces remain in the ledger but cannot create a pick.
+   Repeat it after a later manually initiated Torn capture with
+   `--snapshot-label pre-kickoff`; both runs retain their own cutoffs and prices.
+   API-Football `settle-review` refreshes only that run's fixtures and evaluates
+   final results. Live or unclear results remain pending.
 
    Timestamped external price captures import with `import-odds`. Full schema,
    slate, forecast, decision, settlement, and backtest details are in
@@ -105,6 +112,7 @@ state. The first milestone is trustworthy data.
    python .\BMG\src\api_football.py backfill-reviewed --dry-run
    python .\BMG\src\api_football.py backfill-reviewed
    python .\BMG\src\api_football.py collect-odds FIXTURE_ID [FIXTURE_ID ...]
+   python .\BMG\src\api_football.py settle-review [FORECAST_RUN_ID]
    ```
 
    The catalog and audit live under ignored `BMG/data/`; captures live under
