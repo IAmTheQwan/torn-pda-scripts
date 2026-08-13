@@ -35,6 +35,34 @@ suspension state.
 - `history_event_details` — immutable raw expanded-dropdown records and completeness counts.
 - `bankroll_snapshots` — wallet, Bookie, stocks, other liquid value, and total.
 
+## Flashscore foreground capture (`bmg.flashscore-league.v1`)
+
+- `competition` — sport, country, league name, stable source slug, and URL.
+- `season` — provider season ID, label, date range, URL, and current flag.
+- `standings[]` — table scope plus every team row and visible recent-form links.
+- `matches[]` — provider match ID, round, raw local schedule, teams, state, score,
+  and evidence URL. Fixtures and results use the same object.
+- `match_details[].stats[]` — period, category, name, and raw home/away values.
+- `match_details[].h2h` — the ordered H2H list visible for that match context.
+
+Raw display times and the display timezone are retained. UTC is populated only
+when the visible row includes a time and BMG can resolve the timezone safely.
+
+## Sports-reference SQLite entities
+
+- `reference_capture_runs` — immutable raw foreground capture envelope.
+- `sports_competitions`, `competition_sources` — canonical league plus provider identity.
+- `competition_seasons`, `season_sources` — season dates and provider season ID.
+- `sports_teams`, `team_sources`, `team_aliases` — canonical team and source labels.
+- `season_teams` — membership observed for a competition season.
+- `sports_matches`, `match_sources` — one fixture/result identity plus source evidence.
+- `standings_snapshots`, `standing_rows` — append-only table observations.
+- `match_stats` — period/category/stat values, with raw values and parsed ratios.
+- `h2h_snapshots`, `h2h_snapshot_matches` — exactly which ordered meetings were visible.
+- `event_match_links` — reviewed reconciliation between Torn events and sports matches.
+- `match_markets`, `match_market_selections`, `match_odds_observations` — external
+  odds-ready tables; Torn prices stay in their existing tables and join via the match link.
+
 Money is stored as whole Torn dollars (`INTEGER`). Decimal odds use `REAL` and are
 validated above zero. Times are stored as UTC ISO text; raw source times are also
 retained when ambiguity exists.

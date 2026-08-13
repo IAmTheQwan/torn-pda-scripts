@@ -16,6 +16,7 @@ import bmg  # noqa: E402
 
 
 FIXTURE = PROJECT_DIR / "tests" / "fixtures" / "capture-history-v1.json"
+FLASHSCORE_FIXTURE = PROJECT_DIR / "tests" / "fixtures" / "flashscore-league-v1.json"
 
 
 class BmgDatabaseTests(unittest.TestCase):
@@ -216,6 +217,46 @@ class BmgDatabaseTests(unittest.TestCase):
         market = self.connection.execute("SELECT * FROM markets").fetchone()
         self.assertEqual("total", market["market_type"])
         self.assertEqual("Ordinary Time", market["period"])
+
+    def test_flashscore_league_import_is_relational_and_idempotent(self) -> None:
+        first = bmg.import_flashscore_file(self.connection, FLASHSCORE_FIXTURE)
+        self.assertEqual(1, first["captures"])
+        self.assertEqual(1, first["matches"])
+        self.assertEqual(2, first["standings"])
+        self.assertEqual(2, first["stats"])
+        self.assertEqual(2, first["h2h_matches"])
+        self.assertEqual(1, self.count("reference_capture_runs"))
+        self.assertEqual(2, self.count("sports_competitions"))
+        self.assertEqual(1, self.count("competition_seasons"))
+        self.assertEqual(2, self.count("sports_teams"))
+        self.assertEqual(2, self.count("sports_matches"))
+        self.assertEqual(2, self.count("standing_rows"))
+        self.assertEqual(2, self.count("match_stats"))
+        self.assertEqual(2, self.count("h2h_snapshot_matches"))
+
+        league_match = self.connection.execute(
+            """
+            SELECT sm.*
+            FROM sports_matches sm
+            JOIN match_sources ms ON ms.match_id = sm.match_id
+            WHERE ms.source_match_id = 'fixture-match-1'
+            """
+        ).fetchone()
+        self.assertEqual("2026-05-24", league_match["scheduled_date"])
+        self.assertEqual("2026-05-24T15:00:00Z", league_match["scheduled_at"])
+        self.assertEqual("finished", league_match["status"])
+
+        passes = self.connection.execute(
+            "SELECT * FROM match_stats WHERE stat_name = 'Passes'"
+        ).fetchone()
+        self.assertEqual(86.0, passes["home_value"])
+        self.assertEqual(430.0, passes["home_numerator"])
+        self.assertEqual(500.0, passes["home_denominator"])
+
+        second = bmg.import_flashscore_file(self.connection, FLASHSCORE_FIXTURE)
+        self.assertEqual(0, second["captures"])
+        self.assertEqual(1, self.count("reference_capture_runs"))
+        self.assertEqual(2, self.count("sports_matches"))
 
 
 if __name__ == "__main__":

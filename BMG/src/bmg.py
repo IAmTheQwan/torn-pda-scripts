@@ -11,14 +11,15 @@ import re
 import sqlite3
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DB = PROJECT_DIR / "data" / "bmg.sqlite"
-SCHEMA_FILE = PROJECT_DIR / "schema" / "001_initial.sql"
+SCHEMA_FILES = sorted((PROJECT_DIR / "schema").glob("[0-9][0-9][0-9]_*.sql"))
 STARTING_BANKROLL = 57_365_830
 TORN_OPTION_CAP = 1_000_000_000
 CAPTURE_SCHEMA = "bmg.capture.v1"
@@ -126,7 +127,8 @@ def open_database(path: Path) -> sqlite3.Connection:
 
 
 def apply_schema(connection: sqlite3.Connection) -> None:
-    connection.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
+    for schema_file in SCHEMA_FILES:
+        connection.executescript(schema_file.read_text(encoding="utf-8"))
     migrations = {
         "events": {
             "settled_at": "TEXT",
@@ -143,7 +145,7 @@ def apply_schema(connection: sqlite3.Connection) -> None:
             if column not in existing:
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_bets_settled_at ON bets (settled_at DESC)")
-    connection.execute("PRAGMA user_version = 2")
+    connection.execute("PRAGMA user_version = 3")
 
 
 def latest_bankroll(connection: sqlite3.Connection) -> sqlite3.Row | None:
@@ -748,6 +750,682 @@ def import_history_details_file(connection: sqlite3.Connection, path: Path) -> d
     return total
 
 
+def flashscore_capture_objects(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        raise ValueError("Flashscore export must be a JSON object.")
+    captures = payload.get("captures") if isinstance(payload.get("captures"), list) else [payload]
+    if not all(isinstance(capture, dict) for capture in captures):
+        raise ValueError("Every Flashscore capture must be a JSON object.")
+    return captures
+
+
+def parse_flashscore_schedule(
+    raw_value: Any,
+    season: dict[str, Any] | None,
+    display_timezone: str,
+) -> tuple[str | None, str | None]:
+    """Return UTC timestamp when time is visible plus a reliable local date."""
+    raw = clean_text(raw_value)
+    match = re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.(?:(\d{2,4}))?(?:\s+(\d{1,2}):(\d{2}))?", raw)
+    if not match:
+        return None, None
+    day, month = int(match.group(1)), int(match.group(2))
+    supplied_year = match.group(3)
+    hour = int(match.group(4)) if match.group(4) is not None else None
+    minute = int(match.group(5)) if match.group(5) is not None else None
+    if supplied_year:
+        year = int(supplied_year)
+        if year < 100:
+            year += 2000 if year < 70 else 1900
+    else:
+        start_text = clean_text((season or {}).get("start_date"))
+        end_text = clean_text((season or {}).get("end_date"))
+        start = datetime.fromisoformat(start_text).date() if start_text else None
+        end = datetime.fromisoformat(end_text).date() if end_text else None
+        candidates = sorted({value.year for value in (start, end) if value is not None})
+        year = candidates[0] if candidates else datetime.now(timezone.utc).year
+        for candidate in candidates:
+            try:
+                candidate_date = datetime(candidate, month, day).date()
+            except ValueError:
+                continue
+            if (start is None or candidate_date >= start) and (end is None or candidate_date <= end):
+                year = candidate
+                break
+    try:
+        local_date = datetime(year, month, day)
+    except ValueError:
+        return None, None
+    date_text = local_date.date().isoformat()
+    if hour is None or minute is None:
+        return None, date_text
+    try:
+        local_zone = ZoneInfo(display_timezone) if display_timezone else timezone.utc
+    except ZoneInfoNotFoundError:
+        if display_timezone == "America/New_York":
+            # Windows Python may not ship the IANA tz database. US daylight
+            # time runs from the second Sunday in March to the first Sunday in
+            # November; these boundaries are sufficient for modern match data.
+            march_first = datetime(year, 3, 1)
+            second_sunday = 1 + ((6 - march_first.weekday()) % 7) + 7
+            november_first = datetime(year, 11, 1)
+            first_sunday = 1 + ((6 - november_first.weekday()) % 7)
+            dst_start = datetime(year, 3, second_sunday, 2)
+            dst_end = datetime(year, 11, first_sunday, 2)
+            offset_hours = -4 if dst_start <= local_time_candidate(local_date, hour, minute) < dst_end else -5
+            local_zone = timezone(timedelta(hours=offset_hours))
+        else:
+            return None, date_text
+    local_time = local_date.replace(hour=hour, minute=minute, tzinfo=local_zone)
+    return local_time.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"), date_text
+
+
+def local_time_candidate(local_date: datetime, hour: int, minute: int) -> datetime:
+    return local_date.replace(hour=hour, minute=minute)
+
+
+def parse_stat_value(raw_value: Any) -> tuple[float | None, float | None, float | None]:
+    raw = clean_text(raw_value).replace(",", "")
+    value_match = re.match(r"^(-?\d+(?:\.\d+)?)", raw)
+    ratio_match = re.search(r"\((-?\d+(?:\.\d+)?)\s*/\s*(-?\d+(?:\.\d+)?)\)", raw)
+    value = optional_float(value_match.group(1)) if value_match else None
+    numerator = optional_float(ratio_match.group(1)) if ratio_match else None
+    denominator = optional_float(ratio_match.group(2)) if ratio_match else None
+    return value, numerator, denominator
+
+
+def upsert_sports_competition(
+    connection: sqlite3.Connection,
+    *,
+    source: str,
+    sport: str,
+    country: str,
+    name: str,
+    source_competition_id: str,
+    source_slug: str,
+    source_url: str,
+    observed_at: str,
+) -> int:
+    sport_key = canonical(sport) or "unknown"
+    country_name = clean_text(country)
+    display_name = clean_text(name) or "Unknown competition"
+    canonical_name = canonical(display_name)
+    connection.execute(
+        """
+        INSERT INTO sports_competitions (
+            sport, country, name, canonical_name, first_observed_at, last_observed_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(sport, country, canonical_name) DO UPDATE SET
+            name = excluded.name,
+            last_observed_at = excluded.last_observed_at
+        """,
+        (sport_key, country_name, display_name, canonical_name, observed_at, observed_at),
+    )
+    competition_id = int(
+        connection.execute(
+            "SELECT competition_id FROM sports_competitions WHERE sport = ? AND country = ? AND canonical_name = ?",
+            (sport_key, country_name, canonical_name),
+        ).fetchone()[0]
+    )
+    external_id = clean_text(source_competition_id) or f"{sport_key}:{canonical(country_name)}:{canonical_name}"
+    connection.execute(
+        """
+        INSERT INTO competition_sources (
+            competition_id, source, source_competition_id, source_slug, source_url,
+            first_observed_at, last_observed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source, source_competition_id) DO UPDATE SET
+            competition_id = excluded.competition_id,
+            source_slug = CASE WHEN excluded.source_slug <> '' THEN excluded.source_slug ELSE competition_sources.source_slug END,
+            source_url = CASE WHEN excluded.source_url <> '' THEN excluded.source_url ELSE competition_sources.source_url END,
+            last_observed_at = excluded.last_observed_at
+        """,
+        (competition_id, source, external_id, source_slug, source_url, observed_at, observed_at),
+    )
+    return competition_id
+
+
+def upsert_competition_season(
+    connection: sqlite3.Connection,
+    competition_id: int,
+    source: str,
+    season: dict[str, Any],
+    observed_at: str,
+) -> int:
+    name = clean_text(season.get("name")) or "Unknown season"
+    connection.execute(
+        """
+        INSERT INTO competition_seasons (
+            competition_id, name, start_date, end_date, is_current,
+            first_observed_at, last_observed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(competition_id, name) DO UPDATE SET
+            start_date = COALESCE(excluded.start_date, competition_seasons.start_date),
+            end_date = COALESCE(excluded.end_date, competition_seasons.end_date),
+            is_current = excluded.is_current,
+            last_observed_at = excluded.last_observed_at
+        """,
+        (
+            competition_id,
+            name,
+            clean_text(season.get("start_date")) or None,
+            clean_text(season.get("end_date")) or None,
+            1 if season.get("is_current") else 0,
+            observed_at,
+            observed_at,
+        ),
+    )
+    season_id = int(
+        connection.execute(
+            "SELECT season_id FROM competition_seasons WHERE competition_id = ? AND name = ?",
+            (competition_id, name),
+        ).fetchone()[0]
+    )
+    source_season_id = clean_text(season.get("source_season_id")) or f"{competition_id}:{name}"
+    connection.execute(
+        """
+        INSERT INTO season_sources (
+            season_id, source, source_season_id, source_url, first_observed_at, last_observed_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source, source_season_id) DO UPDATE SET
+            season_id = excluded.season_id,
+            source_url = CASE WHEN excluded.source_url <> '' THEN excluded.source_url ELSE season_sources.source_url END,
+            last_observed_at = excluded.last_observed_at
+        """,
+        (season_id, source, source_season_id, clean_text(season.get("source_url")), observed_at, observed_at),
+    )
+    return season_id
+
+
+def upsert_sports_team(
+    connection: sqlite3.Connection,
+    *,
+    source: str,
+    source_team_id: str,
+    sport: str,
+    country: str,
+    name: str,
+    source_url: str,
+    observed_at: str,
+) -> int:
+    external_id = clean_text(source_team_id)
+    display_name = clean_text(name) or "Unknown team"
+    existing = None
+    if external_id:
+        existing = connection.execute(
+            "SELECT team_id FROM team_sources WHERE source = ? AND source_team_id = ?",
+            (source, external_id),
+        ).fetchone()
+    if existing:
+        team_id = int(existing[0])
+        connection.execute(
+            "UPDATE sports_teams SET name = ?, last_observed_at = ? WHERE team_id = ?",
+            (display_name, observed_at, team_id),
+        )
+    else:
+        sport_key = canonical(sport) or "unknown"
+        country_name = clean_text(country)
+        name_key = canonical(display_name)
+        connection.execute(
+            """
+            INSERT INTO sports_teams (
+                sport, country, name, canonical_name, first_observed_at, last_observed_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(sport, country, canonical_name) DO UPDATE SET
+                name = excluded.name,
+                last_observed_at = excluded.last_observed_at
+            """,
+            (sport_key, country_name, display_name, name_key, observed_at, observed_at),
+        )
+        team_id = int(
+            connection.execute(
+                "SELECT team_id FROM sports_teams WHERE sport = ? AND country = ? AND canonical_name = ?",
+                (sport_key, country_name, name_key),
+            ).fetchone()[0]
+        )
+    external_id = external_id or "name:" + stable_hash(sport, country, display_name)
+    connection.execute(
+        """
+        INSERT INTO team_sources (
+            team_id, source, source_team_id, source_name, source_url,
+            first_observed_at, last_observed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source, source_team_id) DO UPDATE SET
+            team_id = excluded.team_id,
+            source_name = excluded.source_name,
+            source_url = CASE WHEN excluded.source_url <> '' THEN excluded.source_url ELSE team_sources.source_url END,
+            last_observed_at = excluded.last_observed_at
+        """,
+        (team_id, source, external_id, display_name, source_url, observed_at, observed_at),
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO team_aliases (team_id, source, alias, canonical_alias)
+        VALUES (?, ?, ?, ?)
+        """,
+        (team_id, source, display_name, canonical(display_name)),
+    )
+    return team_id
+
+
+def source_team_id(connection: sqlite3.Connection, source: str, external_id: Any) -> int | None:
+    row = connection.execute(
+        "SELECT team_id FROM team_sources WHERE source = ? AND source_team_id = ?",
+        (source, clean_text(external_id)),
+    ).fetchone()
+    return int(row[0]) if row else None
+
+
+def upsert_sports_match(
+    connection: sqlite3.Connection,
+    *,
+    source: str,
+    record: dict[str, Any],
+    sport: str,
+    country: str,
+    competition_id: int | None,
+    season_id: int | None,
+    season: dict[str, Any] | None,
+    display_timezone: str,
+    observed_at: str,
+) -> int:
+    external_id = clean_text(record.get("source_match_id"))
+    if not external_id:
+        raise ValueError("Every reference match needs source_match_id.")
+    home_team_id = source_team_id(connection, source, record.get("home_team_id"))
+    away_team_id = source_team_id(connection, source, record.get("away_team_id"))
+    if home_team_id is None:
+        home_team_id = upsert_sports_team(
+            connection,
+            source=source,
+            source_team_id=clean_text(record.get("home_team_id")),
+            sport=sport,
+            country=country,
+            name=clean_text(record.get("home_team")),
+            source_url="",
+            observed_at=observed_at,
+        )
+    if away_team_id is None:
+        away_team_id = upsert_sports_team(
+            connection,
+            source=source,
+            source_team_id=clean_text(record.get("away_team_id")),
+            sport=sport,
+            country=country,
+            name=clean_text(record.get("away_team")),
+            source_url="",
+            observed_at=observed_at,
+        )
+    scheduled_at, scheduled_date = parse_flashscore_schedule(
+        record.get("raw_scheduled_local") or record.get("raw_date"), season, display_timezone
+    )
+    home_score = optional_float(record.get("home_score"))
+    away_score = optional_float(record.get("away_score"))
+    status = clean_text(record.get("status"))
+    if not status:
+        status = "finished" if home_score is not None and away_score is not None else "scheduled"
+    source_row = connection.execute(
+        "SELECT match_id FROM match_sources WHERE source = ? AND source_match_id = ?",
+        (source, external_id),
+    ).fetchone()
+    if source_row:
+        match_id = int(source_row[0])
+        connection.execute(
+            """
+            UPDATE sports_matches SET
+                competition_id = COALESCE(competition_id, ?),
+                season_id = COALESCE(season_id, ?),
+                home_team_id = ?, away_team_id = ?,
+                round = CASE WHEN ? <> '' THEN ? ELSE round END,
+                scheduled_at = COALESCE(?, scheduled_at),
+                scheduled_date = COALESCE(?, scheduled_date),
+                raw_scheduled_local = CASE WHEN ? <> '' THEN ? ELSE raw_scheduled_local END,
+                display_timezone = CASE WHEN ? <> '' THEN ? ELSE display_timezone END,
+                status = CASE WHEN ? <> '' THEN ? ELSE status END,
+                home_score = COALESCE(?, home_score),
+                away_score = COALESCE(?, away_score),
+                last_observed_at = ?
+            WHERE match_id = ?
+            """,
+            (
+                competition_id,
+                season_id,
+                home_team_id,
+                away_team_id,
+                clean_text(record.get("round")),
+                clean_text(record.get("round")),
+                scheduled_at,
+                scheduled_date,
+                clean_text(record.get("raw_scheduled_local") or record.get("raw_date")),
+                clean_text(record.get("raw_scheduled_local") or record.get("raw_date")),
+                display_timezone,
+                display_timezone,
+                status,
+                status,
+                home_score,
+                away_score,
+                observed_at,
+                match_id,
+            ),
+        )
+    else:
+        cursor = connection.execute(
+            """
+            INSERT INTO sports_matches (
+                sport, competition_id, season_id, home_team_id, away_team_id, round,
+                scheduled_at, scheduled_date, raw_scheduled_local, display_timezone,
+                status, home_score, away_score, first_observed_at, last_observed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                canonical(sport) or "unknown",
+                competition_id,
+                season_id,
+                home_team_id,
+                away_team_id,
+                clean_text(record.get("round")),
+                scheduled_at,
+                scheduled_date,
+                clean_text(record.get("raw_scheduled_local") or record.get("raw_date")),
+                display_timezone,
+                status,
+                home_score,
+                away_score,
+                observed_at,
+                observed_at,
+            ),
+        )
+        match_id = int(cursor.lastrowid)
+    connection.execute(
+        """
+        INSERT INTO match_sources (
+            match_id, source, source_match_id, source_url, first_observed_at, last_observed_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source, source_match_id) DO UPDATE SET
+            source_url = CASE WHEN excluded.source_url <> '' THEN excluded.source_url ELSE match_sources.source_url END,
+            last_observed_at = excluded.last_observed_at
+        """,
+        (match_id, source, external_id, clean_text(record.get("source_url")), observed_at, observed_at),
+    )
+    return match_id
+
+
+def split_flashscore_competition(value: Any, fallback_country: str) -> tuple[str, str]:
+    text = clean_text(value)
+    match = re.fullmatch(r"(.+?)\s*\(([^()]+)\)", text)
+    if match:
+        return clean_text(match.group(1)), clean_text(match.group(2))
+    return text or "Unknown competition", fallback_country
+
+
+def import_flashscore_capture(connection: sqlite3.Connection, capture: dict[str, Any]) -> dict[str, int]:
+    if capture.get("schema_version") != "bmg.flashscore-league.v1":
+        raise ValueError("Unsupported Flashscore capture schema.")
+    capture_id = clean_text(capture.get("capture_id"))
+    observed_at = clean_text(capture.get("observed_at"))
+    source = clean_text(capture.get("source")) or "flashscore-visible-browser"
+    if not capture_id or not observed_at:
+        raise ValueError("Every Flashscore capture needs capture_id and observed_at.")
+    if connection.execute(
+        "SELECT 1 FROM reference_capture_runs WHERE capture_id = ?", (capture_id,)
+    ).fetchone():
+        return {"captures": 0, "competitions": 0, "seasons": 0, "teams": 0, "matches": 0, "standings": 0, "stats": 0, "h2h_matches": 0}
+    competition = capture.get("competition") if isinstance(capture.get("competition"), dict) else {}
+    season = capture.get("season") if isinstance(capture.get("season"), dict) else {}
+    matches = [row for row in (capture.get("matches") or []) if isinstance(row, dict)]
+    raw_json = json.dumps(capture, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    connection.execute(
+        """
+        INSERT INTO reference_capture_runs (
+            capture_id, schema_version, observed_at, source, page_url, display_timezone,
+            competition_count, season_count, match_count, imported_at, raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)
+        """,
+        (
+            capture_id,
+            capture["schema_version"],
+            observed_at,
+            source,
+            clean_text(capture.get("page_url")),
+            clean_text(capture.get("display_timezone")),
+            len(matches),
+            utc_now(),
+            raw_json,
+        ),
+    )
+    sport = clean_text(competition.get("sport")) or "football"
+    country = clean_text(competition.get("country"))
+    source_slug = clean_text(competition.get("source_slug"))
+    competition_id = upsert_sports_competition(
+        connection,
+        source=source,
+        sport=sport,
+        country=country,
+        name=clean_text(competition.get("name")),
+        source_competition_id=source_slug,
+        source_slug=source_slug,
+        source_url=clean_text(competition.get("source_url")),
+        observed_at=observed_at,
+    )
+    season_id = upsert_competition_season(connection, competition_id, source, season, observed_at)
+    display_timezone = clean_text(capture.get("display_timezone"))
+    known_team_ids: set[str] = set()
+
+    def ensure_team(record: dict[str, Any], prefix: str, source_url: str = "") -> int:
+        external_id = clean_text(record.get(f"{prefix}_team_id") or record.get("team_id"))
+        name = clean_text(record.get(f"{prefix}_team") or record.get("team"))
+        team_id = upsert_sports_team(
+            connection,
+            source=source,
+            source_team_id=external_id,
+            sport=sport,
+            country=country,
+            name=name,
+            source_url=source_url,
+            observed_at=observed_at,
+        )
+        known_team_ids.add(external_id)
+        connection.execute(
+            """
+            INSERT INTO season_teams (season_id, team_id, first_observed_at, last_observed_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(season_id, team_id) DO UPDATE SET last_observed_at = excluded.last_observed_at
+            """,
+            (season_id, team_id, observed_at, observed_at),
+        )
+        return team_id
+
+    standings = [item for item in (capture.get("standings") or []) if isinstance(item, dict)]
+    for snapshot in standings:
+        for row in snapshot.get("rows") or []:
+            if isinstance(row, dict):
+                ensure_team(row, "", clean_text(row.get("team_url")))
+    for row in matches:
+        ensure_team(row, "home")
+        ensure_team(row, "away")
+        upsert_sports_match(
+            connection,
+            source=source,
+            record=row,
+            sport=sport,
+            country=country,
+            competition_id=competition_id,
+            season_id=season_id,
+            season=season,
+            display_timezone=display_timezone,
+            observed_at=observed_at,
+        )
+
+    standing_row_count = 0
+    for snapshot in standings:
+        scope = canonical(snapshot.get("scope")) or "overall"
+        cursor = connection.execute(
+            """
+            INSERT INTO standings_snapshots (capture_id, season_id, scope, observed_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (capture_id, season_id, scope, observed_at),
+        )
+        snapshot_id = int(cursor.lastrowid)
+        for row in snapshot.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            team_id = source_team_id(connection, source, row.get("team_id"))
+            if team_id is None:
+                continue
+            connection.execute(
+                """
+                INSERT INTO standing_rows (
+                    standings_snapshot_id, team_id, rank, played, wins, draws, losses,
+                    goals_for, goals_against, goal_difference, points, qualification,
+                    form_json, raw_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_id,
+                    team_id,
+                    whole_dollars(row.get("rank"), 0) or None,
+                    whole_dollars(row.get("played"), 0),
+                    whole_dollars(row.get("wins"), 0),
+                    whole_dollars(row.get("draws"), 0),
+                    whole_dollars(row.get("losses"), 0),
+                    whole_dollars(row.get("goals_for"), 0),
+                    whole_dollars(row.get("goals_against"), 0),
+                    whole_dollars(row.get("goal_difference"), 0),
+                    whole_dollars(row.get("points"), 0),
+                    clean_text(row.get("qualification")),
+                    json.dumps(row.get("form") or [], ensure_ascii=False, separators=(",", ":")),
+                    json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                ),
+            )
+            standing_row_count += 1
+
+    stat_count = 0
+    h2h_match_count = 0
+    details = [item for item in (capture.get("match_details") or []) if isinstance(item, dict)]
+    for detail in details:
+        context_row = connection.execute(
+            "SELECT match_id FROM match_sources WHERE source = ? AND source_match_id = ?",
+            (source, clean_text(detail.get("source_match_id"))),
+        ).fetchone()
+        if not context_row:
+            continue
+        context_match_id = int(context_row[0])
+        for stat_set in detail.get("stats") or []:
+            if not isinstance(stat_set, dict):
+                continue
+            period = canonical(stat_set.get("period")) or "overall"
+            for stat in stat_set.get("rows") or []:
+                if not isinstance(stat, dict):
+                    continue
+                home_value, home_numerator, home_denominator = parse_stat_value(stat.get("home_raw"))
+                away_value, away_numerator, away_denominator = parse_stat_value(stat.get("away_raw"))
+                stat_group = clean_text(stat.get("group"))
+                stat_name = clean_text(stat.get("name")) or "Unknown stat"
+                connection.execute(
+                    """
+                    INSERT INTO match_stats (
+                        capture_id, match_id, period, stat_group, stat_key, stat_name,
+                        home_raw, away_raw, home_value, away_value,
+                        home_numerator, home_denominator, away_numerator, away_denominator,
+                        observed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        capture_id,
+                        context_match_id,
+                        period,
+                        stat_group,
+                        canonical(stat_name),
+                        stat_name,
+                        clean_text(stat.get("home_raw")),
+                        clean_text(stat.get("away_raw")),
+                        home_value,
+                        away_value,
+                        home_numerator,
+                        home_denominator,
+                        away_numerator,
+                        away_denominator,
+                        observed_at,
+                    ),
+                )
+                stat_count += 1
+        h2h = detail.get("h2h") if isinstance(detail.get("h2h"), dict) else None
+        if h2h:
+            left_team_id = source_team_id(connection, source, h2h.get("left_team_id"))
+            right_team_id = source_team_id(connection, source, h2h.get("right_team_id"))
+            if left_team_id is not None and right_team_id is not None:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO h2h_snapshots (
+                        capture_id, context_match_id, left_team_id, right_team_id, scope, observed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        capture_id,
+                        context_match_id,
+                        left_team_id,
+                        right_team_id,
+                        canonical(h2h.get("scope")) or "overall",
+                        observed_at,
+                    ),
+                )
+                snapshot_id = int(cursor.lastrowid)
+                for ordinal, row in enumerate(h2h.get("matches") or []):
+                    if not isinstance(row, dict):
+                        continue
+                    ensure_team(row, "home")
+                    ensure_team(row, "away")
+                    competition_name, h2h_country = split_flashscore_competition(row.get("competition"), country)
+                    h2h_competition_id = upsert_sports_competition(
+                        connection,
+                        source=source,
+                        sport=sport,
+                        country=h2h_country,
+                        name=competition_name,
+                        source_competition_id=f"{canonical(sport)}:{canonical(h2h_country)}:{canonical(competition_name)}",
+                        source_slug="",
+                        source_url="",
+                        observed_at=observed_at,
+                    )
+                    match_id = upsert_sports_match(
+                        connection,
+                        source=source,
+                        record=row,
+                        sport=sport,
+                        country=h2h_country,
+                        competition_id=h2h_competition_id,
+                        season_id=None,
+                        season=None,
+                        display_timezone=display_timezone,
+                        observed_at=observed_at,
+                    )
+                    connection.execute(
+                        "INSERT INTO h2h_snapshot_matches (h2h_snapshot_id, match_id, ordinal) VALUES (?, ?, ?)",
+                        (snapshot_id, match_id, ordinal),
+                    )
+                    h2h_match_count += 1
+    return {
+        "captures": 1,
+        "competitions": 1,
+        "seasons": 1,
+        "teams": len(known_team_ids),
+        "matches": len(matches),
+        "standings": standing_row_count,
+        "stats": stat_count,
+        "h2h_matches": h2h_match_count,
+    }
+
+
+def import_flashscore_file(connection: sqlite3.Connection, path: Path) -> dict[str, int]:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    total: dict[str, int] = {}
+    with connection:
+        for capture in flashscore_capture_objects(payload):
+            merge_counts(total, import_flashscore_capture(connection, capture))
+    return total
+
+
 def risk_limits(bankroll: int) -> dict[str, int]:
     return {
         "reserve": math.floor(bankroll * 0.70),
@@ -790,6 +1468,16 @@ def print_summary(connection: sqlite3.Connection) -> None:
         "bets",
         "history_event_details",
         "bankroll_snapshots",
+        "reference_capture_runs",
+        "sports_competitions",
+        "competition_seasons",
+        "sports_teams",
+        "sports_matches",
+        "standings_snapshots",
+        "standing_rows",
+        "match_stats",
+        "h2h_snapshots",
+        "h2h_snapshot_matches",
     ]
     for table in tables:
         count = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -797,6 +1485,59 @@ def print_summary(connection: sqlite3.Connection) -> None:
     bankroll = latest_bankroll(connection)
     if bankroll:
         print(f"latest bankroll         {money(int(bankroll['total'])):>12}  ({bankroll['observed_at']})")
+
+
+def print_sports_summary(connection: sqlite3.Connection) -> None:
+    seasons = connection.execute(
+        """
+        SELECT cs.season_id, sc.sport, sc.country, sc.name AS competition, cs.name AS season,
+               cs.start_date, cs.end_date, cs.is_current
+        FROM competition_seasons cs
+        JOIN sports_competitions sc ON sc.competition_id = cs.competition_id
+        ORDER BY cs.start_date, sc.country, sc.name
+        """
+    ).fetchall()
+    if not seasons:
+        print("No sports-reference seasons imported.")
+        return
+    for row in seasons:
+        season_id = int(row["season_id"])
+        teams = int(
+            connection.execute("SELECT COUNT(*) FROM season_teams WHERE season_id = ?", (season_id,)).fetchone()[0]
+        )
+        match_counts = connection.execute(
+            """
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN status = 'finished' THEN 1 ELSE 0 END) AS finished,
+                   SUM(CASE WHEN status = 'scheduled' THEN 1 ELSE 0 END) AS scheduled,
+                   SUM(CASE WHEN scheduled_at IS NOT NULL THEN 1 ELSE 0 END) AS exact_times
+            FROM sports_matches WHERE season_id = ?
+            """,
+            (season_id,),
+        ).fetchone()
+        standing_rows = int(
+            connection.execute(
+                """
+                SELECT COUNT(*) FROM standing_rows sr
+                JOIN standings_snapshots ss ON ss.standings_snapshot_id = sr.standings_snapshot_id
+                WHERE ss.season_id = ?
+                """,
+                (season_id,),
+            ).fetchone()[0]
+        )
+        marker = " current" if row["is_current"] else ""
+        print(f"{row['sport']} / {row['country']} / {row['competition']} {row['season']}{marker}")
+        print(
+            f"  teams={teams}, matches={int(match_counts['total'] or 0)}, "
+            f"finished={int(match_counts['finished'] or 0)}, scheduled={int(match_counts['scheduled'] or 0)}, "
+            f"exact_times={int(match_counts['exact_times'] or 0)}, standings={standing_rows}"
+        )
+    stats = int(connection.execute("SELECT COUNT(*) FROM match_stats").fetchone()[0])
+    h2h = int(connection.execute("SELECT COUNT(*) FROM h2h_snapshot_matches").fetchone()[0])
+    competitions = int(connection.execute("SELECT COUNT(*) FROM sports_competitions").fetchone()[0])
+    teams = int(connection.execute("SELECT COUNT(*) FROM sports_teams").fetchone()[0])
+    matches = int(connection.execute("SELECT COUNT(*) FROM sports_matches").fetchone()[0])
+    print(f"reference totals: competitions={competitions}, teams={teams}, matches={matches}, stats={stats}, h2h_rows={h2h}")
 
 
 def latest_market_odds(connection: sqlite3.Connection) -> Iterable[sqlite3.Row]:
@@ -905,7 +1646,13 @@ def build_parser() -> argparse.ArgumentParser:
     detail_parser = subparsers.add_parser("import-details", help="import expanded My Bets NDJSON details")
     detail_parser.add_argument("paths", type=Path, nargs="+")
 
+    reference_parser = subparsers.add_parser(
+        "import-flashscore", help="import one or more foreground Flashscore league captures"
+    )
+    reference_parser.add_argument("paths", type=Path, nargs="+")
+
     subparsers.add_parser("summary", help="show database row counts and latest bankroll")
+    subparsers.add_parser("sports-summary", help="show imported league, season, match, stats, and H2H coverage")
     subparsers.add_parser("risk", help="show bankroll guardrails")
     subparsers.add_parser("opportunities", help="show latest mathematical market-review candidates")
 
@@ -945,8 +1692,25 @@ def main(argv: list[str] | None = None) -> int:
                     merge_counts(total, import_history_details_file(connection, path.resolve()))
                 ordered = ["details", "captures", "events", "markets", "selections", "odds"]
                 print("Imported " + ", ".join(f"{key}={total.get(key, 0)}" for key in ordered))
+            elif args.command == "import-flashscore":
+                total = {}
+                for path in args.paths:
+                    merge_counts(total, import_flashscore_file(connection, path.resolve()))
+                ordered = [
+                    "captures",
+                    "competitions",
+                    "seasons",
+                    "teams",
+                    "matches",
+                    "standings",
+                    "stats",
+                    "h2h_matches",
+                ]
+                print("Imported " + ", ".join(f"{key}={total.get(key, 0)}" for key in ordered))
             elif args.command == "summary":
                 print_summary(connection)
+            elif args.command == "sports-summary":
+                print_sports_summary(connection)
             elif args.command == "risk":
                 print_risk(connection)
             elif args.command == "opportunities":

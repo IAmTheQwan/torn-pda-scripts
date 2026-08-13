@@ -40,6 +40,17 @@ state. The first milestone is trustworthy data.
    python .\BMG\src\bmg.py import-details .\BMG\exports\history-*\expanded-events.ndjson
    ```
 
+6. Import a manually initiated foreground Flashscore league capture:
+
+   ```powershell
+   python .\BMG\src\bmg.py import-flashscore .\BMG\exports\flashscore-*.json
+   python .\BMG\src\bmg.py sports-summary
+   ```
+
+   The first pilot contains both complete Premier League seasons surfaces:
+   2025/26 results and final standings plus the full 2026/27 fixture list. See
+   `docs/FLASHSCORE-WORKFLOW.md` for the repeatable league workflow.
+
 For a smoke test without Torn data:
 
 ```powershell
@@ -64,7 +75,7 @@ database is the evidence store; Git is the reproducible blueprint.
 - `userscripts/` — manual Torn page capture and JSON export.
 - `src/` — SQLite initialization/import, bankroll and odds math CLI, plus the
   checkpointed in-app-browser history recovery helper.
-- `schema/` — versioned relational model.
+- `schema/` — versioned Torn and source-neutral sports-reference models.
 - `docs/` — architecture, compliance, data dictionary, bankroll policy, and plan.
 - `tests/` — deterministic fixtures and regression tests.
 - `data/`, `exports/` — local ignored runtime data.

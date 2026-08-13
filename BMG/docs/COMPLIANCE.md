@@ -18,12 +18,14 @@ Last verified against official sources: 2026-08-13.
   control and capture the currently open event.
 - Save and analyze local snapshots after a direct Capture action.
 - Query independent sports data providers under their terms.
+- Perform a finite, visible in-app-browser league check after the player directly
+  asks for that batch; record the resulting public page observations locally.
 - Calculate implied probabilities, expected value, exposure, and dutching stakes.
 
 ## Out of scope
 
 - Additional non-API Torn requests initiated by a timer or script.
-- Automatic page cycling, refreshes, opening events, unattended clicks, or bet
+- Timer-driven, recurring, hidden, or self-restarting page checks; unattended bet
   placement.
 - Reading or monitoring Torn from hidden/background pages.
 - CAPTCHA bypass, rate-limit evasion, credential sharing, or undisclosed export.
@@ -49,6 +51,8 @@ avoid cache-bypass parameters unless fresh data is genuinely required.
 ## Release checklist
 
 - Every non-API Torn read is tied to the visible page and a direct user action.
+- Every Flashscore browser batch is tied to a new direct user instruction, remains
+  visible, and ends after its stated finite scope. A prior run never schedules the next one.
 - Capture aborts when `document.visibilityState !== "visible"`.
 - No timer, observer, or page lifecycle event makes a Torn request.
 - Export occurs only after a direct user action.

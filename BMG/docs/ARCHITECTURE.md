@@ -21,6 +21,16 @@ BMG userscript -> IndexedDB outbox -> local JSON export
                          QA -> movement -> modeling -> picks
 ```
 
+Independent sports reference data follows a parallel foreground path:
+
+```text
+Explicit user request -> visible in-app Flashscore league/match pages
+        -> finite expand/read pass -> local ignored JSON export
+        -> idempotent import -> competitions / seasons / teams / matches
+                             -> standings / match stats / H2H snapshots
+        -> event_match_links -> Torn events, odds, and historical bets
+```
+
 There is deliberately no direct userscript-to-server connection. This keeps the
 first version inspectable, makes failed imports recoverable, and prevents private
 Torn data from silently leaving the device.
@@ -54,6 +64,13 @@ resulting local snapshot; Export outbox is another direct user action.
 
 Every table retains source text or raw JSON needed to diagnose a bad mapping.
 
+External sports records use provider competition, season, team, and match IDs.
+Canonical match rows are stored once: a future fixture becoming a result updates
+the same match. `match_sources` preserves provider identity and
+`event_match_links` is the reviewed bridge to Torn. Team aliases allow labels
+such as `Manchester Utd` and `Manchester United` to resolve without rewriting
+source data.
+
 ## Analysis boundary
 
 `opportunities` computes the reciprocal-odds sum for the latest selections in a
@@ -66,8 +83,7 @@ coverage—the omitted draw remains a losing outcome.
 ## Planned adapters
 
 1. Torn API adapter for disclosed, authorized money and Bookie log fields.
-2. External sports schedule/results adapter with provider IDs and rate metadata.
-3. Reconciliation jobs joining Torn game IDs, provider fixtures, and settled bets.
-4. Model tables for forecasts, closing-line value, calibration, and pick decisions.
+2. Reconciliation jobs joining Torn game IDs, provider fixtures, and settled bets.
+3. Model tables for forecasts, closing-line value, calibration, and pick decisions.
 
 Adapters append observations. They do not rewrite source history.
