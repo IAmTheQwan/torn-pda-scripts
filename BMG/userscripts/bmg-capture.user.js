@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BMG Visible Bookie Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.2.0
+// @version      0.3.0
 // @description  Manually capture already-loaded Torn Bookie odds and My Bets outcomes for local BMG analysis
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
@@ -19,6 +19,8 @@
     const DB_VERSION = 1;
     const STORE_NAME = 'captures';
     const PANEL_ID = 'bmg-capture-panel';
+    let captureOnOpenEnabled = true;
+    let manualOpenGeneration = 0;
 
     function isBookiePage() {
         try {
@@ -284,50 +286,102 @@
         });
     }
 
+    function activeEventCards() {
+        const expandedCards = expandedEventCards();
+        const activeCards = expandedCards.filter(card => card.classList.contains('active'));
+        return (activeCards.length ? activeCards : expandedCards).slice(0, 1);
+    }
+
+    function cardsForSourceIds(sourceIds, fallbackCards = []) {
+        const allCards = Array.from(document.querySelectorAll('li.c-pointer'));
+        return sourceIds.map((sourceId, index) => {
+            if (!sourceId) return fallbackCards[index];
+            return allCards.find(card => routeDetails(card).source_event_id === sourceId) || fallbackCards[index];
+        }).filter(Boolean);
+    }
+
     function waitForAdditionalMarkets(cards, initialMarketCount, timeoutMs = 8000) {
         return new Promise(resolve => {
             let settleTimer = null;
+            const sourceIds = cards.map(card => routeDetails(card).source_event_id);
+            const currentCards = () => cardsForSourceIds(sourceIds, cards);
             const finish = () => {
                 observer.disconnect();
                 clearTimeout(timeoutTimer);
                 if (settleTimer) clearTimeout(settleTimer);
-                resolve(cards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0));
+                const resolvedCards = currentCards();
+                resolve({
+                    cards: resolvedCards,
+                    market_count: resolvedCards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0)
+                });
             };
             const scheduleFinish = () => {
-                const currentCount = cards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0);
+                const resolvedCards = currentCards();
+                const currentCount = resolvedCards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0);
                 if (currentCount <= initialMarketCount) return;
                 if (settleTimer) clearTimeout(settleTimer);
                 settleTimer = setTimeout(finish, 500);
             };
             const observer = new MutationObserver(scheduleFinish);
-            cards.forEach(card => observer.observe(card, { childList: true, subtree: true }));
+            observer.observe(document.body, { childList: true, subtree: true });
             const timeoutTimer = setTimeout(finish, timeoutMs);
             scheduleFinish();
         });
     }
 
-    async function expandActiveEvents() {
+    async function expandEventCards(cards) {
         if (document.visibilityState !== 'visible') {
             throw new Error('Bring Torn Bookie to the foreground before expanding markets.');
         }
         if (!isBookiePage() || /^#\/your-bets(?:\/|$)/i.test(location.hash)) {
             throw new Error('Open a Bookie event first.');
         }
-        const expandedCards = expandedEventCards();
-        const activeCards = expandedCards.filter(card => card.classList.contains('active'));
-        const cards = (activeCards.length ? activeCards : expandedCards).slice(0, 1);
         if (!cards.length) throw new Error('Manually open a Bookie event first.');
         const controls = cards.flatMap(card => additionalMarketControls(card).slice(0, 1));
         if (!controls.length) {
             return {
                 requested: 0,
+                cards,
                 market_count: cards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0)
             };
         }
         const initialMarketCount = cards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0);
         controls.forEach(control => control.click());
-        const marketCount = await waitForAdditionalMarkets(cards, initialMarketCount);
-        return { requested: controls.length, market_count: marketCount };
+        const result = await waitForAdditionalMarkets(cards, initialMarketCount);
+        return { requested: controls.length, cards: result.cards, market_count: result.market_count };
+    }
+
+    function waitForManuallyOpenedCard(sourceEventId, fallbackCard, timeoutMs = 12000) {
+        return new Promise((resolve, reject) => {
+            let settleTimer = null;
+            const cleanup = () => {
+                observer.disconnect();
+                clearTimeout(timeoutTimer);
+                if (settleTimer) clearTimeout(settleTimer);
+            };
+            const findReadyCard = () => {
+                if (document.visibilityState !== 'visible') return;
+                const candidate = cardsForSourceIds([sourceEventId], [fallbackCard])[0];
+                if (!candidate) return;
+                const info = candidate.querySelector('.info-wrap');
+                const loaded = Boolean(info?.querySelector('ul.bets-wrap li.bets'));
+                const expanded = candidate.classList.contains('active')
+                    || (info && info.style.display !== 'none' && getComputedStyle(info).display !== 'none');
+                if (!loaded || !expanded) return;
+                if (settleTimer) clearTimeout(settleTimer);
+                settleTimer = setTimeout(() => {
+                    cleanup();
+                    resolve(cardsForSourceIds([sourceEventId], [candidate])[0]);
+                }, 350);
+            };
+            const observer = new MutationObserver(findReadyCard);
+            observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+            const timeoutTimer = setTimeout(() => {
+                cleanup();
+                reject(new Error('The opened event did not finish loading in time. Try Expand + capture.'));
+            }, timeoutMs);
+            findReadyCard();
+        });
     }
 
     function titleValuesForMyBet(link) {
@@ -416,13 +470,13 @@
         return bets;
     }
 
-    function buildCapture() {
+    function buildCapture(eventCards = null) {
         if (document.visibilityState !== 'visible') {
             throw new Error('Bring Torn Bookie to the foreground before capturing.');
         }
         if (!isBookiePage()) throw new Error('Open Torn Bookie first.');
         const onMyBets = /^#\/your-bets(?:\/|$)/i.test(location.hash);
-        const events = onMyBets ? [] : expandedEventCards().map(parseEventCard).filter(event => event.title && event.markets.length);
+        const events = onMyBets ? [] : (eventCards || expandedEventCards()).map(parseEventCard).filter(event => event.title && event.markets.length);
         const bets = onMyBets ? parseMyBets() : [];
         if (!events.length && !bets.length) {
             throw new Error(onMyBets
@@ -439,6 +493,29 @@
             events,
             bets
         };
+    }
+
+    function captureSummary(capture) {
+        const partialEvents = capture.events.filter(event => !event.captured_as_complete).length;
+        return `Saved ${capture.events.length} event(s), ${capture.events.reduce((sum, event) => sum + event.markets.length, 0)} market(s), and ${capture.bets.length} bet row(s).${partialEvents ? ` Warning: ${partialEvents} event(s) still showed additional options.` : ''}`;
+    }
+
+    async function saveCapture(capture, panel) {
+        await putCapture(capture);
+        if (location.hostname === '127.0.0.1'
+            && document.documentElement.dataset.bmgTestFixture === 'true') {
+            panel.dataset.bmgLastCapture = JSON.stringify(capture);
+        }
+        return capture;
+    }
+
+    async function expandAndCapture(cards, panel) {
+        const selectedCards = cards?.length ? cards.slice(0, 1) : activeEventCards();
+        if (!selectedCards.length) throw new Error('Manually open a Bookie event first.');
+        const expansion = await expandEventCards(selectedCards);
+        const capture = buildCapture(expansion.cards);
+        await saveCapture(capture, panel);
+        return { capture, expansion };
     }
 
     function downloadJson(filename, value) {
@@ -474,11 +551,12 @@
         panel.id = PANEL_ID;
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:250px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:13px;margin-bottom:5px">BMG Capture v0.2.0</div>
-            <div style="color:#bbb;font-size:10px;line-height:1.35;margin-bottom:8px">Manual foreground actions only. Open a game yourself; BMG places no bet.</div>
+            <div style="font-weight:800;font-size:13px;margin-bottom:5px">BMG Capture v0.3.0</div>
+            <div style="color:#bbb;font-size:10px;line-height:1.35;margin-bottom:8px">Click a game yourself; BMG expands and captures that visible event. It never opens the next game or places a bet.</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-                <button type="button" data-action="expand">Expand active</button>
+                <button type="button" data-action="expand-capture">Expand + capture</button>
                 <button type="button" data-action="capture">Capture expanded</button>
+                <button type="button" data-action="auto" aria-pressed="true" style="grid-column:1 / -1">Capture on game click: ON</button>
                 <button type="button" data-action="export">Export outbox</button>
                 <button type="button" data-action="copy">Copy latest</button>
             </div>
@@ -493,13 +571,27 @@
             status.style.color = error ? '#ff8b8b' : '#8ecbff';
         };
 
-        panel.querySelector('[data-action="expand"]').addEventListener('click', async () => {
+        const autoButton = panel.querySelector('[data-action="auto"]');
+        const updateAutoButton = () => {
+            autoButton.textContent = `Capture on game click: ${captureOnOpenEnabled ? 'ON' : 'OFF'}`;
+            autoButton.setAttribute('aria-pressed', String(captureOnOpenEnabled));
+            autoButton.style.background = captureOnOpenEnabled ? '#286b45' : '#555';
+            autoButton.style.borderColor = captureOnOpenEnabled ? '#4aa56f' : '#777';
+        };
+        updateAutoButton();
+
+        autoButton.addEventListener('click', () => {
+            captureOnOpenEnabled = !captureOnOpenEnabled;
+            manualOpenGeneration++;
+            updateAutoButton();
+            show(`Capture on game click is ${captureOnOpenEnabled ? 'ON' : 'OFF'}.`);
+        });
+
+        panel.querySelector('[data-action="expand-capture"]').addEventListener('click', async () => {
             try {
-                show('Requesting additional markets for the open event…');
-                const result = await expandActiveEvents();
-                show(result.requested
-                    ? `Expansion finished with ${result.market_count} loaded market(s). Press Capture expanded.`
-                    : `No additional-options control found; ${result.market_count} market(s) are already loaded.`);
+                show('Expanding and capturing the open event…');
+                const result = await expandAndCapture(null, panel);
+                show(captureSummary(result.capture));
             } catch (error) {
                 show(error.message || String(error), true);
             }
@@ -508,13 +600,8 @@
         panel.querySelector('[data-action="capture"]').addEventListener('click', async () => {
             try {
                 const capture = buildCapture();
-                await putCapture(capture);
-                if (location.hostname === '127.0.0.1'
-                    && document.documentElement.dataset.bmgTestFixture === 'true') {
-                    panel.dataset.bmgLastCapture = JSON.stringify(capture);
-                }
-                const partialEvents = capture.events.filter(event => !event.captured_as_complete).length;
-                show(`Saved ${capture.events.length} event(s), ${capture.events.reduce((sum, event) => sum + event.markets.length, 0)} market(s), and ${capture.bets.length} bet row(s).${partialEvents ? ` Warning: ${partialEvents} event(s) still showed additional options.` : ''}`);
+                await saveCapture(capture, panel);
+                show(captureSummary(capture));
             } catch (error) {
                 show(error.message || String(error), true);
             }
@@ -550,6 +637,31 @@
         });
 
         document.body.appendChild(panel);
+        document.addEventListener('click', event => {
+            const localTestClick = location.hostname === '127.0.0.1'
+                && document.documentElement.dataset.bmgTestFixture === 'true';
+            if (!captureOnOpenEnabled || (!event.isTrusted && !localTestClick) || event.button !== 0 || document.visibilityState !== 'visible') return;
+            const link = event.target.closest?.('a[href*="#/"]');
+            const card = link?.closest('li.c-pointer');
+            const href = link?.getAttribute('href') || '';
+            const match = href.match(/#\/([^/]+)\/([^/?#]+)/i);
+            if (!card || !match || /^your-bets$/i.test(match[1])) return;
+            const sourceEventId = match[2];
+            const generation = ++manualOpenGeneration;
+            setTimeout(async () => {
+                try {
+                    if (generation !== manualOpenGeneration || !captureOnOpenEnabled) return;
+                    show('Game opened. Loading all markets and capturing…');
+                    const openedCard = await waitForManuallyOpenedCard(sourceEventId, card);
+                    if (generation !== manualOpenGeneration || !captureOnOpenEnabled) return;
+                    const result = await expandAndCapture([openedCard], panel);
+                    if (generation !== manualOpenGeneration || !captureOnOpenEnabled) return;
+                    show(captureSummary(result.capture));
+                } catch (error) {
+                    if (generation === manualOpenGeneration) show(error.message || String(error), true);
+                }
+            }, 0);
+        }, true);
         getCaptures()
             .then(captures => show(`Ready. ${captures.length} capture(s) currently in the local outbox.`))
             .catch(error => show(`Outbox error: ${error.message || error}`, true));

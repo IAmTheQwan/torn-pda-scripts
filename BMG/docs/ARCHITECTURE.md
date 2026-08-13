@@ -33,12 +33,13 @@ The userscript observes only:
 - event cards and market rows Torn loaded after the player manually opened the
   event; an explicit **Expand active** click may activate Torn's own additional
   options control for that visible event;
-- one direct click on BMG's Capture button.
+- a direct BMG capture click, or a direct player click that opens a game while
+  **Capture on game click** is armed.
 
 It does not open events, cycle pages, refresh, operate from a hidden tab, notify
-from background observations, or place a bet. Expansion is limited to the open
-visible event and occurs only from the player's direct button press. IndexedDB
-stores the resulting local snapshot; Export outbox is another direct user action.
+from background observations, or place a bet. Expansion and capture are limited
+to the visible event produced by the player's trusted click. IndexedDB stores the
+resulting local snapshot; Export outbox is another direct user action.
 
 ## Stable identities
 

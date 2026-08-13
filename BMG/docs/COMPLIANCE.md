@@ -14,8 +14,8 @@ Last verified against official sources: 2026-08-13.
 
 - Process Torn API data through documented endpoints and access levels.
 - Parse data already loaded on the Torn page the player is actively viewing.
-- From an explicit foreground click, activate Torn's additional-options control
-  for the currently open event.
+- From an explicit foreground event click, activate Torn's additional-options
+  control and capture the currently open event.
 - Save and analyze local snapshots after a direct Capture action.
 - Query independent sports data providers under their terms.
 - Calculate implied probabilities, expected value, exposure, and dutching stakes.
