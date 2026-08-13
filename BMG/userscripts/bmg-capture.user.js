@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BMG Visible Bookie Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.3.1
+// @version      0.3.2
 // @description  Manually capture already-loaded Torn Bookie odds and My Bets outcomes for local BMG analysis
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
@@ -421,25 +421,37 @@
 
     function parseMyBetPart(value) {
         const title = cleanText(value);
-        let match = title.match(/^Pending\s+\$([\d,]+).*?\(x([\d.]+)\)\s+bet on\s+(.+?)\s+\((.+)\)$/i);
+        const splitDescription = description => {
+            const lastMarket = description.lastIndexOf(' (');
+            if (lastMarket < 0 || !description.endsWith(')')) return null;
+            return {
+                selection_name: description.slice(0, lastMarket).trim(),
+                market_name: description.slice(lastMarket + 2, -1).trim()
+            };
+        };
+        let match = title.match(/^Pending\s+\$([\d,]+).*?\(x([\d.]+)\)\s+bet on\s+(.+)$/i);
         if (match) {
-            return { status: 'pending', stake: Number(match[1].replace(/,/g, '')), odds_decimal: Number(match[2]), selection_name: match[3], market_name: match[4], payout: null, profit: null, raw_text: title };
+            const description = splitDescription(match[3]);
+            if (description) return { status: 'pending', stake: Number(match[1].replace(/,/g, '')), odds_decimal: Number(match[2]), ...description, payout: null, profit: null, raw_text: title };
         }
-        match = title.match(/^Won\s+\$([\d,]+)\s+\(x([\d.]+)\)\s+from a\s+\$([\d,]+)\s+bet on\s+(.+?)\s+\((.+)\)$/i);
+        match = title.match(/^Won\s+\$([\d,]+)\s+\(x([\d.]+)\)\s+from a\s+\$([\d,]+)\s+bet on\s+(.+)$/i);
         if (match) {
             const profit = Number(match[1].replace(/,/g, ''));
             const stake = Number(match[3].replace(/,/g, ''));
-            return { status: 'win', stake, odds_decimal: Number(match[2]), selection_name: match[4], market_name: match[5], payout: stake + profit, profit, raw_text: title };
+            const description = splitDescription(match[4]);
+            if (description) return { status: 'win', stake, odds_decimal: Number(match[2]), ...description, payout: stake + profit, profit, raw_text: title };
         }
-        match = title.match(/^Lost\s+\$([\d,]+)\s+\(x([\d.]+)\)\s+bet on\s+(.+?)\s+\((.+)\)$/i);
+        match = title.match(/^Lost\s+\$([\d,]+)\s+\(x([\d.]+)\)\s+bet on\s+(.+)$/i);
         if (match) {
             const stake = Number(match[1].replace(/,/g, ''));
-            return { status: 'loss', stake, odds_decimal: Number(match[2]), selection_name: match[3], market_name: match[4], payout: 0, profit: -stake, raw_text: title };
+            const description = splitDescription(match[3]);
+            if (description) return { status: 'loss', stake, odds_decimal: Number(match[2]), ...description, payout: 0, profit: -stake, raw_text: title };
         }
-        match = title.match(/^Refunded\s+\$([\d,]+)\s+\(x([\d.]+)\)\s+bet on\s+(.+?)\s+\((.+)\)$/i);
+        match = title.match(/^Refunded\s+\$([\d,]+)\s+\(x([\d.]+)\)\s+bet on\s+(.+)$/i);
         if (match) {
             const stake = Number(match[1].replace(/,/g, ''));
-            return { status: 'refund', stake, odds_decimal: Number(match[2]), selection_name: match[3], market_name: match[4], payout: stake, profit: 0, raw_text: title };
+            const description = splitDescription(match[3]);
+            if (description) return { status: 'refund', stake, odds_decimal: Number(match[2]), ...description, payout: stake, profit: 0, raw_text: title };
         }
         return null;
     }
@@ -454,10 +466,19 @@
             const sport = canonical(link.closest('li')?.querySelector('li.game')?.getAttribute('title')) || 'unknown';
             if (FOOTBALL_ONLY && sport !== 'football') return;
             const fixture = fixtureForMyBet(link);
-            titleValuesForMyBet(link).forEach(value => {
-                String(value).replace(/<br\s*\/?>/gi, '\n').split(/\n(?=(?:Pending|Won|Lost|Refunded)\s)/i).forEach(part => {
-                    const bet = parseMyBetPart(part);
-                    if (!bet) return;
+            const groups = titleValuesForMyBet(link).map(value => {
+                return String(value).replace(/<br\s*\/?>/gi, '\n')
+                    .split(/\n(?=(?:Pending|Won|Lost|Refunded)\s)/i)
+                    .map(parseMyBetPart)
+                    .filter(Boolean);
+            }).filter(group => group.length);
+            const parsedBets = groups.sort((left, right) => right.length - left.length)[0] || [];
+            parsedBets.forEach(bet => {
+                    const handicapMatch = bet.selection_name.match(/\(\s*([+-]?\d+(?:[.,]\d+)?)\s*\)\s*$/);
+                    const rawSelectionName = bet.selection_name;
+                    bet.selection_name = rawSelectionName.replace(/\s*\(\s*[+-]?\d+(?:[.,]\d+)?\s*\)\s*$/, '').trim();
+                    bet.raw_selection_name = rawSelectionName;
+                    bet.handicap = handicapMatch ? Number(handicapMatch[1].replace(',', '.')) : null;
                     const base = [gameId, canonical(bet.market_name), canonical(bet.selection_name), bet.stake, bet.odds_decimal].join('|');
                     const occurrence = Number(occurrences.get(base) || 0);
                     occurrences.set(base, occurrence + 1);
@@ -473,7 +494,6 @@
                         market_type: classifyMarket(bet.market_name),
                         period: marketPeriod(bet.market_name)
                     });
-                });
             });
         });
         return bets;
@@ -564,7 +584,7 @@
         panel.id = PANEL_ID;
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:250px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:13px;margin-bottom:5px">BMG Capture v0.3.1</div>
+            <div style="font-weight:800;font-size:13px;margin-bottom:5px">BMG Capture v0.3.2</div>
             <div style="color:#bbb;font-size:10px;line-height:1.35;margin-bottom:8px">Football only. Click a football game yourself; BMG expands and captures it. It never opens the next game or places a bet.</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
                 <button type="button" data-action="expand-capture">Expand + capture</button>
