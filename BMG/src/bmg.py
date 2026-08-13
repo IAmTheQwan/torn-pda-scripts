@@ -38,7 +38,7 @@ DEFAULT_EVENT_MATCH_REVIEW = PROJECT_DIR / "config" / "event-match-reviewed-deci
 SCHEMA_FILES = sorted((PROJECT_DIR / "schema").glob("[0-9][0-9][0-9]_*.sql"))
 STARTING_BANKROLL = 57_365_830
 TORN_OPTION_CAP = 1_000_000_000
-STOCK_RISK_ELIGIBLE_BPS = 9_500
+STOCK_RISK_ELIGIBLE_BPS = 10_000
 CAPTURE_SCHEMA = "bmg.capture.v1"
 MARKET_ODDS_SCHEMA = "bmg.market-odds.v1"
 REFERENCE_LEAGUE_SCHEMAS = {"bmg.flashscore-league.v1", "bmg.sports-league.v1"}
@@ -189,7 +189,7 @@ def latest_bankroll(connection: sqlite3.Connection) -> sqlite3.Row | None:
 
 
 def risk_eligible_bankroll(row: sqlite3.Row | None) -> int:
-    """Return funds committed to BMG after the stock liquidation buffer."""
+    """Return the latest approximate funds committed to BMG."""
     if row is None:
         return 0
     stock_value = int(row["stocks"])

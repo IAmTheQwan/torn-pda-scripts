@@ -57,7 +57,7 @@ class BmgDatabaseTests(unittest.TestCase):
             bmg.risk_limits(bmg.STARTING_BANKROLL),
         )
 
-    def test_committed_stock_value_uses_liquidation_buffer(self) -> None:
+    def test_committed_stock_value_is_risk_eligible(self) -> None:
         self.connection.execute(
             """
             INSERT INTO bankroll_snapshots (
@@ -72,14 +72,14 @@ class BmgDatabaseTests(unittest.TestCase):
                 0,
                 182_444_859,
                 "test",
-                "stock haircut",
+                "committed stock value",
             ),
         )
         self.connection.commit()
 
         row = bmg.latest_bankroll(self.connection)
         self.assertEqual(182_444_859, row["total"])
-        self.assertEqual(173_329_496, bmg.risk_eligible_bankroll(row))
+        self.assertEqual(182_444_859, bmg.risk_eligible_bankroll(row))
 
     def test_capture_import_is_relational_and_idempotent(self) -> None:
         first = bmg.import_file(self.connection, FIXTURE)

@@ -37,10 +37,10 @@ Kelly stake.
 
 - Never increase a stake to recover a loss.
 - Never count correlated bets as independent exposure.
-- Never use unrealized stock value as instantly liquid without a haircut.
-- The owner committed the stock portfolio to BMG on 2026-08-13. Count 95% of
-  its current market value in the risk-eligible bankroll, retaining 5% as a
-  liquidation and price-movement buffer until the shares are sold.
+- The owner committed the stock portfolio to BMG on 2026-08-13. Count its last
+  observed market value in the approximate risk-eligible bankroll. Refresh the
+  snapshot periodically; small liquidation gains or losses are accepted as
+  ordinary measurement drift.
 - Never call a partial market a hedge or arbitrage.
 - Stop when the daily loss boundary is reached; review the following day.
 - Keep prediction timestamp, accepted odds, closing odds, and settlement rule.
