@@ -57,6 +57,10 @@ python .\BMG\src\api_football.py backfill-reviewed --dry-run
 python .\BMG\src\api_football.py backfill-reviewed
 ```
 
+The dry run distinguishes all registry jobs from `pending` league-seasons and
+calculates its API-call ceiling from pending work only. This keeps rerun quota
+estimates meaningful as the registry grows.
+
 Add mappings only after confirming that a rename or stage label denotes the
 same competition. Common names in the wrong country and similar-looking cup or
 league labels must remain outside the registry.

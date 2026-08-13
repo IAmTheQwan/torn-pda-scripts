@@ -494,6 +494,24 @@ class BmgDatabaseTests(unittest.TestCase):
         with self.assertRaises(api_football.ApiFootballError):
             api_football.reviewed_backfill_jobs(audit, catalog, registry)
 
+    def test_committed_api_football_review_registry_is_complete_and_unique(self) -> None:
+        registry_path = PROJECT_DIR / "config" / "api-football-reviewed-mappings.json"
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("bmg.api-football-reviewed-mappings.v1", registry["schema_version"])
+        mappings = registry["mappings"]
+        target_ids = [item["target_id"] for item in mappings]
+        self.assertEqual(len(target_ids), len(set(target_ids)))
+        self.assertGreaterEqual(len(mappings), 180)
+        for item in mappings:
+            self.assertTrue(item["competition_family"])
+            self.assertTrue(item["jurisdiction"])
+            self.assertGreater(item["league_id"], 0)
+            self.assertTrue(item["provider_name"])
+            self.assertTrue(item["provider_country"])
+            self.assertTrue(item["seasons"])
+            self.assertTrue(item["reason"])
+
     def test_api_football_duplicate_standings_group_names_get_unique_scopes(self) -> None:
         league = {
             "league": {"id": 888, "name": "Grouped League"},

@@ -864,7 +864,12 @@ def read_audit(path: Path) -> dict[str, Any]:
     return audit
 
 
-def print_backfill_plan(tier: str, audit: dict[str, Any], jobs: list[dict[str, Any]]) -> None:
+def print_backfill_plan(
+    tier: str,
+    audit: dict[str, Any],
+    jobs: list[dict[str, Any]],
+    database: Path | None = None,
+) -> None:
     selected_target_ids = {
         target_id for job in jobs for target_id in (job.get("target_ids") or []) if target_id
     }
@@ -873,13 +878,19 @@ def print_backfill_plan(tier: str, audit: dict[str, Any], jobs: list[dict[str, A
         for target in (audit.get("targets") or [])
         if isinstance(target, dict) and target.get("target_id") in selected_target_ids
     ]
+    pending = [
+        job for job in jobs
+        if database is None
+        or not season_is_imported(database, int(job["league_id"]), int(job["season"]))
+    ]
     print(
-        f"{tier} backfill jobs={len(jobs)}; expected API calls<={len(jobs) * 2}; "
+        f"{tier} backfill jobs={len(jobs)}; pending={len(pending)}; "
+        f"expected API calls<={len(pending) * 2}; "
         f"unique targets={len(selected_targets)}; "
         f"wagers={sum(int(target.get('wager_count') or 0) for target in selected_targets)}; "
         f"staked={sum(int(target.get('staked') or 0) for target in selected_targets)}"
     )
-    for job in jobs[:20]:
+    for job in pending[:20]:
         print(
             f"{job['provider_country']} / {job['provider_name']} {job['season']} "
             f"id={job['league_id']} wagers={job['wager_count']}"
@@ -955,7 +966,7 @@ def command_backfill_exact(args: argparse.Namespace) -> None:
     if args.limit is not None:
         jobs = jobs[: max(0, args.limit)]
     if args.dry_run:
-        print_backfill_plan("exact", audit, jobs)
+        print_backfill_plan("exact", audit, jobs, args.db)
         return
     client = make_client(args.env)
     catalog = fetch_catalog(client, args.catalog) if args.refresh_catalog or not args.catalog.exists() else read_catalog(args.catalog)
@@ -975,7 +986,7 @@ def command_backfill_reviewed(args: argparse.Namespace) -> None:
     if args.limit is not None:
         jobs = jobs[: max(0, args.limit)]
     if args.dry_run:
-        print_backfill_plan("reviewed", audit, jobs)
+        print_backfill_plan("reviewed", audit, jobs, args.db)
         return
     client = client or make_client(args.env)
     run_backfill(args, audit, jobs, catalog, client, "reviewed")

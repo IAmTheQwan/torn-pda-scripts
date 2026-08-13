@@ -1,5 +1,33 @@
 # Historical collection progress
 
+## API-Football reviewed-label tier two — 2026-08-13
+
+The second reviewed-label batch added 125 explicit targets representing 754
+historical wagers and $6,686,853,726 of stake. Corrected provider identities
+include NWSL rather than WPSL, Segunda División rather than La Liga for
+LaLiga2, Copa do Brasil rather than a generic foreign cup, and the proper
+parent competitions for continental group, final, and qualification stages.
+Ambiguous 2026 Japanese formats and uncertain Australian state-tier labels
+remain excluded.
+
+- 96 genuinely new league-seasons imported 19,069 matches and 1,647 standings
+  rows with zero failed jobs, using 192 API requests.
+- The reference database now contains 63,977 matches, 4,672 standings rows,
+  4,104 teams, and 273 provider capture runs.
+- Direct reconciliation plus three guarded alias dependency waves added 476
+  outcomes and linked 560 more historical football wagers.
+- BMG now has 1,647 reconciled outcomes and links 1,930 of 3,371 historical
+  football wagers.
+- The alias bridge now retains 444 accepted Torn/provider aliases with 754
+  evidence rows. Its automatic queue is exhausted; 214 weaker cases and one
+  explicit multi-team conflict remain review-only.
+- Fully reconciled competition targets increased from 81 to 163, with 164
+  targets progressed.
+
+The committed reviewed registry now contains 183 unique targets in total. A
+dry run reports both all registry jobs and only the league-seasons still
+pending, so quota estimates exclude already imported seasons.
+
 ## Evidence-backed team-alias checkpoint — 2026-08-13
 
 The first deterministic alias bridge is complete. It used one already-known
