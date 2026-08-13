@@ -73,6 +73,8 @@ state. The first milestone is trustworthy data.
    python .\BMG\src\bmg.py sync-outcomes
    python .\BMG\src\bmg.py modeling-summary
    python .\BMG\src\bmg.py history-performance --sport football
+   python .\BMG\src\bmg.py daily-review --date 2026-08-13 `
+     --output .\BMG\data\paper-review-2026-08-13.md
    ```
 
    `team-alias-audit` only marks aliases automatic when a known opponent,
@@ -80,6 +82,11 @@ state. The first milestone is trustworthy data.
    provider team. Accepted aliases retain event/match evidence in SQLite;
    two-name fuzzy candidates remain review-only until an explicit decision is
    added to `config/event-match-reviewed-decisions.json`.
+
+   `daily-review` freezes the latest registered capture for each event on that
+   UTC date and records every displayed market's review status. It does not
+   assume every game exposes the same menu: incomplete, unsupported, unmapped,
+   or thinly priced surfaces remain in the ledger but cannot create a pick.
 
    Timestamped external price captures import with `import-odds`. Full schema,
    slate, forecast, decision, settlement, and backtest details are in

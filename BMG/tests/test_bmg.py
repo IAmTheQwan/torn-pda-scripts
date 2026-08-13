@@ -802,6 +802,121 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertEqual(0, second["captures"])
         self.assertEqual(10, self.count("match_odds_observations"))
 
+    def test_daily_review_records_uneven_depth_and_uses_only_as_of_prices(self) -> None:
+        bmg.import_flashscore_file(self.connection, FLASHSCORE_FIXTURE)
+        bmg.import_market_odds_file(self.connection, MARKET_ODDS_FIXTURE)
+        capture = {
+            "schema_version": "bmg.capture.v1",
+            "capture_id": "depth-aware-slate",
+            "observed_at": "2026-05-24T14:00:00Z",
+            "source": "torn-visible-bookie-dom",
+            "events": [{
+                "source_event_id": "depth-aware-arsenal-chelsea",
+                "sport": "football",
+                "title": "Arsenal v Chelsea - Premier League 2025/2026",
+                "league": "Premier League 2025/2026 (England 1)",
+                "home_team": "Arsenal",
+                "away_team": "Chelsea",
+                "scheduled_at": "2026-05-24T15:00:00Z",
+                "captured_as_complete": True,
+                "markets": [
+                    {
+                        "market_key": "three-way-ordinary",
+                        "name": "3-Way Ordinary time",
+                        "market_type": "three_way",
+                        "period": "Ordinary time",
+                        "captured_as_complete": True,
+                        "selections": [
+                            {"selection_key": "home", "name": "Arsenal", "odds_decimal": 2.20},
+                            {"selection_key": "draw", "name": "Draw", "odds_decimal": 3.20},
+                            {"selection_key": "away", "name": "Chelsea", "odds_decimal": 3.40},
+                        ],
+                    },
+                    {
+                        "market_key": "total-2.5-ordinary",
+                        "name": "Over/Under 2.5 Total Goals Ordinary time",
+                        "market_type": "total",
+                        "period": "Ordinary time",
+                        "captured_as_complete": False,
+                        "selections": [
+                            {"selection_key": "over", "name": "Over 2.5 Total Goals", "line": 2.5, "odds_decimal": 1.90},
+                            {"selection_key": "under", "name": "Under 2.5 Total Goals", "line": 2.5, "odds_decimal": 1.90},
+                        ],
+                    },
+                    {
+                        "market_key": "win-to-nil",
+                        "name": "Win to nil Ordinary time",
+                        "market_type": "win_to_nil",
+                        "period": "Ordinary time",
+                        "captured_as_complete": True,
+                        "selections": [
+                            {"selection_key": "home", "name": "Arsenal", "odds_decimal": 3.00},
+                            {"selection_key": "away", "name": "Chelsea", "odds_decimal": 5.00},
+                        ],
+                    },
+                ],
+            }],
+            "bets": [],
+        }
+        bmg.import_capture(self.connection, capture)
+        reconciled = bmg.reconcile_event_matches(self.connection, confirm_exact=True)
+        self.assertEqual(1, reconciled["confirmed"])
+        bmg.create_research_slate(
+            self.connection,
+            "depth-aware-slate",
+            slate_id="depth-aware-research-slate",
+            capture_complete=False,
+        )
+
+        result = bmg.run_daily_paper_review(
+            self.connection,
+            review_date="2026-05-24",
+            min_books=1,
+            min_ev=0.03,
+            run_id="depth-aware-paper-review",
+        )
+        self.assertEqual(3, result["counts"]["markets"])
+        self.assertEqual(1, result["counts"]["eligible"])
+        self.assertEqual(1, result["counts"]["partial_torn"])
+        self.assertEqual(1, result["counts"]["unsupported_market"])
+        self.assertEqual(3, result["counts"]["decisions"])
+        self.assertGreaterEqual(result["counts"]["paper_pick"], 1)
+        self.assertEqual(3, self.count("market_review_coverage"))
+
+        feature_rows = self.connection.execute(
+            "SELECT features_json FROM match_forecasts ORDER BY forecast_id"
+        ).fetchall()
+        self.assertEqual(3, len(feature_rows))
+        for row in feature_rows:
+            features = json.loads(row["features_json"])
+            self.assertEqual(["odds-fixture-open"], features["external_capture_ids"])
+            self.assertNotIn("odds-fixture-close", features["external_capture_ids"])
+
+    def test_review_market_support_rejects_push_lines_and_nonstandard_surfaces(self) -> None:
+        def rows(line: float) -> list[dict[str, object]]:
+            return [
+                {"selection_id": 1, "line": line},
+                {"selection_id": 2, "line": line},
+            ]
+
+        descriptor, status = bmg.supported_review_market(
+            "Over/Under 2.5 Total Goals Ordinary time", "total", "Ordinary time", rows(2.5)
+        )
+        self.assertEqual("eligible", status)
+        self.assertEqual(2.5, descriptor["line"])
+
+        descriptor, status = bmg.supported_review_market(
+            "Over/Under 3 Total Goals Ordinary time", "total", "Ordinary time", rows(3.0)
+        )
+        self.assertIsNone(descriptor)
+        self.assertEqual("settlement_mismatch", status)
+
+        descriptor, status = bmg.supported_review_market(
+            "Win to nil Ordinary time", "win_to_nil", "Ordinary time", rows(0.0)
+        )
+        self.assertIsNone(descriptor)
+        self.assertEqual("unsupported_market", status)
+
     def test_exact_reconciliation_outcome_sync_and_research_slate_are_idempotent(self) -> None:
         bmg.import_flashscore_file(self.connection, FLASHSCORE_FIXTURE)
         capture = {

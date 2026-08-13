@@ -16,6 +16,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
+from statistics import median
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -152,7 +153,7 @@ def apply_schema(connection: sqlite3.Connection) -> None:
             if column not in existing:
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_bets_settled_at ON bets (settled_at DESC)")
-    connection.execute("PRAGMA user_version = 5")
+    connection.execute("PRAGMA user_version = 6")
     backfill_capture_events(connection)
     connection.commit()
 
@@ -2607,6 +2608,700 @@ def register_model_version(connection: sqlite3.Connection, args: argparse.Namesp
     print(f"Registered model {args.name} {args.version}{' (active)' if args.active else ''}.")
 
 
+def resolve_review_date(connection: sqlite3.Connection, value: str | None, sport: str) -> str:
+    if value:
+        try:
+            return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+        except ValueError as exc:
+            raise ValueError("--date must use YYYY-MM-DD.") from exc
+    row = connection.execute(
+        """
+        SELECT MAX(substr(observed_at, 1, 10))
+        FROM research_slates
+        WHERE sport = ? AND source <> 'bmg-daily-aggregate'
+        """,
+        (canonical(sport),),
+    ).fetchone()
+    if not row or not row[0]:
+        raise ValueError("No research slate exists for that sport; capture and register one first.")
+    return str(row[0])
+
+
+def create_daily_research_slate(
+    connection: sqlite3.Connection,
+    *,
+    review_date: str,
+    sport: str = "football",
+) -> dict[str, Any]:
+    """Freeze the latest capture of every event registered on one UTC date."""
+    resolved_date = resolve_review_date(connection, review_date, sport)
+    rows = connection.execute(
+        """
+        WITH candidates AS (
+            SELECT rse.event_id, rse.capture_id, rse.match_id, rse.mapping_status,
+                   rs.observed_at, rs.capture_complete,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY rse.event_id
+                       ORDER BY rs.observed_at DESC, rs.slate_id DESC
+                   ) AS rank_number
+            FROM research_slates rs
+            JOIN research_slate_events rse ON rse.slate_id = rs.slate_id
+            WHERE rs.sport = ?
+              AND substr(rs.observed_at, 1, 10) = ?
+              AND rs.source <> 'bmg-daily-aggregate'
+        )
+        SELECT * FROM candidates WHERE rank_number = 1 ORDER BY event_id
+        """,
+        (canonical(sport), resolved_date),
+    ).fetchall()
+    if not rows:
+        raise ValueError(f"No {sport} research slates were recorded on {resolved_date}.")
+    membership = [
+        [int(row["event_id"]), row["capture_id"], row["match_id"], row["mapping_status"]]
+        for row in rows
+    ]
+    membership_hash = hashlib.sha256(
+        json.dumps(membership, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:12]
+    slate_id = f"slate:daily:{resolved_date}:{canonical(sport)}:{membership_hash}"
+    observed_at = max(str(row["observed_at"]) for row in rows)
+    capture_complete = int(all(bool(row["capture_complete"]) for row in rows))
+    now = utc_now()
+    with connection:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO research_slates (
+                slate_id, source, sport, observed_at, capture_complete,
+                event_count, created_at, note
+            ) VALUES (?, 'bmg-daily-aggregate', ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                slate_id,
+                canonical(sport),
+                observed_at,
+                capture_complete,
+                len(rows),
+                now,
+                f"Frozen daily aggregate for {resolved_date}; each event retains its own source capture.",
+            ),
+        )
+        for row in rows:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO research_slate_events (
+                    slate_id, event_id, capture_id, match_id, mapping_status
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    slate_id,
+                    int(row["event_id"]),
+                    row["capture_id"],
+                    row["match_id"],
+                    row["mapping_status"],
+                ),
+            )
+    return {
+        "slate_id": slate_id,
+        "review_date": resolved_date,
+        "observed_at": observed_at,
+        "capture_complete": capture_complete,
+        "events": len(rows),
+    }
+
+
+def ensure_consensus_benchmark_model(connection: sqlite3.Connection, sport: str) -> int:
+    feature_spec = {
+        "source": "external bookmaker odds",
+        "aggregation": "median of per-bookmaker de-vigged probabilities",
+        "lower_bound": "25th percentile of per-bookmaker de-vigged probabilities",
+        "supported_markets": ["three_way", "both_teams_to_score", "half_goal_match_total"],
+    }
+    with connection:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO model_versions (
+                name, version, sport, algorithm, feature_spec_json,
+                created_at, active, notes
+            ) VALUES (
+                'external-market-consensus', '0.1.0', ?,
+                'normalized median bookmaker price benchmark', ?, ?, 0,
+                'Paper price benchmark only; not a validated match-outcome model.'
+            )
+            """,
+            (
+                canonical(sport),
+                json.dumps(feature_spec, sort_keys=True, separators=(",", ":")),
+                utc_now(),
+            ),
+        )
+    row = connection.execute(
+        """
+        SELECT model_version_id FROM model_versions
+        WHERE name = 'external-market-consensus' AND version = '0.1.0'
+        """
+    ).fetchone()
+    if not row:
+        raise RuntimeError("Could not register the external-market consensus benchmark.")
+    return int(row[0])
+
+
+def interpolated_quantile(values: list[float], fraction: float) -> float:
+    if not values:
+        raise ValueError("Cannot take a quantile of an empty collection.")
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * fraction
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+
+def review_selection_role(
+    name: Any,
+    *,
+    market_kind: str,
+    home_team: str,
+    away_team: str,
+) -> str | None:
+    value = canonical(name)
+    if market_kind == "three_way":
+        if value in {"home", canonical(home_team)}:
+            return "home"
+        if value == "draw":
+            return "draw"
+        if value in {"away", canonical(away_team)}:
+            return "away"
+    elif market_kind == "both_teams_to_score" and value in {"yes", "no"}:
+        return value
+    elif market_kind == "total":
+        if value.startswith("over "):
+            return "over"
+        if value.startswith("under "):
+            return "under"
+    return None
+
+
+def supported_review_market(
+    market_name: str,
+    market_type: str,
+    period: str,
+    selection_rows: list[Any],
+) -> tuple[dict[str, Any] | None, str]:
+    """Map only settlement-compatible Torn markets to exact provider surfaces."""
+    market_kind = canonical(market_type).replace(" ", "_")
+    name = clean_text(market_name)
+    period_text = canonical(period)
+    if "ordinary time" not in canonical(name) and period_text not in {"ordinary time", "full time"}:
+        return None, "unsupported_market"
+    if market_kind == "three_way" and canonical(name).startswith("3 way"):
+        return {
+            "kind": "three_way",
+            "external_market": "Match Winner",
+            "external_market_aliases": ("1X2",),
+            "roles": ("home", "draw", "away"),
+            "line": None,
+        }, "eligible"
+    if market_kind == "both_teams_to_score" and canonical(name).startswith("both teams to score"):
+        return {
+            "kind": "both_teams_to_score",
+            "external_market": "Both Teams Score",
+            "external_market_aliases": ("Both Teams to Score",),
+            "roles": ("yes", "no"),
+            "line": None,
+        }, "eligible"
+    if market_kind == "total" and name.lower().startswith("over/under") and "total goals" in name.lower():
+        lines = {optional_float(row["line"]) for row in selection_rows if row["selection_id"] is not None}
+        lines.discard(None)
+        if len(lines) != 1:
+            return None, "selection_mismatch"
+        line = float(next(iter(lines)))
+        doubled = round(line * 2)
+        if not math.isclose(line * 2, doubled, abs_tol=1e-9) or doubled % 2 == 0:
+            return None, "settlement_mismatch"
+        return {
+            "kind": "total",
+            "external_market": "Goals Over/Under",
+            "external_market_aliases": (f"Over/Under {line:g}",),
+            "roles": ("over", "under"),
+            "line": line,
+        }, "eligible"
+    return None, "unsupported_market"
+
+
+def external_market_consensus(
+    connection: sqlite3.Connection,
+    *,
+    match_id: int,
+    descriptor: dict[str, Any],
+    home_team: str,
+    away_team: str,
+    information_cutoff: str,
+) -> dict[str, Any]:
+    cutoff = parse_iso_datetime(information_cutoff)
+    rows = connection.execute(
+        """
+        SELECT rcr.capture_id, rcr.observed_at AS capture_observed_at,
+               mm.name AS market_name, mms.name AS selection_name,
+               mms.line, moo.bookmaker, moo.odds_decimal,
+               moo.observed_at, moo.available
+        FROM match_markets mm
+        JOIN match_market_selections mms ON mms.match_market_id = mm.match_market_id
+        JOIN match_odds_observations moo ON moo.match_selection_id = mms.match_selection_id
+        JOIN reference_capture_runs rcr ON rcr.capture_id = moo.capture_id
+        WHERE mm.match_id = ?
+        """,
+        (match_id,),
+    ).fetchall()
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    accepted_market_names = {
+        canonical(descriptor["external_market"]),
+        *(canonical(value) for value in descriptor.get("external_market_aliases", ())),
+    }
+    for row in rows:
+        if canonical(row["market_name"]) not in accepted_market_names:
+            continue
+        observed = parse_iso_datetime(row["observed_at"] or row["capture_observed_at"])
+        if not observed or (cutoff and observed > cutoff) or not row["available"]:
+            continue
+        if descriptor["line"] is not None:
+            external_line = optional_float(row["line"])
+            if external_line is None or not math.isclose(
+                external_line, float(descriptor["line"]), abs_tol=1e-9
+            ):
+                continue
+        role = review_selection_role(
+            row["selection_name"],
+            market_kind=descriptor["kind"],
+            home_team=home_team,
+            away_team=away_team,
+        )
+        odds = optional_float(row["odds_decimal"])
+        bookmaker = clean_text(row["bookmaker"])
+        if role not in descriptor["roles"] or odds is None or odds <= 1 or not bookmaker:
+            continue
+        key = (bookmaker, str(row["capture_id"]))
+        group = grouped.setdefault(
+            key,
+            {"bookmaker": bookmaker, "capture_id": row["capture_id"], "observed": observed, "prices": {}},
+        )
+        group["observed"] = max(group["observed"], observed)
+        group["prices"][role] = odds
+
+    latest_by_book: dict[str, dict[str, Any]] = {}
+    required = set(descriptor["roles"])
+    for group in grouped.values():
+        if set(group["prices"]) != required:
+            continue
+        previous = latest_by_book.get(group["bookmaker"])
+        if previous is None or group["observed"] > previous["observed"]:
+            latest_by_book[group["bookmaker"]] = group
+
+    role_probabilities: dict[str, list[float]] = {role: [] for role in descriptor["roles"]}
+    for group in latest_by_book.values():
+        implied = {role: 1 / float(group["prices"][role]) for role in descriptor["roles"]}
+        overround = sum(implied.values())
+        if overround <= 0:
+            continue
+        for role in descriptor["roles"]:
+            role_probabilities[role].append(implied[role] / overround)
+    if not role_probabilities or any(not values for values in role_probabilities.values()):
+        return {"book_count": 0, "probabilities": {}, "lows": {}, "highs": {}, "captures": []}
+
+    medians = {role: median(values) for role, values in role_probabilities.items()}
+    median_total = sum(medians.values())
+    probabilities = {role: value / median_total for role, value in medians.items()}
+    lows = {role: interpolated_quantile(values, 0.25) for role, values in role_probabilities.items()}
+    highs = {role: interpolated_quantile(values, 0.75) for role, values in role_probabilities.items()}
+    captures = sorted({str(group["capture_id"]) for group in latest_by_book.values()})
+    return {
+        "book_count": len(latest_by_book),
+        "probabilities": probabilities,
+        "lows": lows,
+        "highs": highs,
+        "captures": captures,
+    }
+
+
+def paper_stake(
+    bankroll: int,
+    odds: float,
+    probability: float,
+    *,
+    kelly_fraction: float,
+    max_bankroll_fraction: float,
+) -> int:
+    if bankroll <= 0 or odds <= 1 or probability <= 0 or probability >= 1:
+        return 0
+    net_odds = odds - 1
+    full_kelly = (net_odds * probability - (1 - probability)) / net_odds
+    if full_kelly <= 0:
+        return 0
+    fractional = bankroll * full_kelly * kelly_fraction
+    bankroll_cap = bankroll * max_bankroll_fraction
+    return max(0, int(min(fractional, bankroll_cap, TORN_OPTION_CAP)))
+
+
+def run_daily_paper_review(
+    connection: sqlite3.Connection,
+    *,
+    review_date: str | None = None,
+    sport: str = "football",
+    min_books: int = 5,
+    min_ev: float = 0.03,
+    kelly_fraction: float = 0.25,
+    max_bankroll_fraction: float = 0.01,
+    run_id: str | None = None,
+    notes: str = "",
+) -> dict[str, Any]:
+    if min_books < 1:
+        raise ValueError("min_books must be at least one.")
+    if min_ev < 0:
+        raise ValueError("min_ev cannot be negative.")
+    if not 0 < kelly_fraction <= 1:
+        raise ValueError("kelly_fraction must be greater than zero and at most one.")
+    if not 0 < max_bankroll_fraction <= 1:
+        raise ValueError("max_bankroll_fraction must be greater than zero and at most one.")
+    resolved_date = resolve_review_date(connection, review_date, sport)
+    slate = create_daily_research_slate(
+        connection, review_date=resolved_date, sport=sport
+    )
+    model_version_id = ensure_consensus_benchmark_model(connection, sport)
+    created_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    final_run_id = clean_text(run_id) or (
+        f"paper-review:{resolved_date}:{stable_hash(slate['slate_id'], created_at)}"
+    )
+    if connection.execute(
+        "SELECT 1 FROM forecast_runs WHERE forecast_run_id = ?", (final_run_id,)
+    ).fetchone():
+        raise ValueError(f"forecast run {final_run_id!r} already exists; choose another --run-id.")
+    bankroll_row = latest_bankroll(connection)
+    bankroll = int(bankroll_row["total"]) if bankroll_row else 0
+    bankroll_snapshot_id = int(bankroll_row["bankroll_snapshot_id"]) if bankroll_row else None
+    config = {
+        "review_date": resolved_date,
+        "min_books": min_books,
+        "min_ev": min_ev,
+        "kelly_fraction": kelly_fraction,
+        "max_bankroll_fraction": max_bankroll_fraction,
+        "market_depth_policy": "evaluate only displayed, complete, settlement-compatible markets",
+        "mode": "paper_only",
+    }
+    market_rows = connection.execute(
+        """
+        SELECT rse.event_id, rse.capture_id, rse.match_id, rse.mapping_status,
+               e.title AS event_title, e.home_team, e.away_team,
+               cr.observed_at AS capture_observed_at,
+               m.market_id, m.name AS market_name, m.market_type, m.period,
+               mc.captured_as_complete,
+               s.selection_id, s.name AS selection_name, s.line, s.handicap,
+               oo.odds_decimal, oo.suspended, oo.available, oo.observed_at
+        FROM research_slate_events rse
+        JOIN events e ON e.event_id = rse.event_id
+        JOIN capture_runs cr ON cr.capture_id = rse.capture_id
+        JOIN market_captures mc ON mc.capture_id = rse.capture_id
+        JOIN markets m ON m.market_id = mc.market_id AND m.event_id = rse.event_id
+        LEFT JOIN selections s ON s.market_id = m.market_id
+        LEFT JOIN odds_observations oo
+          ON oo.capture_id = rse.capture_id AND oo.selection_id = s.selection_id
+        WHERE rse.slate_id = ?
+        ORDER BY rse.event_id, m.market_id, s.selection_id
+        """,
+        (slate["slate_id"],),
+    ).fetchall()
+    grouped: dict[tuple[int, int], list[sqlite3.Row]] = defaultdict(list)
+    for row in market_rows:
+        grouped[(int(row["event_id"]), int(row["market_id"]))].append(row)
+
+    counts: dict[str, int] = defaultdict(int)
+    pick_rows: list[dict[str, Any]] = []
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO forecast_runs (
+                forecast_run_id, model_version_id, slate_id, mode, created_at,
+                information_cutoff, config_json, notes
+            ) VALUES (?, ?, ?, 'paper', ?, ?, ?, ?)
+            """,
+            (
+                final_run_id,
+                model_version_id,
+                slate["slate_id"],
+                created_at,
+                slate["observed_at"],
+                json.dumps(config, sort_keys=True, separators=(",", ":")),
+                clean_text(notes),
+            ),
+        )
+        for (event_id, market_id), rows in grouped.items():
+            first = rows[0]
+            active_rows = [row for row in rows if row["selection_id"] is not None]
+            exhaustive = opportunity_market_is_exhaustive(active_rows)
+            descriptor, descriptor_status = supported_review_market(
+                first["market_name"], first["market_type"], first["period"], active_rows
+            )
+            status = descriptor_status
+            reason = {
+                "unsupported_market": "This market is retained but not yet mapped to an exact settlement-compatible provider surface.",
+                "settlement_mismatch": "Whole-goal lines can push and require a push-probability model before expected value is comparable.",
+                "selection_mismatch": "The displayed Torn selections did not share one unambiguous supported line.",
+            }.get(descriptor_status, "")
+            consensus: dict[str, Any] = {
+                "book_count": 0, "probabilities": {}, "lows": {}, "highs": {}, "captures": []
+            }
+            if first["mapping_status"] != "confirmed" or first["match_id"] is None:
+                status = "unmapped_event"
+                reason = "No confirmed canonical fixture link was available at review time."
+            elif (
+                not active_rows
+                or not all(bool(row["captured_as_complete"]) for row in active_rows)
+                or not all(
+                    row["odds_decimal"] is not None
+                    and bool(row["available"])
+                    and not bool(row["suspended"])
+                    and float(row["odds_decimal"]) > 1
+                    for row in active_rows
+                )
+            ):
+                status = "partial_torn"
+                reason = "The captured Torn market did not contain a complete set of active prices."
+            elif descriptor is not None and not exhaustive:
+                status = "partial_torn"
+                reason = "The displayed selections were not a provably exhaustive market shape."
+            elif descriptor is not None:
+                roles: dict[str, sqlite3.Row] = {}
+                for row in active_rows:
+                    role = review_selection_role(
+                        row["selection_name"],
+                        market_kind=descriptor["kind"],
+                        home_team=first["home_team"],
+                        away_team=first["away_team"],
+                    )
+                    if role is None or role in roles:
+                        status = "selection_mismatch"
+                        reason = "Torn selection labels did not map one-to-one to the supported market roles."
+                        break
+                    roles[role] = row
+                if status == "eligible" and set(roles) != set(descriptor["roles"]):
+                    status = "selection_mismatch"
+                    reason = "Torn selection labels did not cover every supported market role."
+                if status == "eligible":
+                    consensus = external_market_consensus(
+                        connection,
+                        match_id=int(first["match_id"]),
+                        descriptor=descriptor,
+                        home_team=first["home_team"],
+                        away_team=first["away_team"],
+                        information_cutoff=first["capture_observed_at"],
+                    )
+                    if consensus["book_count"] == 0:
+                        status = "no_external_market"
+                        reason = "No timestamp-safe complete external bookmaker surface matched this market."
+                    elif consensus["book_count"] < min_books:
+                        status = "insufficient_books"
+                        reason = f"Only {consensus['book_count']} complete bookmakers were available; {min_books} required."
+
+            details = {
+                "reason": reason,
+                "event_title": first["event_title"],
+                "capture_observed_at": first["capture_observed_at"],
+                "external_capture_ids": consensus["captures"],
+                "supported_descriptor": descriptor or {},
+            }
+            connection.execute(
+                """
+                INSERT INTO market_review_coverage (
+                    forecast_run_id, event_id, market_id, capture_id, match_id,
+                    market_name, market_type, period, torn_selection_count,
+                    torn_capture_complete, exhaustive, external_market_name,
+                    external_bookmaker_count, status, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    final_run_id,
+                    event_id,
+                    market_id,
+                    first["capture_id"],
+                    first["match_id"],
+                    first["market_name"],
+                    first["market_type"],
+                    first["period"],
+                    len(active_rows),
+                    1 if active_rows and all(bool(row["captured_as_complete"]) for row in active_rows) else 0,
+                    1 if exhaustive else 0,
+                    descriptor["external_market"] if descriptor else "",
+                    int(consensus["book_count"]),
+                    status,
+                    json.dumps(details, sort_keys=True, separators=(",", ":")),
+                ),
+            )
+            counts[status] += 1
+            counts["markets"] += 1
+            if status != "eligible" or descriptor is None:
+                continue
+            for role in descriptor["roles"]:
+                row = roles[role]
+                probability = float(consensus["probabilities"][role])
+                probability_low = float(consensus["lows"][role])
+                probability_high = float(consensus["highs"][role])
+                odds = float(row["odds_decimal"])
+                implied_probability = 1 / odds
+                consensus_ev = probability * odds - 1
+                conservative_ev = probability_low * odds - 1
+                action = "paper_pick" if conservative_ev >= min_ev else "pass"
+                stake = paper_stake(
+                    bankroll,
+                    odds,
+                    probability_low,
+                    kelly_fraction=kelly_fraction,
+                    max_bankroll_fraction=max_bankroll_fraction,
+                ) if action == "paper_pick" else 0
+                forecast_key = f"torn-market:{market_id}:{role}"
+                features = {
+                    "book_count": consensus["book_count"],
+                    "consensus_expected_value": consensus_ev,
+                    "conservative_expected_value": conservative_ev,
+                    "external_capture_ids": consensus["captures"],
+                    "torn_capture_id": first["capture_id"],
+                    "torn_market_id": market_id,
+                }
+                cursor = connection.execute(
+                    """
+                    INSERT INTO match_forecasts (
+                        forecast_run_id, match_id, forecast_key, market_type,
+                        period, selection_key, selection_name, line,
+                        predicted_probability, probability_low, probability_high,
+                        fair_odds, calibration_sample_size, feature_as_of, features_json
+                    ) VALUES (?, ?, ?, ?, 'ordinary_time', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        final_run_id,
+                        int(first["match_id"]),
+                        forecast_key,
+                        descriptor["kind"],
+                        role,
+                        row["selection_name"],
+                        descriptor["line"],
+                        probability,
+                        probability_low,
+                        probability_high,
+                        1 / probability,
+                        int(consensus["book_count"]),
+                        first["capture_observed_at"],
+                        json.dumps(features, sort_keys=True, separators=(",", ":")),
+                    ),
+                )
+                forecast_id = int(cursor.lastrowid)
+                decision_id = f"decision:{stable_hash(final_run_id, market_id, role)}"
+                rejection_reasons = [] if action == "paper_pick" else ["conservative_ev_below_threshold"]
+                connection.execute(
+                    """
+                    INSERT INTO decision_records (
+                        decision_id, forecast_id, event_id, selection_id,
+                        bankroll_snapshot_id, decided_at, bookmaker, observed_odds,
+                        reference_odds, implied_probability, conservative_probability,
+                        edge, expected_value, action, recommended_stake, stake_rule,
+                        rejection_reasons_json, notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'Torn Bookie', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        decision_id,
+                        forecast_id,
+                        event_id,
+                        int(row["selection_id"]),
+                        bankroll_snapshot_id,
+                        created_at,
+                        odds,
+                        1 / probability,
+                        implied_probability,
+                        probability_low,
+                        probability_low - implied_probability,
+                        conservative_ev,
+                        action,
+                        stake,
+                        f"{kelly_fraction:g} Kelly; cap {max_bankroll_fraction:.2%} bankroll and $1B Torn option limit",
+                        json.dumps(rejection_reasons, separators=(",", ":")),
+                        "Paper-only external-price benchmark; no Torn bet was placed.",
+                    ),
+                )
+                counts["decisions"] += 1
+                counts[action] += 1
+                if action == "paper_pick":
+                    pick_rows.append({
+                        "event": first["event_title"],
+                        "market": first["market_name"],
+                        "selection": row["selection_name"],
+                        "odds": odds,
+                        "consensus_ev": consensus_ev,
+                        "conservative_ev": conservative_ev,
+                        "stake": stake,
+                        "books": consensus["book_count"],
+                    })
+    counts["events_without_markets"] = max(
+        0, int(slate["events"]) - len({event_id for event_id, _ in grouped})
+    )
+    return {
+        "run_id": final_run_id,
+        "slate_id": slate["slate_id"],
+        "review_date": resolved_date,
+        "events": slate["events"],
+        "slate_capture_complete": slate["capture_complete"],
+        "bankroll": bankroll,
+        "counts": dict(counts),
+        "paper_picks": pick_rows,
+        "config": config,
+    }
+
+
+def render_daily_paper_review(result: dict[str, Any]) -> str:
+    counts = result["counts"]
+    lines = [
+        f"# BMG daily paper review — {result['review_date']}",
+        "",
+        f"- Run: `{result['run_id']}`",
+        f"- Frozen slate: `{result['slate_id']}`",
+        f"- Events: {result['events']}",
+        f"- Displayed markets reviewed: {counts.get('markets', 0)}",
+        f"- Captured events with no displayed markets: {counts.get('events_without_markets', 0)}",
+        f"- Price-comparable markets: {counts.get('eligible', 0)}",
+        f"- Decisions: {counts.get('decisions', 0)} ({counts.get('paper_pick', 0)} paper picks, {counts.get('pass', 0)} passes)",
+        f"- Entire source slate claimed complete: {'yes' if result['slate_capture_complete'] else 'no'}",
+        "",
+        "## Market-depth disposition",
+        "",
+        "| Status | Markets |",
+        "|---|---:|",
+    ]
+    statuses = (
+        "eligible", "partial_torn", "unsupported_market", "settlement_mismatch",
+        "unmapped_event", "no_external_market", "insufficient_books", "selection_mismatch",
+    )
+    for status in statuses:
+        lines.append(f"| {status.replace('_', ' ')} | {counts.get(status, 0)} |")
+    lines.extend(["", "## Paper picks", ""])
+    if not result["paper_picks"]:
+        lines.append("No selection cleared the conservative expected-value threshold. No bet was placed.")
+    else:
+        lines.extend([
+            "| Event | Market | Selection | Torn odds | Consensus EV | Conservative EV | Paper stake | Books |",
+            "|---|---|---|---:|---:|---:|---:|---:|",
+        ])
+        for pick in sorted(result["paper_picks"], key=lambda row: row["conservative_ev"], reverse=True):
+            lines.append(
+                f"| {pick['event']} | {pick['market']} | {pick['selection']} | "
+                f"{pick['odds']:.3f} | {pick['consensus_ev']:.2%} | "
+                f"{pick['conservative_ev']:.2%} | {money(pick['stake'])} | {pick['books']} |"
+            )
+        lines.extend(["", "These are paper observations only. No Torn bet was placed."])
+    lines.extend([
+        "",
+        "The engine does not assume a standard market menu. Missing markets are absent, displayed but unsupported markets are retained in coverage, and only complete settlement-compatible surfaces with enough timestamp-safe bookmaker comparisons can create decisions.",
+        "",
+    ])
+    return "\n".join(lines)
+
+
 def split_torn_league_label(value: Any) -> tuple[str, str]:
     text = clean_text(value)
     jurisdiction = ""
@@ -3149,6 +3844,7 @@ def print_summary(connection: sqlite3.Connection) -> None:
         "forecast_runs",
         "match_forecasts",
         "decision_records",
+        "market_review_coverage",
         "match_market_settlements",
         "forecast_evaluations",
         "backtest_runs",
@@ -3245,6 +3941,9 @@ def print_modeling_summary(connection: sqlite3.Connection) -> None:
         "team rating snapshots": connection.execute("SELECT COUNT(*) FROM team_rating_snapshots").fetchone()[0],
         "forecasts": connection.execute("SELECT COUNT(*) FROM match_forecasts").fetchone()[0],
         "decisions (picks and passes)": connection.execute("SELECT COUNT(*) FROM decision_records").fetchone()[0],
+        "market coverage decisions": connection.execute(
+            "SELECT COUNT(*) FROM market_review_coverage"
+        ).fetchone()[0],
         "evaluated decisions": connection.execute("SELECT COUNT(*) FROM forecast_evaluations").fetchone()[0],
         "backtest runs": connection.execute("SELECT COUNT(*) FROM backtest_runs").fetchone()[0],
     }
@@ -3594,6 +4293,22 @@ def build_parser() -> argparse.ArgumentParser:
     model_parser.add_argument("--active", action="store_true")
     model_parser.add_argument("--notes", default="")
 
+    daily_review_parser = subparsers.add_parser(
+        "daily-review",
+        help="create a depth-aware external-price paper ledger for one captured UTC date",
+    )
+    daily_review_parser.add_argument("--date", help="UTC date (YYYY-MM-DD); defaults to latest research slate")
+    daily_review_parser.add_argument("--sport", default="football")
+    daily_review_parser.add_argument("--min-books", type=int, default=5)
+    daily_review_parser.add_argument("--min-ev", type=float, default=0.03)
+    daily_review_parser.add_argument("--kelly-fraction", type=float, default=0.25)
+    daily_review_parser.add_argument("--max-bankroll-fraction", type=float, default=0.01)
+    daily_review_parser.add_argument("--run-id")
+    daily_review_parser.add_argument("--notes", default="")
+    daily_review_parser.add_argument(
+        "--output", type=Path, help="optional Markdown report path (BMG/data is ignored by Git)"
+    )
+
     collection_plan_parser = subparsers.add_parser(
         "collection-plan", help="build/update a ranked historical-data backlog from Torn wagers"
     )
@@ -3780,6 +4495,27 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Recorded {result['slate_id']} with {result['events']} events.")
             elif args.command == "model-register":
                 register_model_version(connection, args)
+            elif args.command == "daily-review":
+                result = run_daily_paper_review(
+                    connection,
+                    review_date=args.date,
+                    sport=args.sport,
+                    min_books=args.min_books,
+                    min_ev=args.min_ev,
+                    kelly_fraction=args.kelly_fraction,
+                    max_bankroll_fraction=args.max_bankroll_fraction,
+                    run_id=args.run_id,
+                    notes=args.notes,
+                )
+                report = render_daily_paper_review(result)
+                print(report)
+                if args.output:
+                    output = args.output.resolve()
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    temporary = output.with_suffix(output.suffix + ".tmp")
+                    temporary.write_text(report, encoding="utf-8")
+                    temporary.replace(output)
+                    print(f"Report written to {output}")
             elif args.command == "collection-plan":
                 result = build_collection_plan(
                     connection,

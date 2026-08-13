@@ -87,6 +87,9 @@ cannot silently distort the other's ETA.
 - `team_rating_snapshots` — as-of team strength and uncertainty states.
 - `forecast_runs`, `match_forecasts` — timestamped probability distributions and fair odds.
 - `decision_records` — every pick, pass, or rejection with prices, edge, EV, and stake rule.
+- `market_review_coverage` — one row for every Torn market visible to a paper
+  run, with captured selection depth, completeness, external book count, and
+  an explicit eligibility or rejection status.
 - `match_market_settlements` — rules-aware win/loss/push/void evidence.
 - `forecast_evaluations` — calibration, profit, closing odds, and closing-line value.
 - `backtest_runs`, `backtest_metrics` — chronological test definitions and results.

@@ -35,6 +35,9 @@ nil are excluded even when their displayed reciprocal sum is below one.
 - `decision_records` stores every pick **and pass**, the offered Torn price,
   external reference price, estimated edge, expected value, stake rule, and
   rejection reasons.
+- `market_review_coverage` stores every displayed Torn market considered by a
+  paper run, including its selection depth and why it was eligible, partial,
+  unsupported, unmapped, settlement-incompatible, or short of external books.
 - `match_market_settlements` records the applicable ruleset before a forecast is
   scored; ordinary time, extra time, pushes, refunds, and voids are not guessed.
 - `forecast_evaluations` stores outcome, Brier score, log loss, realized profit,
@@ -78,7 +81,27 @@ nil are excluded even when their displayed reciprocal sum is below one.
    python .\BMG\src\bmg.py slate CAPTURE_ID --complete --note "full visible football slate"
    ```
 
-6. Register a model only when its implementation and features are frozen:
+6. Generate a frozen, depth-aware paper-price ledger for a captured UTC date:
+
+   ```powershell
+   python .\BMG\src\bmg.py daily-review --date 2026-08-13 `
+     --min-books 5 --min-ev 0.03 `
+     --output .\BMG\data\paper-review-2026-08-13.md
+   ```
+
+   Each event keeps its own Torn capture and information cutoff. External
+   prices observed after that cutoff are excluded. The first benchmark version
+   supports ordinary-time 1X2, both-teams-to-score, and half-goal full-match
+   totals. Whole-goal totals remain settlement mismatches until push
+   probability is modeled; handicaps and other surfaces remain explicitly
+   unsupported rather than being forced into an approximate comparison.
+
+   A `paper_pick` requires the 25th-percentile de-vigged bookmaker probability
+   to clear the EV threshold. Its recorded paper stake uses fractional Kelly,
+   a bankroll-percentage cap, and the Torn $1B option cap. The command never
+   places a bet.
+
+7. Register a predictive model only when its implementation and features are frozen:
 
    ```powershell
    python .\BMG\src\bmg.py model-register bmg-football 0.1.0 `
@@ -87,7 +110,7 @@ nil are excluded even when their displayed reciprocal sum is below one.
      --training-cutoff 2026-05-31 --active
    ```
 
-7. Inspect readiness and descriptive wager history:
+8. Inspect readiness and descriptive wager history:
 
    ```powershell
    python .\BMG\src\bmg.py modeling-summary
