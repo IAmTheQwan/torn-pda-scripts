@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import base64
 import contextlib
+import gzip
 import io
 import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -259,6 +262,18 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertEqual(1, self.count("reference_capture_runs"))
         self.assertEqual(2, self.count("sports_matches"))
 
+    def test_flashscore_import_accepts_compressed_base64_archive(self) -> None:
+        archive = Path(self.temporary.name) / "capture.json.gz.b64"
+        archive.write_text(
+            base64.b64encode(gzip.compress(FLASHSCORE_FIXTURE.read_bytes())).decode("ascii"),
+            encoding="ascii",
+        )
+
+        result = bmg.import_flashscore_file(self.connection, archive)
+
+        self.assertEqual(1, result["captures"])
+        self.assertEqual(1, result["matches"])
+
     def test_modeling_schema_tracks_complete_slates_and_timestamped_external_odds(self) -> None:
         bmg.import_file(self.connection, FIXTURE)
         self.assertEqual(4, self.count("capture_events"))
@@ -310,10 +325,20 @@ class BmgDatabaseTests(unittest.TestCase):
             "bets": [],
         }
         bmg.import_capture(self.connection, capture)
+        self.connection.execute(
+            "UPDATE events SET scheduled_at = NULL, settled_at = '2026-05-25T01:30:00Z'"
+        )
+        self.connection.execute(
+            """
+            UPDATE sports_matches
+            SET scheduled_at = '2026-05-24T23:30:00Z', scheduled_date = '2026-05-24'
+            """
+        )
         result = bmg.reconcile_event_matches(self.connection, confirm_exact=True)
         self.assertEqual(1, result["confirmed"])
         link = self.connection.execute("SELECT * FROM event_match_links").fetchone()
         self.assertEqual(1, link["confirmed"])
+        self.assertEqual("exact-team-alias/time/competition", link["link_method"])
 
         first_sync = bmg.sync_confirmed_outcomes(self.connection)
         second_sync = bmg.sync_confirmed_outcomes(self.connection)
@@ -346,6 +371,63 @@ class BmgDatabaseTests(unittest.TestCase):
                 """,
                 (model_id,),
             )
+
+    def test_collection_plan_tracks_priority_timing_and_eta(self) -> None:
+        bmg.import_file(self.connection, FIXTURE)
+        plan = bmg.build_collection_plan(
+            self.connection,
+            plan_id="history-v1",
+            name="Historical football",
+            sport="football",
+            history_years=3,
+        )
+        self.assertGreaterEqual(plan["targets"], 1)
+        target = self.connection.execute(
+            "SELECT * FROM collection_targets ORDER BY priority_score DESC LIMIT 1"
+        ).fetchone()
+        bmg.map_collection_target(
+            self.connection,
+            target["target_id"],
+            "https://www.flashscore.com/football/test/league/",
+            "test-league",
+        )
+        run_id = bmg.start_collection_run(
+            self.connection,
+            plan_id="history-v1",
+            target_id=target["target_id"],
+            season_name="2025/2026",
+            mode="benchmark",
+        )
+        bmg.add_collection_checkpoint(
+            self.connection,
+            run_id=run_id,
+            phase="results-expanded",
+            items_visible=10,
+            elapsed_seconds=12.5,
+        )
+        bmg.finish_collection_run(
+            self.connection,
+            SimpleNamespace(
+                run_id=run_id,
+                finished_at="2026-08-13T13:00:00Z",
+                active_seconds=30.0,
+                status="complete",
+                target_status="captured",
+                pages=2,
+                matches=10,
+                standings=2,
+                stats=0,
+                h2h=0,
+                bytes=1000,
+                notes="fixture benchmark",
+            ),
+        )
+        self.assertEqual(1, self.count("collection_runs"))
+        self.assertEqual(1, self.count("collection_checkpoints"))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            bmg.print_collection_progress(self.connection, "history-v1")
+        self.assertIn("projected remaining active time", output.getvalue())
 
 
 if __name__ == "__main__":

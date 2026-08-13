@@ -64,6 +64,20 @@ when the visible row includes a time and BMG can resolve the timezone safely.
 - `match_markets`, `match_market_selections`, `match_odds_observations` — external
   odds-ready tables; Torn prices stay in their existing tables and join via the match link.
 
+## Collection planning and timing entities
+
+- `collection_plans` — named historical scope, source, years, and lifecycle.
+- `collection_targets` — normalized competition backlog with wager/stake priority,
+  source mapping, planned seasons, and state.
+- `collection_target_league_labels` — every original Torn league/season label
+  rolled into a normalized target.
+- `collection_runs`, `collection_run_targets` — timed foreground/import/benchmark
+  work with pages, rows, raw bytes, and completion state.
+- `collection_checkpoints` — resumable phase, page, item count, and elapsed time.
+
+League-season runs and single-match detail runs are measured separately so one
+cannot silently distort the other's ETA.
+
 ## Modeling and evaluation entities
 
 - `research_slates`, `research_slate_events` — the full candidate pool at a decision time.

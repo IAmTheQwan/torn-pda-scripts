@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import gzip
 import hashlib
 import json
 import math
@@ -146,7 +148,7 @@ def apply_schema(connection: sqlite3.Connection) -> None:
             if column not in existing:
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_bets_settled_at ON bets (settled_at DESC)")
-    connection.execute("PRAGMA user_version = 4")
+    connection.execute("PRAGMA user_version = 5")
     backfill_capture_events(connection)
     connection.commit()
 
@@ -1491,7 +1493,11 @@ def import_flashscore_capture(connection: sqlite3.Connection, capture: dict[str,
 
 
 def import_flashscore_file(connection: sqlite3.Connection, path: Path) -> dict[str, int]:
-    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if path.name.lower().endswith(".json.gz.b64"):
+        compressed = base64.b64decode("".join(path.read_text(encoding="ascii").split()), validate=True)
+        payload = json.loads(gzip.decompress(compressed).decode("utf-8-sig"))
+    else:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     total: dict[str, int] = {}
     with connection:
         for capture in flashscore_capture_objects(payload):
@@ -1685,6 +1691,19 @@ def parse_iso_date(value: Any) -> datetime | None:
         return None
 
 
+def parse_iso_datetime(value: Any) -> datetime | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def reconcile_event_matches(
     connection: sqlite3.Connection,
     *,
@@ -1726,6 +1745,7 @@ def reconcile_event_matches(
             home_ids.update(team_map.get(key, set()))
         for key in team_lookup_keys(event["away_team"]):
             away_ids.update(team_map.get(key, set()))
+        event_time = parse_iso_datetime(event["scheduled_at"] or event["settled_at"])
         event_date = parse_iso_date(event["scheduled_at"] or event["settled_at"])
         if not home_ids or not away_ids or event_date is None:
             counts["unmapped"] += 1
@@ -1743,9 +1763,11 @@ def reconcile_event_matches(
             """,
             (*sorted(home_ids), *sorted(away_ids)),
         ).fetchall()
-        candidates: list[tuple[int, sqlite3.Row, bool]] = []
+        candidates: list[tuple[int, sqlite3.Row, bool, bool]] = []
         for row in rows:
-            match_date = parse_iso_date(row["scheduled_date"] or row["scheduled_at"])
+            # Torn's finished timestamp is UTC. Prefer an exact provider UTC kickoff
+            # when available so a late local match is not treated as a one-day miss.
+            match_date = parse_iso_date(row["scheduled_at"] or row["scheduled_date"])
             if match_date is None:
                 continue
             gap = abs((match_date.date() - event_date.date()).days)
@@ -1754,15 +1776,21 @@ def reconcile_event_matches(
             league_key = canonical(event["league"])
             competition_key = canonical(row["competition"])
             league_matches = bool(competition_key and competition_key in league_key)
-            candidates.append((gap, row, league_matches))
+            match_time = parse_iso_datetime(row["scheduled_at"])
+            time_aligned = bool(
+                event_time is not None
+                and match_time is not None
+                and abs((event_time - match_time).total_seconds()) <= 6 * 3600
+            )
+            candidates.append((gap, row, league_matches, time_aligned))
         if not candidates:
             counts["unmapped"] += 1
             continue
         candidates.sort(key=lambda item: (item[0], 0 if item[2] else 1, int(item[1]["match_id"])))
-        best_gap, _, best_league = candidates[0]
+        best_gap, _, best_league, _ = candidates[0]
         best = [item for item in candidates if item[0] == best_gap and item[2] == best_league]
-        for gap, row, league_matches in candidates:
-            exact = gap == 0
+        for gap, row, league_matches, time_aligned in candidates:
+            exact = gap == 0 or time_aligned
             confidence = 0.99 if exact and league_matches else 0.96 if exact else 0.88
             should_confirm = confirm_exact and exact and len(best) == 1 and int(best[0][1]["match_id"]) == int(row["match_id"])
             connection.execute(
@@ -1779,7 +1807,8 @@ def reconcile_event_matches(
                 (
                     int(event["event_id"]),
                     int(row["match_id"]),
-                    "exact-team-alias/date" + ("/competition" if league_matches else ""),
+                    "exact-team-alias/" + ("time" if time_aligned else "date")
+                    + ("/competition" if league_matches else ""),
                     confidence,
                     1 if should_confirm else 0,
                     utc_now(),
@@ -1982,6 +2011,482 @@ def register_model_version(connection: sqlite3.Connection, args: argparse.Namesp
     print(f"Registered model {args.name} {args.version}{' (active)' if args.active else ''}.")
 
 
+def split_torn_league_label(value: Any) -> tuple[str, str]:
+    text = clean_text(value)
+    jurisdiction = ""
+    match = re.search(r"\s*\(([^()]*)\)\s*$", text)
+    if match:
+        jurisdiction = clean_text(match.group(1))
+        text = clean_text(text[: match.start()])
+    family = re.sub(r"\b(?:19|20)\d{2}(?:\s*/\s*(?:19|20)?\d{2})?\b", "", text)
+    family = clean_text(family).strip(" -/")
+    return family or text or "Unknown competition", jurisdiction
+
+
+def build_collection_plan(
+    connection: sqlite3.Connection,
+    *,
+    plan_id: str,
+    name: str,
+    sport: str = "football",
+    history_years: int = 3,
+    source: str = "flashscore-visible-browser",
+    notes: str = "",
+) -> dict[str, int | str]:
+    if history_years <= 0:
+        raise ValueError("history_years must be positive.")
+    clean_plan_id = clean_text(plan_id)
+    if not clean_plan_id:
+        raise ValueError("plan_id cannot be empty.")
+    now = utc_now()
+    rows = connection.execute(
+        """
+        SELECT e.league,
+               COUNT(*) AS wager_count,
+               COUNT(DISTINCT e.event_id) AS event_count,
+               SUM(b.stake) AS staked,
+               SUM(CASE WHEN EXISTS (
+                   SELECT 1 FROM event_match_links eml
+                   WHERE eml.event_id = e.event_id AND eml.confirmed = 1
+               ) THEN 1 ELSE 0 END) AS linked_wager_count
+        FROM bets b JOIN events e ON e.event_id = b.event_id
+        WHERE e.sport = ? AND e.league <> ''
+        GROUP BY e.league
+        ORDER BY staked DESC, wager_count DESC, e.league
+        """,
+        (canonical(sport),),
+    ).fetchall()
+    aggregates: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        family, jurisdiction = split_torn_league_label(row["league"])
+        key = (canonical(family), canonical(jurisdiction))
+        aggregate = aggregates.setdefault(
+            key,
+            {
+                "family": family,
+                "jurisdiction": jurisdiction,
+                "representative": row["league"],
+                "representative_staked": -1,
+                "wager_count": 0,
+                "event_count": 0,
+                "staked": 0,
+                "linked_wager_count": 0,
+                "labels": [],
+            },
+        )
+        row_staked = int(row["staked"] or 0)
+        if row_staked > aggregate["representative_staked"]:
+            aggregate["representative"] = row["league"]
+            aggregate["representative_staked"] = row_staked
+        aggregate["wager_count"] += int(row["wager_count"] or 0)
+        aggregate["event_count"] += int(row["event_count"] or 0)
+        aggregate["staked"] += row_staked
+        aggregate["linked_wager_count"] += int(row["linked_wager_count"] or 0)
+        aggregate["labels"].append(row)
+    generated_target_ids = {
+        "target:" + stable_hash(clean_plan_id, aggregate["family"], aggregate["jurisdiction"])
+        for aggregate in aggregates.values()
+    }
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO collection_plans (
+                plan_id, name, sport, history_years, source, created_at, updated_at, status, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
+            ON CONFLICT(plan_id) DO UPDATE SET
+                name = excluded.name,
+                history_years = excluded.history_years,
+                source = excluded.source,
+                updated_at = excluded.updated_at,
+                notes = CASE WHEN excluded.notes <> '' THEN excluded.notes ELSE collection_plans.notes END
+            """,
+            (
+                clean_plan_id,
+                clean_text(name) or clean_plan_id,
+                canonical(sport),
+                history_years,
+                clean_text(source),
+                now,
+                now,
+                clean_text(notes),
+            ),
+        )
+        old_targets = connection.execute(
+            "SELECT target_id FROM collection_targets WHERE plan_id = ?", (clean_plan_id,)
+        ).fetchall()
+        for old_target in old_targets:
+            old_target_id = str(old_target["target_id"])
+            if old_target_id in generated_target_ids:
+                connection.execute(
+                    "DELETE FROM collection_target_league_labels WHERE target_id = ?", (old_target_id,)
+                )
+                continue
+            has_runs = connection.execute(
+                "SELECT 1 FROM collection_run_targets WHERE target_id = ? LIMIT 1", (old_target_id,)
+            ).fetchone()
+            if not has_runs:
+                connection.execute("DELETE FROM collection_targets WHERE target_id = ?", (old_target_id,))
+        for aggregate in aggregates.values():
+            family = aggregate["family"]
+            jurisdiction = aggregate["jurisdiction"]
+            target_id = "target:" + stable_hash(clean_plan_id, family, jurisdiction)
+            staked = int(aggregate["staked"])
+            wager_count = int(aggregate["wager_count"])
+            event_count = int(aggregate["event_count"])
+            linked = int(aggregate["linked_wager_count"])
+            priority_score = float(staked + wager_count * 1_000_000 + event_count * 250_000)
+            status = "reconciled" if wager_count > 0 and linked >= wager_count else "queued"
+            connection.execute(
+                """
+                INSERT INTO collection_targets (
+                    target_id, plan_id, torn_league_label, competition_family, jurisdiction,
+                    wager_count, event_count, staked, linked_wager_count, priority_score,
+                    planned_seasons, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(target_id) DO UPDATE SET
+                    torn_league_label = excluded.torn_league_label,
+                    competition_family = excluded.competition_family,
+                    jurisdiction = excluded.jurisdiction,
+                    wager_count = excluded.wager_count,
+                    event_count = excluded.event_count,
+                    staked = excluded.staked,
+                    linked_wager_count = excluded.linked_wager_count,
+                    priority_score = excluded.priority_score,
+                    planned_seasons = excluded.planned_seasons,
+                    status = CASE
+                        WHEN excluded.status = 'reconciled' THEN 'reconciled'
+                        WHEN collection_targets.status IN ('queued', 'reconciled') THEN excluded.status
+                        ELSE collection_targets.status
+                    END,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    target_id,
+                    clean_plan_id,
+                    aggregate["representative"],
+                    family,
+                    jurisdiction,
+                    wager_count,
+                    event_count,
+                    staked,
+                    linked,
+                    priority_score,
+                    history_years,
+                    status,
+                    now,
+                    now,
+                ),
+            )
+            for label_row in aggregate["labels"]:
+                connection.execute(
+                    """
+                    INSERT INTO collection_target_league_labels (
+                        target_id, torn_league_label, wager_count, event_count, staked, linked_wager_count
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(target_id, torn_league_label) DO UPDATE SET
+                        wager_count = excluded.wager_count,
+                        event_count = excluded.event_count,
+                        staked = excluded.staked,
+                        linked_wager_count = excluded.linked_wager_count
+                    """,
+                    (
+                        target_id,
+                        label_row["league"],
+                        int(label_row["wager_count"] or 0),
+                        int(label_row["event_count"] or 0),
+                        int(label_row["staked"] or 0),
+                        int(label_row["linked_wager_count"] or 0),
+                    ),
+                )
+    return {
+        "plan_id": clean_plan_id,
+        "targets": len(aggregates),
+        "wagers": sum(int(aggregate["wager_count"]) for aggregate in aggregates.values()),
+        "staked": sum(int(aggregate["staked"]) for aggregate in aggregates.values()),
+    }
+
+
+def map_collection_target(
+    connection: sqlite3.Connection, target_id: str, source_url: str, source_competition_id: str = ""
+) -> None:
+    cursor = connection.execute(
+        """
+        UPDATE collection_targets
+        SET source_url = ?, source_competition_id = ?, status = 'mapped', updated_at = ?
+        WHERE target_id = ?
+        """,
+        (clean_text(source_url), clean_text(source_competition_id), utc_now(), clean_text(target_id)),
+    )
+    if cursor.rowcount != 1:
+        raise ValueError(f"Unknown collection target {target_id!r}.")
+    connection.commit()
+
+
+def start_collection_run(
+    connection: sqlite3.Connection,
+    *,
+    plan_id: str,
+    target_id: str,
+    season_name: str,
+    mode: str = "foreground",
+    notes: str = "",
+) -> str:
+    plan = connection.execute(
+        "SELECT source FROM collection_plans WHERE plan_id = ?", (clean_text(plan_id),)
+    ).fetchone()
+    target = connection.execute(
+        "SELECT 1 FROM collection_targets WHERE plan_id = ? AND target_id = ?",
+        (clean_text(plan_id), clean_text(target_id)),
+    ).fetchone()
+    if not plan or not target:
+        raise ValueError("The collection plan or target does not exist.")
+    started_at = utc_now()
+    run_id = "collection:" + stable_hash(plan_id, target_id, season_name, started_at)
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO collection_runs (
+                run_id, plan_id, source, mode, started_at, status, notes
+            ) VALUES (?, ?, ?, ?, ?, 'running', ?)
+            """,
+            (run_id, clean_text(plan_id), plan["source"], canonical(mode), started_at, clean_text(notes)),
+        )
+        connection.execute(
+            """
+            INSERT INTO collection_run_targets (
+                run_id, target_id, season_name, started_at, status, notes
+            ) VALUES (?, ?, ?, ?, 'running', ?)
+            """,
+            (run_id, clean_text(target_id), clean_text(season_name), started_at, clean_text(notes)),
+        )
+        connection.execute(
+            "UPDATE collection_targets SET status = 'collecting', updated_at = ? WHERE target_id = ?",
+            (started_at, clean_text(target_id)),
+        )
+    return run_id
+
+
+def add_collection_checkpoint(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+    phase: str,
+    page_url: str = "",
+    items_visible: int = 0,
+    elapsed_seconds: float = 0,
+    note: str = "",
+) -> None:
+    row = connection.execute(
+        "SELECT target_id FROM collection_run_targets WHERE run_id = ? ORDER BY started_at LIMIT 1",
+        (clean_text(run_id),),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Unknown collection run {run_id!r}.")
+    connection.execute(
+        """
+        INSERT INTO collection_checkpoints (
+            run_id, target_id, observed_at, phase, page_url, items_visible, elapsed_seconds, note
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            clean_text(run_id),
+            row["target_id"],
+            utc_now(),
+            clean_text(phase),
+            clean_text(page_url),
+            max(0, items_visible),
+            max(0.0, elapsed_seconds),
+            clean_text(note),
+        ),
+    )
+    connection.commit()
+
+
+def finish_collection_run(connection: sqlite3.Connection, args: argparse.Namespace) -> None:
+    run = connection.execute(
+        "SELECT started_at FROM collection_runs WHERE run_id = ?", (clean_text(args.run_id),)
+    ).fetchone()
+    target = connection.execute(
+        "SELECT target_id FROM collection_run_targets WHERE run_id = ? ORDER BY started_at LIMIT 1",
+        (clean_text(args.run_id),),
+    ).fetchone()
+    if not run or not target:
+        raise ValueError(f"Unknown collection run {args.run_id!r}.")
+    finished_at = args.finished_at or utc_now()
+    active_seconds = args.active_seconds
+    if active_seconds is None:
+        start = datetime.fromisoformat(str(run["started_at"]).replace("Z", "+00:00"))
+        finish = datetime.fromisoformat(finished_at.replace("Z", "+00:00"))
+        active_seconds = max(0.0, (finish - start).total_seconds())
+    target_status = args.target_status
+    with connection:
+        connection.execute(
+            """
+            UPDATE collection_runs SET
+                finished_at = ?, active_seconds = ?, status = ?, pages_visited = ?,
+                matches_captured = ?, standings_rows = ?, stat_rows = ?, h2h_rows = ?,
+                bytes_exported = ?, notes = CASE WHEN ? <> '' THEN ? ELSE notes END
+            WHERE run_id = ?
+            """,
+            (
+                finished_at,
+                active_seconds,
+                args.status,
+                args.pages,
+                args.matches,
+                args.standings,
+                args.stats,
+                args.h2h,
+                args.bytes,
+                clean_text(args.notes),
+                clean_text(args.notes),
+                clean_text(args.run_id),
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE collection_run_targets SET
+                finished_at = ?, active_seconds = ?, status = ?, pages_visited = ?,
+                matches_captured = ?, standings_rows = ?, stat_rows = ?, h2h_rows = ?,
+                notes = CASE WHEN ? <> '' THEN ? ELSE notes END
+            WHERE run_id = ?
+            """,
+            (
+                finished_at,
+                active_seconds,
+                args.status,
+                args.pages,
+                args.matches,
+                args.standings,
+                args.stats,
+                args.h2h,
+                clean_text(args.notes),
+                clean_text(args.notes),
+                clean_text(args.run_id),
+            ),
+        )
+        connection.execute(
+            "UPDATE collection_targets SET status = ?, updated_at = ? WHERE target_id = ?",
+            (target_status, finished_at, target["target_id"]),
+        )
+
+
+def print_collection_progress(connection: sqlite3.Connection, plan_id: str, limit: int = 20) -> None:
+    plan = connection.execute(
+        "SELECT * FROM collection_plans WHERE plan_id = ?", (clean_text(plan_id),)
+    ).fetchone()
+    if not plan:
+        raise ValueError(f"Unknown collection plan {plan_id!r}.")
+    totals = connection.execute(
+        """
+        SELECT COUNT(*) AS targets, SUM(planned_seasons) AS target_seasons,
+               SUM(wager_count) AS wagers, SUM(event_count) AS events, SUM(staked) AS staked,
+               SUM(linked_wager_count) AS linked,
+               SUM(CASE WHEN status = 'reconciled' THEN 1 ELSE 0 END) AS reconciled_targets,
+               SUM(CASE WHEN status IN ('captured', 'imported', 'reconciled') THEN 1 ELSE 0 END) AS progressed_targets
+        FROM collection_targets WHERE plan_id = ?
+        """,
+        (clean_text(plan_id),),
+    ).fetchone()
+    outcome_units = int(
+        connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM collection_target_league_labels ctl
+            JOIN collection_targets ct ON ct.target_id = ctl.target_id
+            WHERE ct.plan_id = ?
+            """,
+            (clean_text(plan_id),),
+        ).fetchone()[0]
+    )
+    benchmark = connection.execute(
+        """
+        SELECT SUM(crt.active_seconds) AS seconds,
+               COUNT(*) AS target_seasons,
+               SUM(crt.matches_captured) AS matches,
+               SUM(crt.pages_visited) AS pages
+        FROM collection_run_targets crt
+        JOIN collection_runs cr ON cr.run_id = crt.run_id
+        WHERE cr.plan_id = ? AND crt.status = 'complete' AND crt.active_seconds > 0
+          AND (crt.matches_captured > 1 OR crt.standings_rows > 0)
+        """,
+        (clean_text(plan_id),),
+    ).fetchone()
+    detail_benchmark = connection.execute(
+        """
+        SELECT SUM(crt.active_seconds) AS seconds,
+               COUNT(*) AS matches,
+               SUM(crt.stat_rows) AS stats,
+               SUM(crt.h2h_rows) AS h2h
+        FROM collection_run_targets crt
+        JOIN collection_runs cr ON cr.run_id = crt.run_id
+        WHERE cr.plan_id = ? AND crt.status = 'complete' AND crt.active_seconds > 0
+          AND crt.matches_captured = 1 AND (crt.stat_rows > 0 OR crt.h2h_rows > 0)
+        """,
+        (clean_text(plan_id),),
+    ).fetchone()
+    print(f"Collection plan {plan['plan_id']}: {plan['name']} ({plan['history_years']} years)")
+    print(
+        f"  targets={int(totals['targets'] or 0):,}; target-seasons={int(totals['target_seasons'] or 0):,}; "
+        f"wager-season labels={outcome_units:,}; "
+        f"wagers={int(totals['wagers'] or 0):,}; staked={money(int(totals['staked'] or 0))}"
+    )
+    print(
+        f"  progressed targets={int(totals['progressed_targets'] or 0):,}; "
+        f"fully reconciled targets={int(totals['reconciled_targets'] or 0):,}; "
+        f"linked wagers={int(totals['linked'] or 0):,}/{int(totals['wagers'] or 0):,}"
+    )
+    seconds = float(benchmark["seconds"] or 0)
+    completed_units = int(benchmark["target_seasons"] or 0)
+    if seconds > 0 and completed_units > 0:
+        seconds_per_unit = seconds / completed_units
+        remaining_units = max(0, int(totals["target_seasons"] or 0) - completed_units)
+        remaining_hours = remaining_units * seconds_per_unit / 3600
+        outcome_remaining_units = max(0, outcome_units - completed_units)
+        outcome_remaining_hours = outcome_remaining_units * seconds_per_unit / 3600
+        print(
+            f"  measured league-season={completed_units}, {int(benchmark['matches'] or 0):,} matches, "
+            f"{seconds:.1f}s active"
+        )
+        print(
+            f"  projected remaining active time: outcome-first={outcome_remaining_hours:.1f}h; "
+            f"full three-year build={remaining_hours:.1f}h"
+        )
+        print("  Projection is provisional until several large, small, playoff, and cup targets are sampled.")
+    else:
+        print("  No completed timed target-season yet; projection unavailable.")
+    detail_seconds = float(detail_benchmark["seconds"] or 0)
+    detail_matches = int(detail_benchmark["matches"] or 0)
+    if detail_seconds > 0 and detail_matches > 0:
+        seconds_per_match = detail_seconds / detail_matches
+        event_count = int(totals["events"] or 0)
+        detail_remaining_hours = max(0, event_count - detail_matches) * seconds_per_match / 3600
+        print(
+            f"  match-detail benchmark={detail_matches}, {int(detail_benchmark['stats'] or 0):,} stats, "
+            f"{int(detail_benchmark['h2h'] or 0):,} H2H rows, {detail_seconds:.1f}s active"
+        )
+        print(
+            f"  enriching all {event_count:,} wager-events at that rate would add "
+            f"about {detail_remaining_hours:.1f}h active"
+        )
+    rows = connection.execute(
+        """
+        SELECT target_id, torn_league_label, wager_count, event_count, staked,
+               linked_wager_count, planned_seasons, status, source_url
+        FROM collection_targets WHERE plan_id = ?
+        ORDER BY priority_score DESC, torn_league_label LIMIT ?
+        """,
+        (clean_text(plan_id), max(1, limit)),
+    ).fetchall()
+    print("Top targets")
+    for row in rows:
+        print(
+            f"  {row['target_id']} [{row['status']}] {row['torn_league_label']} — "
+            f"bets={int(row['wager_count']):,}, events={int(row['event_count']):,}, "
+            f"staked={money(int(row['staked']))}, linked={int(row['linked_wager_count']):,}"
+        )
+
+
 def risk_limits(bankroll: int) -> dict[str, int]:
     return {
         "reserve": math.floor(bankroll * 0.70),
@@ -2050,6 +2555,12 @@ def print_summary(connection: sqlite3.Connection) -> None:
         "forecast_evaluations",
         "backtest_runs",
         "backtest_metrics",
+        "collection_plans",
+        "collection_targets",
+        "collection_target_league_labels",
+        "collection_runs",
+        "collection_run_targets",
+        "collection_checkpoints",
     ]
     for table in tables:
         count = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -2411,7 +2922,7 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile_parser.add_argument(
         "--confirm-exact",
         action="store_true",
-        help="confirm only unique exact-team, same-date matches; otherwise store review candidates",
+        help="confirm only unique exact-team, same-date or time-aligned matches; otherwise store review candidates",
     )
 
     subparsers.add_parser(
@@ -2436,6 +2947,68 @@ def build_parser() -> argparse.ArgumentParser:
     model_parser.add_argument("--training-cutoff")
     model_parser.add_argument("--active", action="store_true")
     model_parser.add_argument("--notes", default="")
+
+    collection_plan_parser = subparsers.add_parser(
+        "collection-plan", help="build/update a ranked historical-data backlog from Torn wagers"
+    )
+    collection_plan_parser.add_argument("plan_id")
+    collection_plan_parser.add_argument("--name", default="Football historical outcomes")
+    collection_plan_parser.add_argument("--sport", default="football")
+    collection_plan_parser.add_argument("--years", type=int, default=3)
+    collection_plan_parser.add_argument("--source", default="flashscore-visible-browser")
+    collection_plan_parser.add_argument("--notes", default="")
+
+    collection_map_parser = subparsers.add_parser(
+        "collection-map", help="attach an approved source URL to a collection target"
+    )
+    collection_map_parser.add_argument("target_id")
+    collection_map_parser.add_argument("source_url")
+    collection_map_parser.add_argument("--source-competition-id", default="")
+
+    collection_start_parser = subparsers.add_parser(
+        "collection-start", help="start a timed foreground collection run"
+    )
+    collection_start_parser.add_argument("plan_id")
+    collection_start_parser.add_argument("target_id")
+    collection_start_parser.add_argument("season_name")
+    collection_start_parser.add_argument("--mode", choices=("foreground", "benchmark"), default="foreground")
+    collection_start_parser.add_argument("--notes", default="")
+
+    checkpoint_parser = subparsers.add_parser(
+        "collection-checkpoint", help="record progress inside a timed collection run"
+    )
+    checkpoint_parser.add_argument("run_id")
+    checkpoint_parser.add_argument("phase")
+    checkpoint_parser.add_argument("--page-url", default="")
+    checkpoint_parser.add_argument("--items", type=int, default=0)
+    checkpoint_parser.add_argument("--elapsed-seconds", type=float, default=0)
+    checkpoint_parser.add_argument("--note", default="")
+
+    collection_finish_parser = subparsers.add_parser(
+        "collection-finish", help="finish a timed collection run and store measured throughput"
+    )
+    collection_finish_parser.add_argument("run_id")
+    collection_finish_parser.add_argument("--status", choices=("complete", "partial", "failed"), default="complete")
+    collection_finish_parser.add_argument(
+        "--target-status",
+        choices=("mapped", "collecting", "captured", "imported", "reconciled", "blocked"),
+        default="captured",
+    )
+    collection_finish_parser.add_argument("--finished-at")
+    collection_finish_parser.add_argument("--active-seconds", type=float)
+    collection_finish_parser.add_argument("--pages", type=int, default=0)
+    collection_finish_parser.add_argument("--matches", type=int, default=0)
+    collection_finish_parser.add_argument("--standings", type=int, default=0)
+    collection_finish_parser.add_argument("--stats", type=int, default=0)
+    collection_finish_parser.add_argument("--h2h", type=int, default=0)
+    collection_finish_parser.add_argument("--bytes", type=int, default=0)
+    collection_finish_parser.add_argument("--notes", default="")
+
+    collection_progress_parser = subparsers.add_parser(
+        "collection-progress", help="show ranked backlog, measured throughput, and provisional ETA"
+    )
+    collection_progress_parser.add_argument("plan_id")
+    collection_progress_parser.add_argument("--limit", type=int, default=20)
 
     bankroll_parser = subparsers.add_parser("bankroll", help="record a manual/API bankroll snapshot")
     bankroll_parser.add_argument("--wallet", type=int, default=0)
@@ -2531,6 +3104,51 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Recorded {result['slate_id']} with {result['events']} events.")
             elif args.command == "model-register":
                 register_model_version(connection, args)
+            elif args.command == "collection-plan":
+                result = build_collection_plan(
+                    connection,
+                    plan_id=args.plan_id,
+                    name=args.name,
+                    sport=args.sport,
+                    history_years=args.years,
+                    source=args.source,
+                    notes=args.notes,
+                )
+                print(
+                    f"Recorded {result['plan_id']}: targets={result['targets']}, "
+                    f"wagers={result['wagers']}, staked={money(int(result['staked']))}."
+                )
+            elif args.command == "collection-map":
+                map_collection_target(
+                    connection, args.target_id, args.source_url, args.source_competition_id
+                )
+                print(f"Mapped {args.target_id} to {args.source_url}.")
+            elif args.command == "collection-start":
+                run_id = start_collection_run(
+                    connection,
+                    plan_id=args.plan_id,
+                    target_id=args.target_id,
+                    season_name=args.season_name,
+                    mode=args.mode,
+                    notes=args.notes,
+                )
+                print(run_id)
+            elif args.command == "collection-checkpoint":
+                add_collection_checkpoint(
+                    connection,
+                    run_id=args.run_id,
+                    phase=args.phase,
+                    page_url=args.page_url,
+                    items_visible=args.items,
+                    elapsed_seconds=args.elapsed_seconds,
+                    note=args.note,
+                )
+                print(f"Checkpoint recorded for {args.run_id}.")
+            elif args.command == "collection-finish":
+                finish_collection_run(connection, args)
+                print(f"Finished {args.run_id} with status={args.status}.")
+            elif args.command == "collection-progress":
+                print_collection_progress(connection, args.plan_id, args.limit)
             elif args.command == "bankroll":
                 add_bankroll_snapshot(connection, args)
         return 0

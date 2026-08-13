@@ -7,10 +7,10 @@ browser. It may navigate and expand the finite batch requested in that run. It
 does not use a timer, direct hidden HTTP calls, background monitoring, or an
 automatic restart. The next check requires another user instruction.
 
-The 2026-08-13 browser session showed `LOGIN`, so the first pilot used public
-pages only. A Flashscore account is not required for league tables, results,
-fixtures, match stats, or H2H; login may still be useful for user-managed
-favorites.
+The 2026-08-13 session confirmed the account was signed in. A Flashscore account
+is not required for league tables, results, fixtures, match stats, or H2H; login
+may still expose user-managed favorites or account-specific presentation. BMG
+records only the requested visible sports information, never account secrets.
 
 ## Per-league collection order
 
@@ -24,6 +24,14 @@ favorites.
    stats, H2H, and any available odds panels.
 7. Save the raw JSON under ignored `BMG/exports/`, import it, and run
    `sports-summary` before reconciliation or modeling.
+
+Raw JSON may also be stored as a gzip-compressed Base64 archive ending in
+`.json.gz.b64`; `import-flashscore` accepts either representation. SQLite keeps
+the expanded raw JSON as capture evidence.
+
+Start a collection run before opening a target, add checkpoints after meaningful
+expansions or surfaces, and finish it after import/reconciliation. See
+`COLLECTION-PROGRESS.md` for the commands, measured pilot, and current estimates.
 
 ## Premier League pilot
 
@@ -52,3 +60,8 @@ H2H is preserved as an observation, but model queries should normally derive H2H
 from canonical `sports_matches`. The snapshot remains useful evidence for
 cross-competition meetings and for verifying that our historical coverage is not
 missing a match.
+
+The outcome-first backlog is ranked from the actual Torn wager archive rather
+than from league popularity. Complete that pass before attempting universal
+per-match stats: the first measured match-detail pass was nearly half the time of
+collecting an entire 230-result league season.

@@ -51,6 +51,16 @@ state. The first milestone is trustworthy data.
    2025/26 results and final standings plus the full 2026/27 fixture list. See
    `docs/FLASHSCORE-WORKFLOW.md` for the repeatable league workflow.
 
+   Ranked collection progress and measured timing are available with:
+
+   ```powershell
+   python .\BMG\src\bmg.py collection-progress football-history-v1
+   ```
+
+   See `docs/COLLECTION-PROGRESS.md` for the current outcome-first and full
+   three-year estimates. Flashscore imports accept plain `.json` or private
+   `.json.gz.b64` archives.
+
 7. Build the reviewed outcome/modeling bridge and inspect research readiness:
 
    ```powershell
