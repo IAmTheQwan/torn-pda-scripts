@@ -18,6 +18,11 @@ backtest cannot quietly use information that was unavailable at decision time.
 `event_match_links` is the reviewed bridge between Torn and canonical matches.
 An outcome is copied into Torn history only after that bridge is confirmed.
 
+The reciprocal-odds opportunity screen only evaluates complete three-way,
+two-way moneyline, yes/no both-teams-to-score, and complementary over/under
+markets. Overlapping or non-exhaustive shapes such as double chance and win to
+nil are excluded even when their displayed reciprocal sum is below one.
+
 ## Research ledger
 
 - `research_slates` and `research_slate_events` preserve the full candidate pool,

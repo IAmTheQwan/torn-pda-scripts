@@ -61,6 +61,17 @@ The dry run distinguishes all registry jobs from `pending` league-seasons and
 calculates its API-call ceiling from pending work only. This keeps rerun quota
 estimates meaningful as the registry grows.
 
+Current external bookmaker prices can be captured for already imported fixture
+IDs and written directly into BMG's timestamped external-odds tables:
+
+```powershell
+python .\BMG\src\api_football.py collect-odds FIXTURE_ID [FIXTURE_ID ...]
+```
+
+The transformed capture retains provider fixture ID, bookmaker, market, line,
+selection, decimal price, and provider update time. The API key remains in the
+ignored `.env` file and is never written to the capture.
+
 Add mappings only after confirming that a rename or stage label denotes the
 same competition. Common names in the wrong country and similar-looking cup or
 league labels must remain outside the registry.

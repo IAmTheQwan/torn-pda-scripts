@@ -1649,7 +1649,7 @@ def import_market_odds_capture(
                 if odds is None or odds <= 0:
                     continue
                 bookmaker = clean_text(selection.get("bookmaker")) or default_bookmaker
-                connection.execute(
+                odds_cursor = connection.execute(
                     """
                     INSERT OR IGNORE INTO match_odds_observations (
                         capture_id, match_selection_id, bookmaker, observed_at, odds_decimal, available
@@ -1664,7 +1664,7 @@ def import_market_odds_capture(
                         0 if selection.get("available") is False else 1,
                     ),
                 )
-                counts["odds"] += 1
+                counts["odds"] += max(0, odds_cursor.rowcount)
     return counts
 
 
@@ -3427,6 +3427,30 @@ def latest_market_odds(connection: sqlite3.Connection) -> Iterable[sqlite3.Row]:
     )
 
 
+def opportunity_market_is_exhaustive(rows: list[Any]) -> bool:
+    """Return true only for complete market shapes whose selections cover every outcome."""
+    if not rows or not all(bool(row["captured_as_complete"]) for row in rows):
+        return False
+    market_types = {canonical(row["market_type"]) for row in rows}
+    if len(market_types) != 1:
+        return False
+    market_type = next(iter(market_types))
+    names = [canonical(row["selection_name"]) for row in rows]
+    if market_type == "three way":
+        return len(names) == 3 and sum(name == "draw" for name in names) == 1
+    if market_type == "moneyline":
+        return len(names) == 2
+    if market_type == "both teams to score":
+        return len(names) == 2 and set(names) == {"yes", "no"}
+    if market_type == "total":
+        return (
+            len(names) == 2
+            and sum(name.startswith("over ") for name in names) == 1
+            and sum(name.startswith("under ") for name in names) == 1
+        )
+    return False
+
+
 def print_opportunities(connection: sqlite3.Connection) -> None:
     grouped: dict[int, list[sqlite3.Row]] = defaultdict(list)
     for row in latest_market_odds(connection):
@@ -3434,7 +3458,7 @@ def print_opportunities(connection: sqlite3.Connection) -> None:
             grouped[int(row["market_id"])].append(row)
     candidates = 0
     for rows in grouped.values():
-        if len(rows) < 2:
+        if not opportunity_market_is_exhaustive(rows):
             continue
         implied = sum(1 / float(row["odds_decimal"]) for row in rows)
         if implied >= 1:
@@ -3447,8 +3471,11 @@ def print_opportunities(connection: sqlite3.Connection) -> None:
         for row in rows:
             print(f"  - {row['selection_name']}: x{float(row['odds_decimal']):.4f}")
     if not candidates:
-        print("No latest market has a reciprocal-odds sum below 1.0.")
-    print("Review only: verify exhaustive outcomes, identical settlement rules, availability, and caps before any bet.")
+        print("No latest provably exhaustive market has a reciprocal-odds sum below 1.0.")
+    print(
+        "Review only: recheck settlement rules, pushes/refunds, live availability, "
+        "stake allocation, and caps before any bet."
+    )
 
 
 def add_bankroll_snapshot(connection: sqlite3.Connection, args: argparse.Namespace) -> None:

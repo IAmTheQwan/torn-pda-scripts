@@ -1,5 +1,34 @@
 # Historical collection progress
 
+## First current-slate and external-odds checkpoint — 2026-08-13
+
+A manually initiated in-app-browser batch opened and fully expanded the four
+next visible Torn football matches. The installed convenience controls were not
+present in that browser surface, so the same visible expand controls were used
+directly. The ignored raw export is
+`BMG/exports/bmg-browser-football-2026-08-13T1716Z.json`.
+
+- Four events contributed 111 complete Torn markets and 230 timestamped prices.
+- Three fixtures matched canonical API-Football records. Importing current UEFA
+  Europa League season 2026 added 58 fixtures needed by the live slate.
+- API-Football marked KÍ Klaksvík versus Lech Poznań postponed at 19:45 UTC
+  while Torn still displayed it due at 17:30. BMG treated the mismatch as a
+  mandatory pass rather than assuming a settlement exploit.
+- Three external-odds captures retained 41 fixture/bookmaker feeds, 383 market
+  surfaces, and 9,526 distinct bookmaker price observations from 9,940 raw
+  provider rows.
+- The corrected exhaustive-market scanner found zero reciprocal-sum arbitrage
+  candidates. It now excludes overlapping or non-exhaustive shapes such as
+  double chance and win to nil.
+- Median de-vigged bookmaker consensus made every Torn 3-way selection on the
+  three valid fixtures negative before any model adjustment, ranging from
+  -4.65% to -16.08% estimated price EV.
+- Four explicit research slates were recorded as partial one-event captures.
+  No bet was placed.
+
+The per-match prices, provider status checks, and pass decisions are summarized
+in `BMG/docs/SLATE-2026-08-13.md`.
+
 ## High-value manual event review — 2026-08-13
 
 The first explicit manual-review batch resolved the top of the remaining fuzzy

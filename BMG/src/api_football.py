@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -992,6 +993,139 @@ def command_backfill_reviewed(args: argparse.Namespace) -> None:
     run_backfill(args, audit, jobs, catalog, client, "reviewed")
 
 
+def odds_value_line(value: Any, market_type: str) -> tuple[float | None, float | None]:
+    text = bmg.clean_text(value)
+    if market_type == "total":
+        match = re.search(r"(?:over|under)\s+([+-]?\d+(?:\.\d+)?)", text, re.IGNORECASE)
+        return None, float(match.group(1)) if match else None
+    if market_type in {"asian_handicap", "spread"}:
+        match = re.search(r"([+-]?\d+(?:\.\d+)?)\s*$", text)
+        return (float(match.group(1)) if match else None), None
+    return None, None
+
+
+def odds_selection_key(name: str, handicap: float | None, line: float | None) -> str:
+    material = json.dumps([name, handicap, line], ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def transform_odds_capture(
+    payload: dict[str, Any], fixture_id: int, observed_at: str | None = None
+) -> dict[str, Any]:
+    captured_at = observed_at or utc_now()
+    response_rows = [
+        row for row in (payload.get("response") or [])
+        if isinstance(row, dict) and int((row.get("fixture") or {}).get("id") or 0) == fixture_id
+    ]
+    if not response_rows:
+        raise ApiFootballError(f"API-Football returned no odds for fixture {fixture_id}.")
+
+    markets: dict[str, dict[str, Any]] = {}
+    bookmaker_names: set[str] = set()
+    latest_update = ""
+    for response in response_rows:
+        latest_update = max(latest_update, bmg.clean_text(response.get("update")))
+        for bookmaker in response.get("bookmakers") or []:
+            if not isinstance(bookmaker, dict):
+                continue
+            bookmaker_name = bmg.clean_text(bookmaker.get("name")) or "Unknown bookmaker"
+            bookmaker_names.add(bookmaker_name)
+            for bet in bookmaker.get("bets") or []:
+                if not isinstance(bet, dict):
+                    continue
+                bet_id = bmg.clean_text(bet.get("id"))
+                name = bmg.clean_text(bet.get("name")) or "Unknown market"
+                market_type = bmg.classify_market(name)
+                market_key = f"bet:{bet_id or bmg.stable_hash(name)}"
+                market = markets.setdefault(
+                    market_key,
+                    {
+                        "source_market_key": market_key,
+                        "name": name,
+                        "market_type": market_type,
+                        "period": bmg.market_period(name) or "full_time",
+                        "selections": [],
+                    },
+                )
+                for value in bet.get("values") or []:
+                    if not isinstance(value, dict):
+                        continue
+                    selection_name = bmg.clean_text(value.get("value")) or "Unknown selection"
+                    try:
+                        decimal_odds = float(value.get("odd"))
+                    except (TypeError, ValueError):
+                        continue
+                    if decimal_odds <= 0:
+                        continue
+                    handicap, line = odds_value_line(selection_name, market_type)
+                    market["selections"].append(
+                        {
+                            "source_selection_key": odds_selection_key(
+                                selection_name, handicap, line
+                            ),
+                            "name": selection_name,
+                            "handicap": handicap,
+                            "line": line,
+                            "odds_decimal": decimal_odds,
+                            "bookmaker": bookmaker_name,
+                            "bookmaker_id": bookmaker.get("id"),
+                            "observed_at": bmg.clean_text(response.get("update")) or captured_at,
+                            "available": True,
+                        }
+                    )
+
+    compact_time = re.sub(r"[^0-9]", "", captured_at)[:14]
+    return {
+        "schema_version": bmg.MARKET_ODDS_SCHEMA,
+        "capture_id": f"api-football-odds-{fixture_id}-{compact_time}",
+        "observed_at": captured_at,
+        "source": "api-football-odds",
+        "page_url": f"{DEFAULT_BASE_URL}/odds?fixture={fixture_id}",
+        "display_timezone": "UTC",
+        "bookmakers": sorted(bookmaker_names),
+        "provider_updated_at": latest_update,
+        "matches": [
+            {
+                "match_source": SOURCE,
+                "source_match_id": str(fixture_id),
+                "markets": list(markets.values()),
+            }
+        ],
+    }
+
+
+def command_collect_odds(args: argparse.Namespace) -> None:
+    client = make_client(args.env)
+    observed_at = utc_now()
+    captures = [
+        transform_odds_capture(client.get_all("odds", {"fixture": fixture_id}), fixture_id, observed_at)
+        for fixture_id in args.fixture_ids
+    ]
+    output = args.output or (
+        PROJECT_DIR / "exports" / f"api-football-odds-{observed_at.replace(':', '')}.json"
+    )
+    write_json(output, {"captures": captures})
+    imported: dict[str, int] = {}
+    if args.import_db:
+        connection = bmg.open_database(args.import_db.resolve())
+        try:
+            bmg.apply_schema(connection)
+            with connection:
+                for capture in captures:
+                    bmg.merge_counts(imported, bmg.import_market_odds_capture(connection, capture))
+        finally:
+            connection.close()
+    print(
+        f"fixtures={len(captures)}; bookmakers="
+        f"{sum(len(capture['bookmakers']) for capture in captures)}; "
+        f"markets={sum(len(capture['matches'][0]['markets']) for capture in captures)}; "
+        f"prices={sum(len(market['selections']) for capture in captures for market in capture['matches'][0]['markets'])}; "
+        f"API requests={client.requests_used}; output={output}"
+    )
+    if imported:
+        print("Imported " + ", ".join(f"{key}={value}" for key, value in imported.items()))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env", type=Path, default=DEFAULT_ENV)
@@ -1013,6 +1147,13 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--refresh-catalog", action="store_true")
     collect.add_argument("--output", type=Path)
     collect.add_argument("--import-db", type=Path)
+
+    odds = subparsers.add_parser(
+        "collect-odds", help="collect bookmaker odds for imported API-Football fixture IDs"
+    )
+    odds.add_argument("fixture_ids", type=int, nargs="+")
+    odds.add_argument("--output", type=Path)
+    odds.add_argument("--import-db", type=Path, default=DEFAULT_DB)
 
     backfill = subparsers.add_parser(
         "backfill-exact", help="resume the exact name/country/season coverage tier"
@@ -1048,6 +1189,8 @@ def main(argv: list[str] | None = None) -> int:
             command_audit(args)
         elif args.command == "collect-season":
             command_collect_season(args)
+        elif args.command == "collect-odds":
+            command_collect_odds(args)
         elif args.command == "backfill-exact":
             command_backfill_exact(args)
         elif args.command == "backfill-reviewed":

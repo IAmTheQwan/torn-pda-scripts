@@ -110,6 +110,33 @@ class BmgDatabaseTests(unittest.TestCase):
             bmg.print_opportunities(self.connection)
         self.assertNotIn("Alex Alpha v Ben Beta", output.getvalue())
 
+    def test_opportunity_math_requires_complementary_exhaustive_selections(self) -> None:
+        def rows(market_type: str, names: list[str]) -> list[dict[str, object]]:
+            return [
+                {
+                    "market_type": market_type,
+                    "captured_as_complete": 1,
+                    "selection_name": name,
+                }
+                for name in names
+            ]
+
+        self.assertFalse(bmg.opportunity_market_is_exhaustive(
+            rows("win_to_nil", ["Home", "Away"])
+        ))
+        self.assertFalse(bmg.opportunity_market_is_exhaustive(
+            rows("double_chance", ["Home or Draw", "Away or Draw", "Home or Away"])
+        ))
+        self.assertTrue(bmg.opportunity_market_is_exhaustive(
+            rows("three_way", ["Home", "Draw", "Away"])
+        ))
+        self.assertTrue(bmg.opportunity_market_is_exhaustive(
+            rows("both_teams_to_score", ["Yes", "No"])
+        ))
+        self.assertTrue(bmg.opportunity_market_is_exhaustive(
+            rows("total", ["Over 2.5 Total Goals", "Under 2.5 Total Goals"])
+        ))
+
     def test_database_rejects_a_single_bet_over_one_billion(self) -> None:
         with self.assertRaises(sqlite3.IntegrityError):
             self.connection.execute(
@@ -558,6 +585,56 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertEqual("awarded", api_football.match_status("AWD"))
         self.assertEqual("walkover", api_football.match_status("WO"))
         self.assertEqual("finished", api_football.match_status("FT"))
+
+    def test_api_football_odds_transform_keeps_bookmakers_and_shared_selections(self) -> None:
+        payload = {
+            "response": [{
+                "fixture": {"id": 12345},
+                "update": "2026-08-13T17:20:00Z",
+                "bookmakers": [
+                    {"id": 1, "name": "Book A", "bets": [{
+                        "id": 1, "name": "Match Winner", "values": [
+                            {"value": "Home", "odd": "2.10"},
+                            {"value": "Draw", "odd": "3.40"},
+                            {"value": "Away", "odd": "3.60"},
+                        ],
+                    }, {
+                        "id": 10, "name": "Exact Score", "values": [
+                            {"value": "1:0", "odd": "8.00"},
+                            {"value": "1-0", "odd": "8.50"},
+                        ],
+                    }]},
+                    {"id": 2, "name": "Book B", "bets": [{
+                        "id": 1, "name": "Match Winner", "values": [
+                            {"value": "Home", "odd": "2.20"},
+                            {"value": "Draw", "odd": "3.30"},
+                            {"value": "Away", "odd": "3.50"},
+                        ],
+                    }]},
+                ],
+            }],
+        }
+
+        capture = api_football.transform_odds_capture(
+            payload, 12345, "2026-08-13T17:21:00Z"
+        )
+
+        self.assertEqual("bmg.market-odds.v1", capture["schema_version"])
+        self.assertEqual(["Book A", "Book B"], capture["bookmakers"])
+        market = capture["matches"][0]["markets"][0]
+        self.assertEqual("moneyline", market["market_type"])
+        self.assertEqual(6, len(market["selections"]))
+        self.assertEqual(
+            market["selections"][0]["source_selection_key"],
+            market["selections"][3]["source_selection_key"],
+        )
+        self.assertEqual({"Book A", "Book B"}, {
+            selection["bookmaker"] for selection in market["selections"]
+        })
+        exact_score = capture["matches"][0]["markets"][1]
+        self.assertEqual(2, len({
+            selection["source_selection_key"] for selection in exact_score["selections"]
+        }))
 
     def test_team_alias_bridge_requires_one_known_side_and_keeps_evidence(self) -> None:
         bmg.import_file(self.connection, FIXTURE)
