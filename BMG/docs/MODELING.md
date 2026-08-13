@@ -47,13 +47,19 @@ An outcome is copied into Torn history only after that bridge is confirmed.
    python .\BMG\src\bmg.py reconciliation-review
    ```
 
-3. After reviewing the report, confirm only unique same-date matches and copy
-   their scores into the Torn evidence layer:
+3. Apply committed manual review decisions, confirm only unique same-date
+   matches, and copy their scores into the Torn evidence layer:
 
    ```powershell
+   python .\BMG\src\bmg.py event-match-review-apply
    python .\BMG\src\bmg.py reconcile --confirm-exact
    python .\BMG\src\bmg.py sync-outcomes
    ```
+
+   `event-match-review-apply` rechecks the stored Torn and provider identities,
+   competition scope, home/away roles, and six-hour kickoff guard before it
+   confirms a link. Rejected lookalikes remain in the committed registry, and
+   reviewed one-off pairs do not become global team aliases.
 
 4. Import timestamped source-neutral odds captures:
 

@@ -512,6 +512,26 @@ class BmgDatabaseTests(unittest.TestCase):
             self.assertTrue(item["seasons"])
             self.assertTrue(item["reason"])
 
+    def test_committed_event_match_review_registry_is_complete_and_unique(self) -> None:
+        registry_path = PROJECT_DIR / "config" / "event-match-reviewed-decisions.json"
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("bmg.event-match-reviewed-decisions.v1", registry["schema_version"])
+        decisions = registry["decisions"]
+        event_ids = [item["event_id"] for item in decisions]
+        self.assertEqual(len(event_ids), len(set(event_ids)))
+        self.assertEqual(25, len(decisions))
+        self.assertEqual(24, sum(item["decision"] == "confirmed" for item in decisions))
+        self.assertEqual(1, sum(item["decision"] == "rejected" for item in decisions))
+        for item in decisions:
+            self.assertIn(item["decision"], {"confirmed", "rejected"})
+            self.assertGreater(item["event_id"], 0)
+            self.assertGreater(item["match_id"], 0)
+            self.assertTrue(item["event"]["home_team"])
+            self.assertTrue(item["event"]["away_team"])
+            self.assertTrue(item["provider"]["source_match_id"])
+            self.assertTrue(item["reason"])
+
     def test_api_football_duplicate_standings_group_names_get_unique_scopes(self) -> None:
         league = {
             "league": {"id": 888, "name": "Grouped League"},
@@ -620,6 +640,45 @@ class BmgDatabaseTests(unittest.TestCase):
 
         self.assertEqual(0, audit["summary"]["automatic_aliases"])
         self.assertEqual(1, audit["summary"]["review_matches"])
+
+        event = self.connection.execute(
+            """SELECT event_id, home_team, away_team, league,
+                      COALESCE(scheduled_at, settled_at, '') event_time
+               FROM events WHERE source_event_id = '9001'"""
+        ).fetchone()
+        match = self.connection.execute(
+            """SELECT sm.match_id, sm.home_team_id, ht.name home_team,
+                      sm.away_team_id, at.name away_team, sc.name competition,
+                      sc.country, sm.scheduled_at, ms.source, ms.source_match_id
+               FROM sports_matches sm
+               JOIN sports_teams ht ON ht.team_id=sm.home_team_id
+               JOIN sports_teams at ON at.team_id=sm.away_team_id
+               JOIN sports_competitions sc ON sc.competition_id=sm.competition_id
+               JOIN match_sources ms ON ms.match_id=sm.match_id
+               WHERE ms.source_match_id='fuzzy-alias-match'"""
+        ).fetchone()
+        registry = {
+            "schema_version": "bmg.event-match-reviewed-decisions.v1",
+            "decisions": [{
+                "event_id": event["event_id"], "match_id": match["match_id"],
+                "decision": "confirmed",
+                "event": {key: event[key] for key in (
+                    "home_team", "away_team", "league", "event_time"
+                )},
+                "provider": {key: match[key] for key in (
+                    "source", "source_match_id", "home_team_id", "home_team",
+                    "away_team_id", "away_team", "competition", "country", "scheduled_at"
+                )},
+                "reason": "Same roles, competition, and kickoff; reviewed fuzzy suffixes.",
+            }],
+        }
+        first = bmg.apply_reviewed_event_match_decisions(self.connection, registry)
+        self.assertEqual({"confirmed": 1, "existing": 0, "rejected": 0}, first)
+        second = bmg.apply_reviewed_event_match_decisions(self.connection, registry)
+        self.assertEqual({"confirmed": 0, "existing": 1, "rejected": 0}, second)
+        registry["decisions"][0]["provider"]["away_team"] = "Drifted name"
+        with self.assertRaises(ValueError):
+            bmg.apply_reviewed_event_match_decisions(self.connection, registry)
 
     def test_team_alias_scope_guard_rejects_country_gender_and_youth_mismatches(self) -> None:
         countries = {"france", "england", "world"}

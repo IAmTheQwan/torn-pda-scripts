@@ -1,0 +1,258 @@
+{
+  "schema_version": "bmg.event-match-reviewed-decisions.v1",
+  "reviewed_at": "2026-08-13",
+  "policy": "Manual confirmation requires the same home/away roles, compatible competition scope, a unique provider fixture, and kickoff within six hours. Rejections document close-looking false pairs.",
+  "decisions": [
+    {
+      "event_id": 830,
+      "match_id": 32458,
+      "decision": "confirmed",
+      "event": {"home_team": "Turan Tovuz", "away_team": "Sabah FK", "league": "Premier League 2025/2026 (Azerbaijan 1)", "event_time": "2026-05-22T14:54:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1446695", "home_team_id": 1603, "home_team": "Turan", "away_team_id": 1601, "away_team": "Sabah FA", "competition": "Premyer Liqa", "country": "Azerbaijan", "scheduled_at": "2026-05-22T13:00:00Z"},
+      "bet_count_at_review": 2,
+      "stake_at_review": 1000000000,
+      "reason": "Confirmed: one exact team anchors the same roles and competition; the unique provider opponent is inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 1470,
+      "match_id": 45357,
+      "decision": "confirmed",
+      "event": {"home_team": "Club Sport Herediano", "away_team": "Deportiva San Carlos", "league": "Primera Division Clausura 2025/2026 (Costa Rica 1)", "event_time": "2026-04-19T04:01:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1489171", "home_team_id": 2869, "home_team": "CS Herediano", "away_team_id": 2874, "away_team": "San Carlos", "competition": "Primera División", "country": "Costa-Rica", "scheduled_at": "2026-04-19T02:00:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 589200210,
+      "reason": "Confirmed: same home/away roles and compatible competition, with the unique provider fixture inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 1105,
+      "match_id": 45513,
+      "decision": "confirmed",
+      "event": {"home_team": "Orlando Pride", "away_team": "North Carolina Courage", "league": "NWSL 2026 (USA 1, female)", "event_time": "2026-05-09T02:13:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1508415", "home_team_id": 2930, "home_team": "Orlando Pride W", "away_team_id": 2925, "away_team": "North Carolina Courage W", "competition": "NWSL Women", "country": "USA", "scheduled_at": "2026-05-09T00:00:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 387932387,
+      "reason": "Confirmed: same home/away roles and compatible competition, with the unique provider fixture inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 701,
+      "match_id": 4784,
+      "decision": "confirmed",
+      "event": {"home_team": "FK Kauno Zalgiris", "away_team": "Zalgiris Vilnius", "league": "A Lyga 2026 (Lithuania 1)", "event_time": "2026-05-31T13:09:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1522821", "home_team_id": 189, "home_team": "Kauno Žalgiris", "away_team_id": 193, "away_team": "FK Zalgiris Vilnius", "competition": "A Lyga", "country": "Lithuania", "scheduled_at": "2026-05-31T11:15:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 290314205,
+      "reason": "Confirmed: same home/away roles and compatible competition, with the unique provider fixture inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 1148,
+      "match_id": 36834,
+      "decision": "confirmed",
+      "event": {"home_team": "Olancho FC", "away_team": "Genesis FC - Liga Nacional", "league": "Clausura Playoff Grp. B 2025/2026 (Honduras 1)", "event_time": "2026-05-07T01:58:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1543719", "home_team_id": 2305, "home_team": "Olancho", "away_team_id": 2308, "away_team": "Génesis", "competition": "Liga Nacional", "country": "Honduras", "scheduled_at": "2026-05-07T00:00:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 286855626,
+      "reason": "Confirmed: one exact team anchors the same roles and competition; the unique provider opponent is inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 397,
+      "match_id": 38170,
+      "decision": "confirmed",
+      "event": {"home_team": "Varegg", "away_team": "Vard Haugesund", "league": "3. Divisjon Avd. 3 2026 (Norway 4)", "event_time": "2026-06-28T13:51:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1496826", "home_team_id": 2419, "home_team": "Varegg", "away_team_id": 2410, "away_team": "Vard", "competition": "3. Division - Girone 3", "country": "Norway", "scheduled_at": "2026-06-28T12:00:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 163813376,
+      "reason": "Confirmed: one exact team anchors the same roles and competition; the unique provider opponent is inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 1407,
+      "match_id": 40234,
+      "decision": "confirmed",
+      "event": {"home_team": "Hermannstadt", "away_team": "Csikszereda Miercurea Ciuc", "league": "Superliga Relegation Group 2025/2026 (Romania 1)", "event_time": "2026-04-24T16:25:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1531528", "home_team_id": 2573, "home_team": "AFC Hermannstadt", "away_team_id": 2570, "away_team": "Csikszereda", "competition": "Liga I", "country": "Romania", "scheduled_at": "2026-04-24T14:30:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 130362529,
+      "reason": "Confirmed: same home/away roles and compatible competition, with the unique provider fixture inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 471,
+      "match_id": 35144,
+      "decision": "confirmed",
+      "event": {"home_team": "Austin FC II", "away_team": "Sporting Kansas City II", "league": "MLS NEXT Pro 2026 (MLS Next Pro 1)", "event_time": "2026-06-22T02:29:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1513175", "home_team_id": 2217, "home_team": "Austin II", "away_team_id": 2222, "away_team": "Sporting KC II", "competition": "MLS Next Pro", "country": "USA", "scheduled_at": "2026-06-22T00:30:00Z"},
+      "bet_count_at_review": 2,
+      "stake_at_review": 120276829,
+      "reason": "Confirmed: same home/away roles and compatible competition, with the unique provider fixture inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 419,
+      "match_id": 35147,
+      "decision": "confirmed",
+      "event": {"home_team": "Connecticut United", "away_team": "New York City FC II", "league": "MLS NEXT Pro 2026 (MLS Next Pro 1)", "event_time": "2026-06-27T00:57:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1513188", "home_team_id": 2198, "home_team": "Connecticut FC", "away_team_id": 2199, "away_team": "New York City II", "competition": "MLS Next Pro", "country": "USA", "scheduled_at": "2026-06-26T23:00:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 119985058,
+      "reason": "Confirmed: same home/away roles and compatible competition, with the unique provider fixture inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 396,
+      "match_id": 42005,
+      "decision": "confirmed",
+      "event": {"home_team": "Raade", "away_team": "Lyn 2", "league": "3. Divisjon Avd. 6 2026 (Norway 4)", "event_time": "2026-06-28T14:56:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1497372", "home_team_id": 2656, "home_team": "Råde", "away_team_id": 2658, "away_team": "Lyn II", "competition": "3. Division - Girone 6", "country": "Norway", "scheduled_at": "2026-06-28T13:00:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 113506909,
+      "reason": "Confirmed: one exact team anchors the same roles and competition; the unique provider opponent is inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 398,
+      "match_id": 38825,
+      "decision": "confirmed",
+      "event": {"home_team": "Stroemsgodset 2", "away_team": "Skjervoey", "league": "3. Divisjon Avd. 5 2026 (Norway 4)", "event_time": "2026-06-28T11:52:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1497189", "home_team_id": 2453, "home_team": "Strømsgodset II", "away_team_id": 2455, "away_team": "Skjervøy", "competition": "3. Division - Girone 5", "country": "Norway", "scheduled_at": "2026-06-28T10:00:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 103178917,
+      "reason": "Confirmed: same home/away roles and compatible competition, with the unique provider fixture inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 889,
+      "match_id": 38136,
+      "decision": "confirmed",
+      "event": {"home_team": "Brann 2", "away_team": "Sogndal 2", "league": "3. Divisjon Avd. 3 2026 (Norway 4)", "event_time": "2026-05-19T17:56:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1496785", "home_team_id": 2411, "home_team": "Brann II", "away_team_id": 2414, "away_team": "Sogndal II", "competition": "3. Division - Girone 3", "country": "Norway", "scheduled_at": "2026-05-19T16:00:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 80832573,
+      "reason": "Confirmed: same home/away roles and compatible competition, with the unique provider fixture inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 460,
+      "match_id": 6384,
+      "decision": "confirmed",
+      "event": {"home_team": "Confianca", "away_team": "Guarani", "league": "Serie C 2026 (Brazil 3)", "event_time": "2026-06-23T00:29:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1526859", "home_team_id": 266, "home_team": "Confiança", "away_team_id": 254, "away_team": "Guarani Campinas", "competition": "Serie C", "country": "Brazil", "scheduled_at": "2026-06-22T22:30:00Z"},
+      "bet_count_at_review": 2,
+      "stake_at_review": 70671440,
+      "reason": "Confirmed: one exact team anchors the same roles and competition; the unique provider opponent is inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 1297,
+      "match_id": 44885,
+      "decision": "confirmed",
+      "event": {"home_team": "Concarneau", "away_team": "Paris 13 Atletico", "league": "National 2025/2026 (France 3)", "event_time": "2026-04-30T19:35:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1423083", "home_team_id": 2830, "home_team": "Concarneau", "away_team_id": 2835, "away_team": "Gobelins", "competition": "Ligue 3", "country": "France", "scheduled_at": "2026-04-30T17:30:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 60649941,
+      "evidence_urls": ["https://paris13atletico.fr/histoire-paris-13-atletico/"],
+      "reason": "Confirmed: same club identity (Paris 13 Atletico was formerly FC Gobelins), one exact opponent, same roles and competition, and a kickoff inside the six-hour window."
+    },
+    {
+      "event_id": 1585,
+      "match_id": 5768,
+      "decision": "confirmed",
+      "event": {"home_team": "Colon", "away_team": "Racing de Cordoba", "league": "Primera Nacional 2026 (Argentina 2)", "event_time": "2026-04-13T00:06:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1498440", "home_team_id": 217, "home_team": "Colon Santa Fe", "away_team_id": 224, "away_team": "Racing Cordoba", "competition": "Primera Nacional", "country": "Argentina", "scheduled_at": "2026-04-12T22:00:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 47290874,
+      "reason": "Confirmed: one exact team anchors the same roles and competition; the unique provider opponent is inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 1060,
+      "match_id": 35055,
+      "decision": "confirmed",
+      "event": {"home_team": "Minnesota United 2", "away_team": "North Texas SC", "league": "MLS NEXT Pro 2026 (MLS Next Pro 1)", "event_time": "2026-05-10T02:07:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1513083", "home_team_id": 2220, "home_team": "Minnesota United II", "away_team_id": 2221, "away_team": "North Texas", "competition": "MLS Next Pro", "country": "USA", "scheduled_at": "2026-05-10T00:00:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 35000000,
+      "reason": "Confirmed: same home/away roles and compatible competition, with the unique provider fixture inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 2405,
+      "match_id": 43751,
+      "decision": "confirmed",
+      "event": {"home_team": "Paderborn", "away_team": "Darmstadt", "league": "2. Bundesliga 2025/2026 (Germany 2)", "event_time": "2025-12-19T19:25:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1388765", "home_team_id": 2767, "home_team": "SC Paderborn 07", "away_team_id": 2769, "away_team": "SV Darmstadt 98", "competition": "2. Bundesliga", "country": "Germany", "scheduled_at": "2025-12-19T17:30:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 34000000,
+      "reason": "Confirmed: same home/away roles and compatible competition, with the unique provider fixture inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 2321,
+      "match_id": 15626,
+      "decision": "confirmed",
+      "event": {"home_team": "Newport County", "away_team": "Crewe Alexandra", "league": "League Two 2025/2026 (England 4)", "event_time": "2025-12-29T21:21:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1386260", "home_team_id": 741, "home_team": "Newport County", "away_team_id": 732, "away_team": "Crewe", "competition": "League Two", "country": "England", "scheduled_at": "2025-12-29T19:30:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 32000000,
+      "reason": "Confirmed: one exact team anchors the same roles and competition; the unique provider opponent is inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 111,
+      "match_id": 45584,
+      "decision": "confirmed",
+      "event": {"home_team": "North Carolina Courage", "away_team": "Orlando Pride", "league": "NWSL 2026 (USA 1, female)", "event_time": "2026-08-01T02:08:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1508486", "home_team_id": 2925, "home_team": "North Carolina Courage W", "away_team_id": 2930, "away_team": "Orlando Pride W", "competition": "NWSL Women", "country": "USA", "scheduled_at": "2026-08-01T00:00:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 27000000,
+      "reason": "Confirmed: same home/away roles and compatible competition, with the unique provider fixture inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 1622,
+      "match_id": 5753,
+      "decision": "confirmed",
+      "event": {"home_team": "CA Ferrocarril Midland", "away_team": "Acassuso", "league": "Primera Nacional 2026 (Argentina 2)", "event_time": "2026-04-09T01:02:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1498410", "home_team_id": 236, "home_team": "Midland", "away_team_id": 232, "away_team": "Acassuso", "competition": "Primera Nacional", "country": "Argentina", "scheduled_at": "2026-04-08T23:00:00Z"},
+      "bet_count_at_review": 2,
+      "stake_at_review": 24009121,
+      "reason": "Confirmed: one exact team anchors the same roles and competition; the unique provider opponent is inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 710,
+      "match_id": 37173,
+      "decision": "confirmed",
+      "event": {"home_team": "Atletico Grau", "away_team": "Club Deportivo Moquegua", "league": "Liga 1 Apertura 2026 (Peru 1)", "event_time": "2026-05-29T22:14:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1512629", "home_team_id": 2340, "home_team": "Atletico Grau", "away_team_id": 2338, "away_team": "UCV Moquegua", "competition": "Primera División", "country": "Peru", "scheduled_at": "2026-05-29T20:00:00Z"},
+      "bet_count_at_review": 2,
+      "stake_at_review": 20222635,
+      "reason": "Confirmed: one exact team anchors the same roles and competition; the unique provider opponent is inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 162,
+      "match_id": 5994,
+      "decision": "confirmed",
+      "event": {"home_team": "Club Atletico Estudiantes", "away_team": "Ciudad de Bolivar", "league": "Primera Nacional 2026 (Argentina 2)", "event_time": "2026-07-25T19:59:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1498671", "home_team_id": 223, "home_team": "CA Estudiantes", "away_team_id": 221, "away_team": "Ciudad de Bolívar", "competition": "Primera Nacional", "country": "Argentina", "scheduled_at": "2026-07-25T18:00:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 20000000,
+      "reason": "Confirmed: same home/away roles and compatible competition, with the unique provider fixture inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 1301,
+      "match_id": 55061,
+      "decision": "confirmed",
+      "event": {"home_team": "NK Krsko", "away_team": "ND Slovan Ljubljana", "league": "2. Division 2025/2026 (Slovenia 2)", "event_time": "2026-04-30T17:27:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1388271", "home_team_id": 3541, "home_team": "Krško", "away_team_id": 3538, "away_team": "Slovan Ljubljana", "competition": "2. SNL", "country": "Slovenia", "scheduled_at": "2026-04-30T15:30:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 20000000,
+      "reason": "Confirmed: one exact team anchors the same roles and competition; the unique provider opponent is inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 1313,
+      "match_id": 45501,
+      "decision": "confirmed",
+      "event": {"home_team": "Chicago Stars", "away_team": "Gotham FC", "league": "NWSL 2026 (USA 1, female)", "event_time": "2026-04-30T02:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1508403", "home_team_id": 2935, "home_team": "Chicago Red Stars W", "away_team_id": 2920, "away_team": "NJ/NY Gotham FC W", "competition": "NWSL Women", "country": "USA", "scheduled_at": "2026-04-30T00:00:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 20000000,
+      "reason": "Confirmed: same home/away roles and compatible competition, with the unique provider fixture inside the six-hour kickoff window."
+    },
+    {
+      "event_id": 3455,
+      "match_id": 50552,
+      "decision": "rejected",
+      "event": {"home_team": "Bayern Munich U19", "away_team": "Club Brugge U19", "league": "UEFA Youth League Champions League Path 2025/2026 (UEFA Youth League 1)", "event_time": "2025-10-22T15:51:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1451073", "home_team_id": 3259, "home_team": "Bayern München", "away_team_id": 3263, "away_team": "Club Brugge KV", "competition": "UEFA Champions League", "country": "World", "scheduled_at": "2025-10-22T19:00:00Z"},
+      "bet_count_at_review": 1,
+      "stake_at_review": 20000000,
+      "reason": "Rejected: Torn lists an under-19 UEFA Youth League match, while the provider candidate is the senior UEFA Champions League fixture."
+    }
+  ]
+}

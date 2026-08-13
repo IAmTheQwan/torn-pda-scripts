@@ -1,5 +1,31 @@
 # Historical collection progress
 
+## High-value manual event review — 2026-08-13
+
+The first explicit manual-review batch resolved the top of the remaining fuzzy
+queue without turning short or ambiguous team labels into global aliases. Each
+decision is committed with the Torn event snapshot, provider fixture snapshot,
+historical stake, rationale, and a drift check before SQLite is changed.
+
+- 24 reviewed event/match pairs representing 29 wagers and $3,797,102,630 of
+  historical stake were confirmed.
+- One close-looking pair was explicitly rejected: Bayern Munich U19 versus
+  Club Brugge U19 in the UEFA Youth League had been paired to the clubs' senior
+  UEFA Champions League fixture.
+- Reconciled outcomes rose from 1,647 to 1,671; linked historical football
+  wagers rose from 1,930 to 1,959 of 3,371.
+- The remaining fuzzy review queue fell from 214 to 190. Excluding the recorded
+  rejection, the highest-stake candidate remaining is $16,526,968, so the
+  economically important top of the queue is now cleared.
+- Collection-plan progress is now 169 fully reconciled targets and 170 targets
+  progressed.
+
+The durable review ledger is
+`BMG/config/event-match-reviewed-decisions.json`. It is intentionally separate
+from the automatic alias bridge: a single reviewed historical fixture does not
+prove that a short team label is globally unambiguous in every country or
+competition.
+
 ## API-Football reviewed-label tier two — 2026-08-13
 
 The second reviewed-label batch added 125 explicit targets representing 754

@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DB = PROJECT_DIR / "data" / "bmg.sqlite"
 DEFAULT_TEAM_ALIAS_AUDIT = PROJECT_DIR / "data" / "team-alias-audit.json"
+DEFAULT_EVENT_MATCH_REVIEW = PROJECT_DIR / "config" / "event-match-reviewed-decisions.json"
 SCHEMA_FILES = sorted((PROJECT_DIR / "schema").glob("[0-9][0-9][0-9]_*.sql"))
 STARTING_BANKROLL = 57_365_830
 TORN_OPTION_CAP = 1_000_000_000
@@ -2030,6 +2031,7 @@ def build_team_alias_audit(
                     ),
                     "name_similarity": similarity,
                     "evidence_count": len(evidence),
+                    "evidence": evidence,
                 }
             )
             continue
@@ -2145,6 +2147,150 @@ def apply_team_alias_audit(connection: sqlite3.Connection, audit: dict[str, Any]
                         ),
                     )
                     counts["evidence"] += max(0, evidence_cursor.rowcount)
+    return counts
+
+
+def apply_reviewed_event_match_decisions(
+    connection: sqlite3.Connection, registry: dict[str, Any]
+) -> dict[str, int]:
+    """Apply explicit event/match decisions after verifying every stored identity field."""
+    if registry.get("schema_version") != "bmg.event-match-reviewed-decisions.v1":
+        raise ValueError("Unsupported event-match review registry schema.")
+    decisions = registry.get("decisions")
+    if not isinstance(decisions, list):
+        raise ValueError("Event-match review registry decisions must be a list.")
+
+    counts = {"confirmed": 0, "existing": 0, "rejected": 0}
+    seen_events: set[int] = set()
+    with connection:
+        for item in decisions:
+            if not isinstance(item, dict):
+                raise ValueError("Event-match review decisions must be objects.")
+            event_id = int(item.get("event_id"))
+            match_id = int(item.get("match_id"))
+            decision = canonical(item.get("decision"))
+            reason = clean_text(item.get("reason"))
+            if event_id in seen_events:
+                raise ValueError(f"Duplicate reviewed event_id: {event_id}")
+            seen_events.add(event_id)
+            if decision not in {"confirmed", "rejected"}:
+                raise ValueError(f"Unsupported review decision for event {event_id}: {decision}")
+            if not reason:
+                raise ValueError(f"Review decision has no rationale for event {event_id}.")
+
+            event = connection.execute(
+                """
+                SELECT event_id, home_team, away_team, league,
+                       COALESCE(scheduled_at, settled_at, '') AS event_time
+                FROM events WHERE event_id = ?
+                """,
+                (event_id,),
+            ).fetchone()
+            provider = connection.execute(
+                """
+                SELECT sm.match_id, sm.home_team_id, ht.name AS home_team,
+                       sm.away_team_id, at.name AS away_team,
+                       COALESCE(sc.name, '') AS competition,
+                       COALESCE(sc.country, '') AS country,
+                       COALESCE(sm.scheduled_at, '') AS scheduled_at,
+                       ms.source, ms.source_match_id
+                FROM sports_matches sm
+                JOIN sports_teams ht ON ht.team_id = sm.home_team_id
+                JOIN sports_teams at ON at.team_id = sm.away_team_id
+                LEFT JOIN sports_competitions sc ON sc.competition_id = sm.competition_id
+                JOIN match_sources ms ON ms.match_id = sm.match_id
+                WHERE sm.match_id = ? AND ms.source = ?
+                """,
+                (match_id, clean_text((item.get("provider") or {}).get("source"))),
+            ).fetchone()
+            if event is None:
+                raise ValueError(f"Reviewed Torn event no longer exists: {event_id}")
+            if provider is None:
+                raise ValueError(f"Reviewed provider match no longer exists: {match_id}")
+
+            expected_event = item.get("event")
+            expected_provider = item.get("provider")
+            if not isinstance(expected_event, dict) or not isinstance(expected_provider, dict):
+                raise ValueError(f"Review decision snapshots are missing for event {event_id}.")
+            event_fields = ("home_team", "away_team", "league", "event_time")
+            provider_text_fields = (
+                "source", "source_match_id", "home_team", "away_team",
+                "competition", "country", "scheduled_at",
+            )
+            for field in event_fields:
+                if clean_text(event[field]) != clean_text(expected_event.get(field)):
+                    raise ValueError(f"Reviewed event {event_id} drifted at {field}.")
+            for field in provider_text_fields:
+                if clean_text(provider[field]) != clean_text(expected_provider.get(field)):
+                    raise ValueError(f"Reviewed match {match_id} drifted at {field}.")
+            for field in ("home_team_id", "away_team_id"):
+                if int(provider[field]) != int(expected_provider.get(field)):
+                    raise ValueError(f"Reviewed match {match_id} drifted at {field}.")
+
+            if decision == "rejected":
+                counts["rejected"] += 1
+                continue
+
+            known_countries = {
+                canonical(row["country"])
+                for row in connection.execute("SELECT DISTINCT country FROM sports_competitions")
+                if canonical(row["country"])
+            }
+            if not competition_alias_compatible(
+                event["league"], provider["competition"], provider["country"], known_countries
+            ):
+                raise ValueError(
+                    f"Confirmed review fails the country/gender/youth scope guard: event {event_id}."
+                )
+            event_time = parse_iso_datetime(event["event_time"])
+            provider_time = parse_iso_datetime(provider["scheduled_at"])
+            if event_time is None or provider_time is None:
+                raise ValueError(f"Confirmed review has no comparable kickoff time: event {event_id}.")
+            if abs((event_time - provider_time).total_seconds()) > 6 * 3600:
+                raise ValueError(f"Confirmed review exceeds the six-hour guard: event {event_id}.")
+
+            conflicting_event_link = connection.execute(
+                """
+                SELECT match_id FROM event_match_links
+                WHERE event_id = ? AND confirmed = 1 AND match_id <> ?
+                """,
+                (event_id, match_id),
+            ).fetchone()
+            if conflicting_event_link is not None:
+                raise ValueError(f"Event {event_id} is already confirmed to another match.")
+            conflicting_match_link = connection.execute(
+                """
+                SELECT event_id FROM event_match_links
+                WHERE match_id = ? AND confirmed = 1 AND event_id <> ?
+                """,
+                (match_id, event_id),
+            ).fetchone()
+            if conflicting_match_link is not None:
+                raise ValueError(f"Match {match_id} is already confirmed to another Torn event.")
+            existing = connection.execute(
+                """
+                SELECT confirmed FROM event_match_links
+                WHERE event_id = ? AND match_id = ?
+                """,
+                (event_id, match_id),
+            ).fetchone()
+            if existing is not None and int(existing["confirmed"]) == 1:
+                counts["existing"] += 1
+                continue
+            connection.execute(
+                """
+                INSERT INTO event_match_links (
+                    event_id, match_id, link_method, confidence, confirmed, linked_at
+                ) VALUES (?, ?, 'reviewed-registry/name-role-time', 0.995, 1, ?)
+                ON CONFLICT(event_id, match_id) DO UPDATE SET
+                    link_method = excluded.link_method,
+                    confidence = excluded.confidence,
+                    confirmed = excluded.confirmed,
+                    linked_at = excluded.linked_at
+                """,
+                (event_id, match_id, utc_now()),
+            )
+            counts["confirmed"] += 1
     return counts
 
 
@@ -3390,6 +3536,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     alias_apply_parser.add_argument("audit", type=Path, nargs="?", default=DEFAULT_TEAM_ALIAS_AUDIT)
 
+    review_apply_parser = subparsers.add_parser(
+        "event-match-review-apply",
+        help="apply drift-checked confirmed/rejected event-match review decisions",
+    )
+    review_apply_parser.add_argument(
+        "registry", type=Path, nargs="?", default=DEFAULT_EVENT_MATCH_REVIEW
+    )
+
     subparsers.add_parser(
         "sync-outcomes", help="copy scores from confirmed match links into auditable Torn outcomes"
     )
@@ -3577,6 +3731,13 @@ def main(argv: list[str] | None = None) -> int:
                 audit = json.loads(args.audit.read_text(encoding="utf-8"))
                 result = apply_team_alias_audit(connection, audit)
                 print("Applied team aliases " + ", ".join(f"{key}={value}" for key, value in result.items()))
+            elif args.command == "event-match-review-apply":
+                registry = json.loads(args.registry.read_text(encoding="utf-8"))
+                result = apply_reviewed_event_match_decisions(connection, registry)
+                print(
+                    "Applied reviewed event matches "
+                    + ", ".join(f"{key}={value}" for key, value in result.items())
+                )
             elif args.command == "sync-outcomes":
                 result = sync_confirmed_outcomes(connection)
                 print("Synced " + ", ".join(f"{key}={value}" for key, value in result.items()))

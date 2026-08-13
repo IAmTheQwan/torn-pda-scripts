@@ -68,6 +68,7 @@ state. The first milestone is trustworthy data.
    python .\BMG\src\bmg.py reconciliation-review
    python .\BMG\src\bmg.py team-alias-audit
    python .\BMG\src\bmg.py team-alias-apply
+   python .\BMG\src\bmg.py event-match-review-apply
    python .\BMG\src\bmg.py reconcile --confirm-exact
    python .\BMG\src\bmg.py sync-outcomes
    python .\BMG\src\bmg.py modeling-summary
@@ -77,7 +78,8 @@ state. The first milestone is trustworthy data.
    `team-alias-audit` only marks aliases automatic when a known opponent,
    home/away role, kickoff window, and competition scope reproduce the same
    provider team. Accepted aliases retain event/match evidence in SQLite;
-   two-name fuzzy candidates remain review-only.
+   two-name fuzzy candidates remain review-only until an explicit decision is
+   added to `config/event-match-reviewed-decisions.json`.
 
    Timestamped external price captures import with `import-odds`. Full schema,
    slate, forecast, decision, settlement, and backtest details are in
