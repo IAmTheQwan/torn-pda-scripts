@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.25.0
+// @version      1.25.1
 // @description  Foreground-only Auction House, Item Market, and inventory history with bonus filters and local snapshot tools
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -1134,7 +1134,31 @@
       width: 100%;
       margin-top: 6px;
     }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-history[aria-expanded="true"] {
+      color: #b9e1ff;
+      background: #243746;
+      border-color: #6694b5;
+    }
     #${INVENTORY_PANEL_ID} .caf-clean-history-box { width: 100%; }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-sales {
+      margin-top: 6px;
+      padding-top: 5px;
+      border-top: 1px solid #333;
+    }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-sales summary {
+      padding: 7px;
+      color: #8ecbff;
+      background: #151515;
+      border: 1px solid #555;
+      border-radius: 5px;
+      cursor: pointer;
+      text-align: center;
+      list-style-position: inside;
+    }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-sales .caf-clean-sales {
+      display: block;
+      margin-top: 6px;
+    }
     #${INVENTORY_PANEL_ID} .caf-clean-inventory-disclosure {
       margin-top: 7px;
       color: #888;
@@ -2226,7 +2250,7 @@
             <div class="caf-clean-inventory-meta caf-clean-inventory-bonus">${escapeHtml(itemBonusText(item))}</div>
           </div>
         </div>
-        <button class="caf-clean-history caf-clean-inventory-history" data-idle-label="Auction History ▼">Auction History ▼</button>
+        <button type="button" class="caf-clean-history caf-clean-inventory-history" data-idle-label="Auction History" data-history-state="idle" aria-expanded="false">Auction History ▼</button>
         <div class="caf-clean-history-box"></div>
       `;
       const sourceImage = sourceElement?.querySelector("img");
@@ -2242,8 +2266,7 @@
       article.querySelector(".caf-clean-history").addEventListener("click", async event => {
         event.preventDefault();
         event.stopPropagation();
-        item.historySettings = { ...saveInventorySettings(), doubleOnly: false };
-        await runHistory(item, article);
+        await toggleInventoryHistory(item, article);
       });
       list.appendChild(article);
     });
@@ -2275,6 +2298,53 @@
     return parsed.map(entry => entry.item);
   }
 
+  async function toggleInventoryHistory(item, article, forceOpen = false) {
+    const button = article?.querySelector(".caf-clean-inventory-history");
+    const box = article?.querySelector(".caf-clean-history-box");
+    if (!button || !box) {
+      setInventoryStatus(`Could not open Auction House history for ${item?.name || "this weapon"}.`, true);
+      return null;
+    }
+    if (button.dataset.historyState === "loading") return null;
+
+    const alreadyLoaded = button.dataset.historyState === "loaded";
+    const isOpen = box.style.display !== "none" && button.getAttribute("aria-expanded") === "true";
+    if (alreadyLoaded && !forceOpen) {
+      const willOpen = !isOpen;
+      box.style.display = willOpen ? "block" : "none";
+      button.setAttribute("aria-expanded", String(willOpen));
+      button.textContent = `Auction History ${willOpen ? "▲" : "▼"}`;
+      if (willOpen) box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return null;
+    }
+
+    item.historySettings = { ...saveInventorySettings(), doubleOnly: false };
+    button.dataset.historyState = "loading";
+    button.setAttribute("aria-expanded", "true");
+    button.textContent = "Auction History — checking...";
+    box.style.display = "block";
+    box.innerHTML = `<span class="caf-clean-muted">Opening Auction House history for ${escapeHtml(item.name)}...</span>`;
+    setInventoryStatus(`Checking Auction House history for ${item.name}...`);
+    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+    try {
+      const result = await runHistory(item, article);
+      button.dataset.historyState = "loaded";
+      const visibleError = box.querySelector(".caf-clean-high")?.textContent?.trim();
+      setInventoryStatus(visibleError || `Auction House history opened for ${item.name}.`, !!visibleError);
+      return result;
+    } catch (error) {
+      button.dataset.historyState = "loaded";
+      box.innerHTML = `<span class="caf-clean-high">History error: ${escapeHtml(error?.message || "Unknown error")}</span>`;
+      setInventoryStatus(`Auction House history failed for ${item.name}.`, true);
+      return null;
+    } finally {
+      button.disabled = false;
+      button.setAttribute("aria-expanded", "true");
+      button.textContent = "Auction History ▲";
+    }
+  }
+
   async function loadAllInventoryHistory() {
     const button = document.querySelector(`#${INVENTORY_PANEL_ID} .caf-clean-inventory-all-history`);
     const cards = [...document.querySelectorAll(`#${INVENTORY_PANEL_ID} .caf-clean-inventory-item`)];
@@ -2294,7 +2364,7 @@
         const item = inventoryItems.get(card.dataset.cafCleanInventoryId);
         if (!item) continue;
         setInventoryStatus(`Checking Auction House history ${index + 1} of ${cards.length}: ${item.name}`);
-        await runHistory(item, card);
+        await toggleInventoryHistory(item, card, true);
         await delay(100);
       }
       setInventoryStatus(`Auction House history is ready for ${cards.length} inventory weapon(s).`);
@@ -3257,7 +3327,9 @@
           ? "Price comparison only. Weapon stats, market supply, and sale age can materially affect value."
           : "Price comparison only. The current auction can still rise before it closes."}</div>
       ${usedBroadFallback ? `<div class="caf-clean-advice">No exact bonus match was found, so this shows broader history for the same item.</div>` : ""}
-      <button class="caf-clean-toggle" style="width:100%;margin-top:5px">Previous Sales ▼</button>
+      ${inventoryHistory
+        ? '<details class="caf-clean-inventory-sales"><summary>Previous Sales</summary>'
+        : '<button type="button" class="caf-clean-toggle" style="width:100%;margin-top:5px">Previous Sales ▼</button>'}
       <div class="caf-clean-sales">
         <div class="caf-clean-grid caf-clean-grid-header">
           <span>Sold</span><span>Dmg</span><span>Acc</span><span>Q</span><span>Bonus</span><span>Age</span>
@@ -3281,13 +3353,15 @@
           `;
         }).join("")}
       </div>
+      ${inventoryHistory ? "</details>" : ""}
     `;
 
     const toggle = box.querySelector(".caf-clean-toggle");
     const salesBox = box.querySelector(".caf-clean-sales");
-    toggle.addEventListener("click", event => {
+    toggle?.addEventListener("click", event => {
       event.preventDefault();
       event.stopPropagation();
+      if (!salesBox) return;
       const open = salesBox.style.display === "block";
       salesBox.style.display = open ? "none" : "block";
       toggle.textContent = open ? "Previous Sales ▼" : "Previous Sales ▲";
