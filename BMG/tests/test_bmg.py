@@ -113,6 +113,59 @@ class BmgDatabaseTests(unittest.TestCase):
                 """
             )
 
+    def test_repeated_handicap_labels_keep_both_market_orientations(self) -> None:
+        def handicap_market(home_line: float, away_line: float) -> dict:
+            return {
+                "market_key": "asian handicap 1 5 full event|full event",
+                "name": "Asian Handicap 1.5 Full event",
+                "market_type": "asian_handicap",
+                "period": "Full event",
+                "captured_as_complete": True,
+                "selections": [
+                    {
+                        "selection_key": f"home|h:{home_line}|l:",
+                        "name": "Home",
+                        "raw_name": f"Home ({home_line:+g})",
+                        "handicap": home_line,
+                        "line": None,
+                        "odds_decimal": 1.9,
+                        "suspended": False,
+                        "available": True,
+                    },
+                    {
+                        "selection_key": f"away|h:{away_line}|l:",
+                        "name": "Away",
+                        "raw_name": f"Away ({away_line:+g})",
+                        "handicap": away_line,
+                        "line": None,
+                        "odds_decimal": 1.9,
+                        "suspended": False,
+                        "available": True,
+                    },
+                ],
+            }
+
+        capture = {
+            "schema_version": "bmg.capture.v1",
+            "capture_id": "duplicate-handicap-labels",
+            "observed_at": "2026-08-13T04:45:00Z",
+            "source": "test",
+            "events": [
+                {
+                    "source_event_id": "duplicate-market-test",
+                    "sport": "american football",
+                    "title": "Home v Away - Test League",
+                    "markets": [handicap_market(-1.5, 1.5), handicap_market(1.5, -1.5)],
+                }
+            ],
+            "bets": [],
+        }
+        result = bmg.import_capture(self.connection, capture)
+        self.assertEqual(2, result["markets"])
+        self.assertEqual(2, self.count("markets"))
+        self.assertEqual(4, self.count("selections"))
+        self.assertEqual(4, self.count("odds_observations"))
+
 
 if __name__ == "__main__":
     unittest.main()

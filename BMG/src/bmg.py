@@ -167,6 +167,21 @@ def upsert_event(
     return int(connection.execute("SELECT event_id FROM events WHERE event_uid = ?", (uid,)).fetchone()[0])
 
 
+def selection_identity(selection: dict[str, Any]) -> str:
+    supplied = clean_text(selection.get("selection_key"))
+    if supplied:
+        return supplied.lower()
+    handicap = selection.get("handicap") if selection.get("handicap") is not None else ""
+    line = selection.get("line") if selection.get("line") is not None else ""
+    return f"{canonical(selection.get('name'))}|h:{handicap}|l:{line}"
+
+
+def market_selection_signature(market: dict[str, Any]) -> str:
+    selections = market.get("selections") if isinstance(market.get("selections"), list) else []
+    keys = sorted(selection_identity(selection) for selection in selections if isinstance(selection, dict))
+    return "||".join(keys)
+
+
 def market_identity(market: dict[str, Any]) -> str:
     supplied = clean_text(market.get("market_key"))
     if supplied:
@@ -211,15 +226,6 @@ def upsert_market(
             "SELECT market_id FROM markets WHERE event_id = ? AND market_key = ?", (event_id, key)
         ).fetchone()[0]
     )
-
-
-def selection_identity(selection: dict[str, Any]) -> str:
-    supplied = clean_text(selection.get("selection_key"))
-    if supplied:
-        return supplied.lower()
-    handicap = selection.get("handicap") if selection.get("handicap") is not None else ""
-    line = selection.get("line") if selection.get("line") is not None else ""
-    return f"{canonical(selection.get('name'))}|h:{handicap}|l:{line}"
 
 
 def upsert_selection(
@@ -297,9 +303,13 @@ def import_event(
 ) -> dict[str, int]:
     event_id = upsert_event(connection, event, observed_at)
     counts = {"events": 1, "markets": 0, "selections": 0, "odds": 0, "outcomes": 0}
-    for market in event.get("markets") or []:
-        if not isinstance(market, dict):
-            continue
+    markets = [market for market in (event.get("markets") or []) if isinstance(market, dict)]
+    base_keys = [market_identity(market) for market in markets]
+    key_counts = {key: base_keys.count(key) for key in set(base_keys)}
+    for market, base_key in zip(markets, base_keys):
+        if key_counts[base_key] > 1:
+            signature = market_selection_signature(market)
+            market = {**market, "market_key": f"{base_key}|s:{signature}"}
         market_id = upsert_market(connection, event_id, market, observed_at)
         connection.execute(
             """

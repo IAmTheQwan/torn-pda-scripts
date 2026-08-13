@@ -4,6 +4,8 @@ BMG is a local-first research system for Torn Bookie. It records the odds and
 outcomes you are allowed to see, keeps an auditable history in SQLite, and adds
 bankroll guardrails before any pick is considered.
 
+The current research phase is intentionally scoped to **football/soccer only**.
+
 The project starts with a betting bankroll of **$57,365,830**. It does not place
 bets, click through games, refresh Torn pages, or exploit stale/misleading event
 state. The first milestone is trustworthy data.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BMG Visible Bookie Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.3.0
+// @version      0.3.1
 // @description  Manually capture already-loaded Torn Bookie odds and My Bets outcomes for local BMG analysis
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
@@ -19,6 +19,7 @@
     const DB_VERSION = 1;
     const STORE_NAME = 'captures';
     const PANEL_ID = 'bmg-capture-panel';
+    const FOOTBALL_ONLY = true;
     let captureOnOpenEnabled = true;
     let manualOpenGeneration = 0;
 
@@ -203,13 +204,15 @@
         const rows = Array.from(wrap.querySelectorAll(':scope > li.bets')).filter(row => {
             return row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal');
         });
+        const selections = rows.map(row => parseSelection(row, type)).filter(selection => selection.name);
+        const selectionSignature = selections.map(selection => selection.selection_key).sort().join('||');
         return {
-            market_key: `${canonical(name)}|${canonical(marketPeriod(name))}`,
+            market_key: `${canonical(name)}|${canonical(marketPeriod(name))}|s:${selectionSignature}`,
             name,
             market_type: type,
             period: marketPeriod(name),
             captured_as_complete: rows.length > 0,
-            selections: rows.map(row => parseSelection(row, type)).filter(selection => selection.name)
+            selections
         };
     }
 
@@ -290,6 +293,10 @@
         const expandedCards = expandedEventCards();
         const activeCards = expandedCards.filter(card => card.classList.contains('active'));
         return (activeCards.length ? activeCards : expandedCards).slice(0, 1);
+    }
+
+    function isFootballCard(card) {
+        return routeDetails(card).sport === 'football';
     }
 
     function cardsForSourceIds(sourceIds, fallbackCards = []) {
@@ -444,6 +451,8 @@
         links.forEach(link => {
             const gameId = String(link.getAttribute('href') || '').match(/#\/your-bets\/([^/?#]+)/i)?.[1] || '';
             if (!gameId) return;
+            const sport = canonical(link.closest('li')?.querySelector('li.game')?.getAttribute('title')) || 'unknown';
+            if (FOOTBALL_ONLY && sport !== 'football') return;
             const fixture = fixtureForMyBet(link);
             titleValuesForMyBet(link).forEach(value => {
                 String(value).replace(/<br\s*\/?>/gi, '\n').split(/\n(?=(?:Pending|Won|Lost|Refunded)\s)/i).forEach(part => {
@@ -460,7 +469,7 @@
                         league: fixture.league,
                         home_team: fixture.home_team,
                         away_team: fixture.away_team,
-                        sport: canonical(link.closest('li')?.querySelector('li.game')?.getAttribute('title')) || 'unknown',
+                        sport,
                         market_type: classifyMarket(bet.market_name),
                         period: marketPeriod(bet.market_name)
                     });
@@ -476,7 +485,8 @@
         }
         if (!isBookiePage()) throw new Error('Open Torn Bookie first.');
         const onMyBets = /^#\/your-bets(?:\/|$)/i.test(location.hash);
-        const events = onMyBets ? [] : (eventCards || expandedEventCards()).map(parseEventCard).filter(event => event.title && event.markets.length);
+        const sourceCards = (eventCards || expandedEventCards()).filter(card => !FOOTBALL_ONLY || isFootballCard(card));
+        const events = onMyBets ? [] : sourceCards.map(parseEventCard).filter(event => event.title && event.markets.length);
         const bets = onMyBets ? parseMyBets() : [];
         if (!events.length && !bets.length) {
             throw new Error(onMyBets
@@ -512,6 +522,9 @@
     async function expandAndCapture(cards, panel) {
         const selectedCards = cards?.length ? cards.slice(0, 1) : activeEventCards();
         if (!selectedCards.length) throw new Error('Manually open a Bookie event first.');
+        if (FOOTBALL_ONLY && !isFootballCard(selectedCards[0])) {
+            throw new Error('BMG is currently scoped to Football only.');
+        }
         const expansion = await expandEventCards(selectedCards);
         const capture = buildCapture(expansion.cards);
         await saveCapture(capture, panel);
@@ -551,8 +564,8 @@
         panel.id = PANEL_ID;
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:250px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:13px;margin-bottom:5px">BMG Capture v0.3.0</div>
-            <div style="color:#bbb;font-size:10px;line-height:1.35;margin-bottom:8px">Click a game yourself; BMG expands and captures that visible event. It never opens the next game or places a bet.</div>
+            <div style="font-weight:800;font-size:13px;margin-bottom:5px">BMG Capture v0.3.1</div>
+            <div style="color:#bbb;font-size:10px;line-height:1.35;margin-bottom:8px">Football only. Click a football game yourself; BMG expands and captures it. It never opens the next game or places a bet.</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
                 <button type="button" data-action="expand-capture">Expand + capture</button>
                 <button type="button" data-action="capture">Capture expanded</button>
@@ -646,6 +659,7 @@
             const href = link?.getAttribute('href') || '';
             const match = href.match(/#\/([^/]+)\/([^/?#]+)/i);
             if (!card || !match || /^your-bets$/i.test(match[1])) return;
+            if (FOOTBALL_ONLY && canonical(match[1]) !== 'football') return;
             const sourceEventId = match[2];
             const generation = ++manualOpenGeneration;
             setTimeout(async () => {

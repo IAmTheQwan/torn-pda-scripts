@@ -13,8 +13,10 @@ An event contains source ID, sport, title, league/competition, participants,
 scheduled time, visible state/score, markets, raw state text, a capture-complete
 flag, and the visible count of additional options remaining. A market contains
 name, classified type, period, whether its visible row set was captured as a unit,
-and selections. A selection contains name, optional handicap/line, decimal odds,
-availability, and suspension state.
+and selections. Market identity includes a sorted selection signature so Torn's
+repeated handicap labels with opposite home/away orientations remain distinct. A
+selection contains name, optional handicap/line, decimal odds, availability, and
+suspension state.
 
 ## SQLite entities
 
