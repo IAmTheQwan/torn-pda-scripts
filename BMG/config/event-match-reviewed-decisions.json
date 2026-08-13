@@ -253,6 +253,176 @@
       "bet_count_at_review": 1,
       "stake_at_review": 20000000,
       "reason": "Rejected: Torn lists an under-19 UEFA Youth League match, while the provider candidate is the senior UEFA Champions League fixture."
+    },
+    {
+      "event_id": 3721,
+      "match_id": 62051,
+      "decision": "confirmed",
+      "event": {"home_team": "Alianza FC", "away_team": "UMECIT FC", "league": "CONCACAF Central American Cup Grp. C 2026 (CONCACAF Central American Cup 1)", "event_time": "2026-08-14T00:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1548357", "home_team_id": 4006, "home_team": "Alianza FC", "away_team_id": 4002, "away_team": "UMECIT", "competition": "CONCACAF Central American Cup", "country": "World", "scheduled_at": "2026-08-14T00:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: exact home/away roles, compatible competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3722,
+      "match_id": 2741,
+      "decision": "confirmed",
+      "event": {"home_team": "Curico Unido", "away_team": "Deportes Santa Cruz", "league": "Primera B 2026 (Chile 2)", "event_time": "2026-08-14T00:30:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1511642", "home_team_id": 116, "home_team": "Curico Unido", "away_team_id": 117, "away_team": "Deportes Santa Cruz", "competition": "Primera B", "country": "Chile", "scheduled_at": "2026-08-14T00:30:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: exact home/away roles, competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3723,
+      "match_id": 2742,
+      "decision": "confirmed",
+      "event": {"home_team": "Deportes Iquique", "away_team": "Deportes Copiapo", "league": "Primera B 2026 (Chile 2)", "event_time": "2026-08-14T00:30:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1511643", "home_team_id": 122, "home_team": "Deportes Iquique", "away_team_id": 105, "away_team": "Deportes Copiapo", "competition": "Primera B", "country": "Chile", "scheduled_at": "2026-08-14T00:30:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: exact home/away roles, competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3724,
+      "match_id": 45041,
+      "decision": "confirmed",
+      "event": {"home_team": "Rosario Central", "away_team": "Corinthians", "league": "Copa Libertadores Final Stage 2026 (Copa Libertadores 1)", "event_time": "2026-08-14T00:30:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1547764", "home_team_id": 2848, "home_team": "Rosario Central", "away_team_id": 211, "away_team": "Corinthians", "competition": "CONMEBOL Libertadores", "country": "World", "scheduled_at": "2026-08-14T00:30:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: exact home/away roles, compatible competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3725,
+      "match_id": 38085,
+      "decision": "confirmed",
+      "event": {"home_team": "CF America", "away_team": "Austin FC", "league": "Leagues Cup 2026 (Leagues Cup 1)", "event_time": "2026-08-14T00:30:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1530155", "home_team_id": 1635, "home_team": "Club America", "away_team_id": 384, "away_team": "Austin", "competition": "Leagues Cup", "country": "World", "scheduled_at": "2026-08-14T00:30:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, compatible competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3726,
+      "match_id": 45960,
+      "decision": "confirmed",
+      "event": {"home_team": "Cienciano", "away_team": "Botafogo RJ", "league": "Copa Sudamericana Final Stage 2026 (Copa Sudamericana 1)", "event_time": "2026-08-14T00:30:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1607198", "home_team_id": 2327, "home_team": "Cienciano", "away_team_id": 204, "away_team": "Botafogo", "competition": "CONMEBOL Sudamericana", "country": "World", "scheduled_at": "2026-08-14T00:30:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, compatible competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3727,
+      "match_id": 38086,
+      "decision": "confirmed",
+      "event": {"home_team": "Cruz Azul", "away_team": "Chicago Fire FC", "league": "Leagues Cup 2026 (Leagues Cup 1)", "event_time": "2026-08-14T01:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1530156", "home_team_id": 1640, "home_team": "Cruz Azul", "away_team_id": 401, "away_team": "Chicago Fire", "competition": "Leagues Cup", "country": "World", "scheduled_at": "2026-08-14T01:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3728,
+      "match_id": 64036,
+      "decision": "confirmed",
+      "event": {"home_team": "Alebrijes Oaxaca", "away_team": "Tepatitlan FC", "league": "Liga de Expansion MX Apertura 2026/2027 (Mexico 2)", "event_time": "2026-08-14T01:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1581387", "home_team_id": 4105, "home_team": "Alebrijes de Oaxaca", "away_team_id": 4106, "away_team": "Tepatitlán", "competition": "Liga de Expansión MX", "country": "Mexico", "scheduled_at": "2026-08-14T01:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, Mexico second-tier competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3729,
+      "match_id": 62053,
+      "decision": "confirmed",
+      "event": {"home_team": "Firpo", "away_team": "Diriangen FC", "league": "CONCACAF Central American Cup Grp. A 2026 (CONCACAF Central American Cup 1)", "event_time": "2026-08-14T02:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1548359", "home_team_id": 3298, "home_team": "Firpo", "away_team_id": 4000, "away_team": "Diriangén", "competition": "CONCACAF Central American Cup", "country": "World", "scheduled_at": "2026-08-14T02:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, compatible competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3730,
+      "match_id": 62052,
+      "decision": "confirmed",
+      "event": {"home_team": "Antigua Guatemala", "away_team": "CD Marathon", "league": "CONCACAF Central American Cup Grp. B 2026 (CONCACAF Central American Cup 1)", "event_time": "2026-08-14T02:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1548358", "home_team_id": 4003, "home_team": "Antigua GFC", "away_team_id": 2302, "away_team": "CD Marathon", "competition": "CONCACAF Central American Cup", "country": "World", "scheduled_at": "2026-08-14T02:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, compatible competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3731,
+      "match_id": 38087,
+      "decision": "confirmed",
+      "event": {"home_team": "Portland Timbers", "away_team": "Tijuana", "league": "Leagues Cup 2026 (Leagues Cup 1)", "event_time": "2026-08-14T02:30:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1530159", "home_team_id": 386, "home_team": "Portland Timbers", "away_team_id": 2177, "away_team": "Club Tijuana", "competition": "Leagues Cup", "country": "World", "scheduled_at": "2026-08-14T02:30:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3715,
+      "match_id": 45040,
+      "decision": "confirmed",
+      "event": {"home_team": "Mirassol", "away_team": "LDU de Quito", "league": "Copa Libertadores Final Stage 2026 (Copa Libertadores 1)", "event_time": "2026-08-13T22:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1547761", "home_team_id": 202, "home_team": "Mirassol", "away_team_id": 2674, "away_team": "LDU de Quito", "competition": "CONMEBOL Libertadores", "country": "World", "scheduled_at": "2026-08-13T22:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: exact home/away roles, compatible competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3716,
+      "match_id": 2740,
+      "decision": "confirmed",
+      "event": {"home_team": "San Luis", "away_team": "Deportes Temuco", "league": "Primera B 2026 (Chile 2)", "event_time": "2026-08-13T22:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1511647", "home_team_id": 112, "home_team": "San Luis", "away_team_id": 115, "away_team": "Deportes Temuco", "competition": "Primera B", "country": "Chile", "scheduled_at": "2026-08-13T22:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: exact home/away roles, competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3717,
+      "match_id": 45959,
+      "decision": "confirmed",
+      "event": {"home_team": "Vasco da Gama", "away_team": "Olimpia", "league": "Copa Sudamericana Final Stage 2026 (Copa Sudamericana 1)", "event_time": "2026-08-13T22:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1607199", "home_team_id": 212, "home_team": "Vasco DA Gama", "away_team_id": 2603, "away_team": "Olimpia", "competition": "CONMEBOL Sudamericana", "country": "World", "scheduled_at": "2026-08-13T22:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, compatible competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3718,
+      "match_id": 45958,
+      "decision": "confirmed",
+      "event": {"home_team": "Santos FC", "away_team": "CSD Macara", "league": "Copa Sudamericana Final Stage 2026 (Copa Sudamericana 1)", "event_time": "2026-08-13T22:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1606076", "home_team_id": 210, "home_team": "Santos", "away_team_id": 2670, "away_team": "Macara", "competition": "CONMEBOL Sudamericana", "country": "World", "scheduled_at": "2026-08-13T22:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, compatible competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3719,
+      "match_id": 38083,
+      "decision": "confirmed",
+      "event": {"home_team": "Philadelphia Union", "away_team": "Santos Laguna", "league": "Leagues Cup 2026 (Leagues Cup 1)", "event_time": "2026-08-13T23:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1530158", "home_team_id": 394, "home_team": "Philadelphia Union", "away_team_id": 2404, "away_team": "Santos Laguna", "competition": "Leagues Cup", "country": "World", "scheduled_at": "2026-08-13T23:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: exact home/away roles, competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3720,
+      "match_id": 38084,
+      "decision": "confirmed",
+      "event": {"home_team": "New York City FC", "away_team": "Necaxa", "league": "Leagues Cup 2026 (Leagues Cup 1)", "event_time": "2026-08-13T23:30:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1530157", "home_team_id": 398, "home_team": "New York City FC", "away_team_id": 2405, "away_team": "Necaxa", "competition": "Leagues Cup", "country": "World", "scheduled_at": "2026-08-13T23:30:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: exact home/away roles, competition, unique provider fixture, and identical kickoff time."
     }
   ]
 }
