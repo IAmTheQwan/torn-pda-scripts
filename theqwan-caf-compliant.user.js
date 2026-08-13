@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.24.0
-// @description  Foreground-only Auction House and Item Market history, bonus filters, deal checks, and a local snapshot watch bar
+// @version      1.25.0
+// @description  Foreground-only Auction House, Item Market, and inventory history with bonus filters and local snapshot tools
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
@@ -22,10 +22,13 @@
   const FILTERED_RESULTS_ID = "theqwan-caf-clean-filtered-results";
   const WATCH_BAR_ID = "theqwan-caf-clean-watch-bar";
   const MARKET_PANEL_ID = "theqwan-caf-clean-market";
+  const INVENTORY_PANEL_ID = "theqwan-caf-clean-inventory";
   const ANALYSIS_CLASS = "caf-clean-analysis";
   const SETTINGS_KEY = "cafCleanHistorySettings";
   const FILTER_SETTINGS_KEY = "cafCleanFilterSettings";
   const MARKET_SETTINGS_KEY = "cafCleanMarketSettings";
+  const INVENTORY_SETTINGS_KEY = "cafCleanInventorySettings";
+  const INVENTORY_COLLAPSED_KEY = "cafCleanInventoryCollapsed";
   const MARKET_PICKS_COLLAPSED_KEY = "cafCleanMarketPicksCollapsed";
   const MARKET_CATCH_COLLAPSED_KEY = "cafCleanMarketCatchCollapsed";
   const CACHE_KEY = "cafCleanHistoryCache";
@@ -94,6 +97,8 @@
   const marketResponseCache = new Map();
   const marketPicks = new Map();
   const marketCatch = new Map();
+  const inventoryItems = new Map();
+  const inventorySourceById = new Map();
   const marketCatchSuppressedKeys = new Set();
   const historyRequestsInFlight = new Map();
   const MARKET_ANALYSIS_CONCURRENCY = 6;
@@ -106,6 +111,7 @@
   let collectionCaptureTimer = null;
   let watchLocateTimer = null;
   let marketRefreshTimer = null;
+  let inventoryRefreshTimer = null;
   let marketLoadRunwayTimer = null;
   let marketLoadRunwayFilterKey = "";
   let marketLoadRunwaysExpired = false;
@@ -1008,6 +1014,133 @@
       border-radius: 4px;
       font-weight: 700;
     }
+    #${INVENTORY_PANEL_ID} {
+      margin: 10px 0;
+      color: #eee;
+      background: #202020;
+      border: 1px solid #555;
+      border-radius: 8px;
+      box-sizing: border-box;
+      font-size: 12px;
+      overflow: hidden;
+    }
+    #${INVENTORY_PANEL_ID} button,
+    #${INVENTORY_PANEL_ID} select {
+      min-width: 0;
+      min-height: 34px;
+      padding: 6px;
+      color: #8ecbff;
+      background: #151515;
+      border: 1px solid #555;
+      border-radius: 5px;
+      box-sizing: border-box;
+    }
+    #${INVENTORY_PANEL_ID} button:disabled { color: #777; opacity: .75; }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-toggle {
+      width: 100%;
+      min-height: 40px;
+      color: #fff;
+      background: #2b2b2b;
+      border: 0;
+      border-radius: 0;
+      font-size: 14px;
+      font-weight: 800;
+      text-align: left;
+    }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-body { padding: 9px; }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-note,
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-status {
+      color: #aaa;
+      line-height: 1.35;
+    }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-controls {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 8px;
+    }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-controls label {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      min-width: 0;
+      color: #aaa;
+      font-size: 10px;
+    }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-controls label.caf-clean-inventory-check {
+      flex-direction: row;
+      align-items: center;
+      font-size: 11px;
+    }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-controls input { margin: 0 5px 0 0; }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-status { margin-top: 7px; }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-list { margin-top: 7px; }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-empty {
+      padding: 8px;
+      color: #888;
+      background: #181818;
+      border: 1px solid #3d3d3d;
+      border-radius: 5px;
+      text-align: center;
+    }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-item {
+      margin-top: 6px;
+      padding: 7px;
+      background: #181818;
+      border: 1px solid #444;
+      border-radius: 6px;
+    }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-item:first-child { margin-top: 0; }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-head {
+      display: grid;
+      grid-template-columns: 58px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+    }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-image {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 58px;
+      height: 48px;
+      background: #0f0f0f;
+      border: 3px solid #777;
+      border-radius: 5px;
+      box-sizing: border-box;
+      overflow: hidden;
+    }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-image.yellow { border-color: #d8d800; }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-image.orange { border-color: #ff8c00; }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-image.red { border-color: #d94444; }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-image canvas {
+      max-width: 52px;
+      max-height: 42px;
+      object-fit: contain;
+    }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-name {
+      color: #8ecbff;
+      font-size: 14px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-meta {
+      margin-top: 2px;
+      color: #bbb;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-bonus { color: #d8b4fe; font-weight: 700; }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-history {
+      width: 100%;
+      margin-top: 6px;
+    }
+    #${INVENTORY_PANEL_ID} .caf-clean-history-box { width: 100%; }
+    #${INVENTORY_PANEL_ID} .caf-clean-inventory-disclosure {
+      margin-top: 7px;
+      color: #888;
+      font-size: 10px;
+      line-height: 1.3;
+    }
   `;
   function mountStyle() {
     const host = document.head || document.documentElement;
@@ -1113,6 +1246,10 @@
   function isItemMarketPage() {
     const params = new URLSearchParams(location.search);
     return /\/page\.php$/i.test(location.pathname) && params.get("sid") === "ItemMarket";
+  }
+
+  function isInventoryPage() {
+    return /\/item\.php$/i.test(location.pathname);
   }
 
   function loadWatchList() {
@@ -1881,6 +2018,296 @@
       ? bonus.name
       : `${bonus.name} ${bonus.value}%`
     ).join(" / ") || "No bonus";
+  }
+
+  function defaultInventorySettings() {
+    return { count: 25, matchBonuses: true };
+  }
+
+  function loadInventorySettings() {
+    try {
+      return {
+        ...defaultInventorySettings(),
+        ...JSON.parse(localStorage.getItem(INVENTORY_SETTINGS_KEY) || "{}")
+      };
+    } catch {
+      return defaultInventorySettings();
+    }
+  }
+
+  function inventorySettingsFromControls() {
+    const panel = document.getElementById(INVENTORY_PANEL_ID);
+    const saved = loadInventorySettings();
+    if (!panel) return saved;
+    return {
+      count: Number(panel.querySelector("#caf-clean-inventory-count")?.value || saved.count || 25),
+      matchBonuses: !!panel.querySelector("#caf-clean-inventory-match-bonuses")?.checked
+    };
+  }
+
+  function saveInventorySettings() {
+    const current = inventorySettingsFromControls();
+    localStorage.setItem(INVENTORY_SETTINGS_KEY, JSON.stringify(current));
+    inventoryItems.forEach(item => {
+      item.historySettings = { ...current, doubleOnly: false };
+    });
+    return current;
+  }
+
+  function activeInventoryWeaponView() {
+    if (/\b(?:weapon|primary|secondary|melee)\b/i.test(`${location.search} ${location.hash}`)) return true;
+    return [...document.querySelectorAll('[role="tab"][aria-selected="true"], [aria-current="page"], .active')]
+      .slice(0, 80)
+      .some(element => /^(?:weapons?|primary|secondary|melee)(?:\s+weapons?)?(?:\s*\(?\d+\)?)?$/i.test(String(element.textContent || "").trim()));
+  }
+
+  function inventoryCandidateElements() {
+    if (!isActiveView() || !isInventoryPage()) return [];
+    const selectors = [
+      'ul[aria-hidden="false"] li[data-item]',
+      'ul[aria-hidden="false"] li[data-category]',
+      '#item-wrap li[data-item]',
+      '.items-list li[data-item]',
+      'li[data-item][data-category]',
+      '[class*="inventory"] li[data-item]',
+      '[class*="inventory"] [class*="itemTile"]',
+      '[class*="inventory"] [class*="itemCard"]'
+    ];
+    const candidates = [...new Set(selectors.flatMap(selector => [...document.querySelectorAll(selector)]))]
+      .filter(element => !element.closest(`#${INVENTORY_PANEL_ID}`)
+        && !element.closest('[hidden], [aria-hidden="true"]')
+        && !!element.querySelector('img, .name-wrap, [data-item-name], [class*="name"], [class*="title"]'));
+    return candidates.filter(element => !candidates.some(other => other !== element && element.contains(other)));
+  }
+
+  function inventoryElementSource(element) {
+    const clone = element.cloneNode(true);
+    clone.querySelectorAll(`#${INVENTORY_PANEL_ID}, .caf-clean-history-box`).forEach(child => child.remove());
+    const attributes = [clone, ...clone.querySelectorAll([
+      "[aria-label]", "[title]", "[data-item-name]", "[data-category]", "[data-type]",
+      "[data-bonus]", "[data-bonus-name]", "[data-bonus-value]", "[data-color]", "[data-glow]"
+    ].join(", "))].slice(0, 160).flatMap(node => [
+      node.getAttribute?.("aria-label"),
+      node.getAttribute?.("title"),
+      node.getAttribute?.("data-item-name"),
+      node.getAttribute?.("data-category"),
+      node.getAttribute?.("data-type"),
+      node.getAttribute?.("data-bonus"),
+      node.getAttribute?.("data-bonus-name"),
+      node.getAttribute?.("data-bonus-value")
+    ]).filter(Boolean).join("\n");
+    return `${clone.innerText || clone.textContent || ""}\n${attributes}\n${clone.outerHTML || ""}`;
+  }
+
+  function normalizeInventoryItemName(value) {
+    return normalizeItemName(value)
+      .replace(/^\s*(?:x\s*)?\d+\s*[×x]\s*/i, "")
+      .replace(/\s+[×x]\s*\d+\s*$/i, "")
+      .replace(/\s+\(\s*\d+\s*(?:owned)?\s*\)\s*$/i, "")
+      .replace(/\s+(?:equip|unequip|use|sell|send|trash|display)\b.*$/i, "")
+      .trim();
+  }
+
+  function inventoryItemName(element, source) {
+    const candidates = [
+      element.getAttribute("data-item-name"),
+      element.querySelector("[data-item-name]")?.getAttribute("data-item-name"),
+      element.querySelector(".name-wrap")?.textContent,
+      element.querySelector('[class*="nameWrap"]')?.textContent,
+      element.querySelector('[class*="itemName"]')?.textContent,
+      element.querySelector('img[alt]')?.getAttribute("alt"),
+      element.querySelector('[class*="title"]')?.textContent
+    ];
+    for (const candidate of candidates) {
+      const name = normalizeInventoryItemName(candidate);
+      if (name && name.length <= 100 && !/^(?:image|item|weapon|equipment)$/i.test(name)
+        && !/(?:damage|accuracy|quality|bonus)\s*[:=-]/i.test(name)) return name;
+    }
+    const line = String(source || "").split(/\r?\n/).map(value => value.trim()).find(value =>
+      value && value.length <= 100
+      && !/(?:damage|accuracy|quality|bonus|quantity|equip|unequip|sell|send|trash)\s*[:=-]?/i.test(value)
+    );
+    return normalizeInventoryItemName(line) || "Unknown item";
+  }
+
+  function inventoryLooksLikeWeapon(element, source, item) {
+    const category = [
+      element.getAttribute("data-category"),
+      element.getAttribute("data-type"),
+      element.closest("[data-category]")?.getAttribute("data-category"),
+      element.closest("[data-type]")?.getAttribute("data-type")
+    ].filter(Boolean).join(" ");
+    const combined = `${category}\n${source}`;
+    const hasDamage = item.damage > 0 || /\b(?:damage|dmg)\s*[:=-]?\s*\d/i.test(combined);
+    const hasAccuracy = item.accuracy > 0 || /\b(?:accuracy|acc)\s*[:=-]?\s*\d/i.test(combined);
+    if (hasDamage && hasAccuracy) return true;
+    if (/\b(?:armor|armour)\s*[:=-]?\s*\d/i.test(combined) && !hasDamage) return false;
+    if (/\b(?:weapon|primary|secondary|melee)(?:\s+weapon)?\b/i.test(category)) return true;
+    return activeInventoryWeaponView() && !!element.querySelector("img") && item.name !== "Unknown item";
+  }
+
+  function inventoryItemIdentifier(element, item, index) {
+    const html = element.outerHTML || "";
+    const unique = [
+      element.getAttribute("data-uid"),
+      element.getAttribute("data-item-uid"),
+      element.getAttribute("data-armoury-id"),
+      element.getAttribute("data-armory-id"),
+      (html.match(/(?:armou?r?yID|itemUID|itemUid|uid)["'=:\s-]+(\d+)/i) || [])[1]
+    ].find(Boolean);
+    const itemId = element.getAttribute("data-item")
+      || (html.match(/data-item=["']?(\d+)/i) || [])[1]
+      || "item";
+    const bonuses = item.bonuses.map(bonus => `${bonus.id}:${bonus.value ?? ""}`).join(",");
+    return `inventory|${unique || `${itemId}|${index}`}|${item.name}|${item.damage}|${item.accuracy}|${bonuses}`;
+  }
+
+  function parseInventoryWeapon(element, index) {
+    const source = inventoryElementSource(element);
+    const damage = numberFrom((source.match(/\b(?:Damage|DMG)\s*[:=-]?\s*([\d.]+)/i) || [])[1]) || 0;
+    const accuracy = numberFrom((source.match(/\b(?:Accuracy|ACC)\s*[:=-]?\s*([\d.]+)/i) || [])[1]) || 0;
+    const quality = numberFrom((source.match(/\bQuality\s*[:=-]?\s*([\d.]+)/i) || [])[1]);
+    const item = {
+      name: inventoryItemName(element, source),
+      damage,
+      accuracy,
+      quality,
+      bid: 0,
+      bonuses: bonusDetails(source),
+      color: cardColor(element),
+      inventoryItem: true,
+      observedAt: Date.now(),
+      historySettings: { ...inventorySettingsFromControls(), doubleOnly: false }
+    };
+    item.id = inventoryItemIdentifier(element, item, index);
+    return { item, source, isWeapon: inventoryLooksLikeWeapon(element, source, item) };
+  }
+
+  function setInventoryStatus(message, isError = false) {
+    const status = document.querySelector(`#${INVENTORY_PANEL_ID} .caf-clean-inventory-status`);
+    if (!status) return;
+    status.textContent = message;
+    status.style.color = isError ? "#ff8b8b" : "#aaa";
+  }
+
+  function updateInventoryPanelToggle() {
+    const panel = document.getElementById(INVENTORY_PANEL_ID);
+    const body = panel?.querySelector(".caf-clean-inventory-body");
+    const toggle = panel?.querySelector(".caf-clean-inventory-toggle");
+    if (!body || !toggle) return;
+    const collapsed = body.style.display === "none";
+    toggle.textContent = `CAF Inventory AH History (${inventoryItems.size}) ${collapsed ? "▶" : "▼"}`;
+  }
+
+  function renderInventoryItems() {
+    const list = document.querySelector(`#${INVENTORY_PANEL_ID} .caf-clean-inventory-list`);
+    if (!list) return;
+    list.replaceChildren();
+    if (!inventoryItems.size) {
+      list.innerHTML = '<div class="caf-clean-inventory-empty">No weapons loaded yet.</div>';
+      updateInventoryPanelToggle();
+      return;
+    }
+
+    inventoryItems.forEach(item => {
+      const sourceElement = inventorySourceById.get(item.id);
+      const article = document.createElement("article");
+      article.className = "caf-clean-inventory-item";
+      article.dataset.cafCleanInventoryId = item.id;
+      const damage = Number(item.damage) > 0 ? Number(item.damage).toFixed(2) : "?";
+      const accuracy = Number(item.accuracy) > 0 ? Number(item.accuracy).toFixed(2) : "?";
+      const quality = Number(item.quality) > 0 ? `${Number(item.quality).toFixed(2)}%` : "?";
+      article.innerHTML = `
+        <div class="caf-clean-inventory-head">
+          <div class="caf-clean-inventory-image ${escapeAttr(item.color)}"></div>
+          <div>
+            <div class="caf-clean-inventory-name">${escapeHtml(item.name)}</div>
+            <div class="caf-clean-inventory-meta">Dmg ${damage} | Acc ${accuracy} | Q ${quality}${item.color ? ` | ${escapeHtml(item.color.toUpperCase())}` : ""}</div>
+            <div class="caf-clean-inventory-meta caf-clean-inventory-bonus">${escapeHtml(itemBonusText(item))}</div>
+          </div>
+        </div>
+        <button class="caf-clean-history caf-clean-inventory-history" data-idle-label="Auction History ▼">Auction History ▼</button>
+        <div class="caf-clean-history-box"></div>
+      `;
+      const sourceImage = sourceElement?.querySelector("img");
+      if (sourceImage?.complete && sourceImage.naturalWidth && sourceImage.naturalHeight) {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = sourceImage.naturalWidth;
+          canvas.height = sourceImage.naturalHeight;
+          canvas.getContext("2d")?.drawImage(sourceImage, 0, 0);
+          article.querySelector(".caf-clean-inventory-image").appendChild(canvas);
+        } catch {}
+      }
+      article.querySelector(".caf-clean-history").addEventListener("click", async event => {
+        event.preventDefault();
+        event.stopPropagation();
+        item.historySettings = { ...saveInventorySettings(), doubleOnly: false };
+        await runHistory(item, article);
+      });
+      list.appendChild(article);
+    });
+    updateInventoryPanelToggle();
+  }
+
+  function loadInventoryWeapons() {
+    if (!isActiveView() || !isInventoryPage()) {
+      setInventoryStatus("Keep your Torn inventory visible while loading weapons.", true);
+      return [];
+    }
+    const candidates = inventoryCandidateElements();
+    const parsed = candidates.map((element, index) => ({ element, ...parseInventoryWeapon(element, index) }))
+      .filter(entry => entry.isWeapon && entry.item.name !== "Unknown item");
+    inventoryItems.clear();
+    inventorySourceById.clear();
+    parsed.forEach(({ element, item }) => {
+      inventoryItems.set(item.id, item);
+      inventorySourceById.set(item.id, element);
+    });
+    renderInventoryItems();
+    if (!parsed.length) {
+      setInventoryStatus("No rendered weapons were found. Open Torn's Weapons, Primary, Secondary, or Melee inventory tab, wait for its cards to appear, then tap Load again.", true);
+      return [];
+    }
+    const complete = parsed.filter(entry => entry.item.damage > 0 && entry.item.accuracy > 0).length;
+    const bonusCount = parsed.filter(entry => entry.item.bonuses.length).length;
+    setInventoryStatus(`Loaded ${parsed.length} weapon(s) from the visible inventory: ${complete} with visible stats and ${bonusCount} with visible bonuses.`);
+    return parsed.map(entry => entry.item);
+  }
+
+  async function loadAllInventoryHistory() {
+    const button = document.querySelector(`#${INVENTORY_PANEL_ID} .caf-clean-inventory-all-history`);
+    const cards = [...document.querySelectorAll(`#${INVENTORY_PANEL_ID} .caf-clean-inventory-item`)];
+    if (!button || !cards.length) {
+      setInventoryStatus("Load your visible inventory weapons first.", true);
+      return;
+    }
+    button.disabled = true;
+    saveInventorySettings();
+    try {
+      for (let index = 0; index < cards.length; index += 1) {
+        if (!isActiveView() || !isInventoryPage()) {
+          setInventoryStatus("History loading stopped because the inventory is no longer visible.", true);
+          return;
+        }
+        const card = cards[index];
+        const item = inventoryItems.get(card.dataset.cafCleanInventoryId);
+        if (!item) continue;
+        setInventoryStatus(`Checking Auction House history ${index + 1} of ${cards.length}: ${item.name}`);
+        await runHistory(item, card);
+        await delay(100);
+      }
+      setInventoryStatus(`Auction House history is ready for ${cards.length} inventory weapon(s).`);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function clearInventoryWeapons() {
+    inventoryItems.clear();
+    inventorySourceById.clear();
+    renderInventoryItems();
+    setInventoryStatus("Loaded inventory snapshots cleared. Torn's inventory was not changed.");
   }
 
   function itemMatchesBonusRange(item, minimum, maximum) {
@@ -2775,6 +3202,7 @@
     const visibleLimit = Math.max(1, Number(item.historySettings?.count || sales.length || 25));
     const visibleSales = sales.slice(0, visibleLimit);
     const rawSummary = dealSummary(item, visibleSales);
+    const inventoryHistory = !!item.inventoryItem;
     if (!rawSummary) {
       box.innerHTML = `<span class="caf-clean-muted">No finished sales found for parsed item “${escapeHtml(normalizeItemName(item.name))}”.</span>`;
       return null;
@@ -2789,17 +3217,20 @@
     const damageValues = visibleSales.map(sale => saleNumber(sale, "stat_damage", "damage", "item_damage")).filter(value => value !== null);
     const accuracyValues = visibleSales.map(sale => saleNumber(sale, "stat_accuracy", "accuracy", "item_accuracy")).filter(value => value !== null);
     const qualityValues = visibleSales.map(sale => saleNumber(sale, "stat_quality", "quality")).filter(value => value !== null);
-    const damageMin = damageValues.length ? Math.min(...damageValues, item.damage) : item.damage;
-    const damageMax = damageValues.length ? Math.max(...damageValues, item.damage) : item.damage;
-    const accuracyMin = accuracyValues.length ? Math.min(...accuracyValues, item.accuracy) : item.accuracy;
-    const accuracyMax = accuracyValues.length ? Math.max(...accuracyValues, item.accuracy) : item.accuracy;
-    const qualityMin = qualityValues.length ? Math.min(...qualityValues, item.quality ?? 0) : 0;
-    const qualityMax = qualityValues.length ? Math.max(...qualityValues, item.quality ?? 0) : 1;
+    const currentDamage = Number(item.damage) > 0 ? Number(item.damage) : null;
+    const currentAccuracy = Number(item.accuracy) > 0 ? Number(item.accuracy) : null;
+    const currentQuality = Number(item.quality) > 0 ? Number(item.quality) : null;
+    const damageMin = damageValues.length ? Math.min(...damageValues, ...(currentDamage === null ? [] : [currentDamage])) : currentDamage ?? 0;
+    const damageMax = damageValues.length ? Math.max(...damageValues, ...(currentDamage === null ? [] : [currentDamage])) : currentDamage ?? 1;
+    const accuracyMin = accuracyValues.length ? Math.min(...accuracyValues, ...(currentAccuracy === null ? [] : [currentAccuracy])) : currentAccuracy ?? 0;
+    const accuracyMax = accuracyValues.length ? Math.max(...accuracyValues, ...(currentAccuracy === null ? [] : [currentAccuracy])) : currentAccuracy ?? 1;
+    const qualityMin = qualityValues.length ? Math.min(...qualityValues, ...(currentQuality === null ? [] : [currentQuality])) : currentQuality ?? 0;
+    const qualityMax = qualityValues.length ? Math.max(...qualityValues, ...(currentQuality === null ? [] : [currentQuality])) : currentQuality ?? 1;
 
     box.innerHTML = `
       <div class="caf-clean-summary">
-        <span class="${dealClass}">${item.marketListing ? "Type match" : "Bid"}: ${money(item.bid)} — ${dealLabel}</span>
-        <span class="caf-clean-muted"> | </span>
+        ${inventoryHistory ? '<span style="color:#8ecbff;font-weight:700">Finished Auction House history</span>' : `<span class="${dealClass}">${item.marketListing ? "Type match" : "Bid"}: ${money(item.bid)} — ${dealLabel}</span>`}
+        <span class="caf-clean-muted">${inventoryHistory ? " — " : " | "}</span>
         <span style="color:#7ee787">L ${money(low)}</span>
         <span class="caf-clean-muted"> | </span>
         <span style="color:#b98cff">M ${money(middle)}</span>
@@ -2820,9 +3251,11 @@
         </div>
         <div class="caf-clean-advice">Uses recorded ${escapeHtml(comparableLabel)} sales only.</div>
       ` : `<div class="caf-clean-advice">Strength adjusted: no recorded ${escapeHtml(comparableLabel)} sales were found, so the lower rail is gray.</div>`) : ""}
-      <div class="caf-clean-advice">${item.marketListing
-        ? "Price comparison only. Weapon stats, market supply, and sale age can materially affect value."
-        : "Price comparison only. The current auction can still rise before it closes."}</div>
+      <div class="caf-clean-advice">${inventoryHistory
+        ? "Finished Auction House sales for this inventory weapon. No current bid or live inventory value is being compared."
+        : item.marketListing
+          ? "Price comparison only. Weapon stats, market supply, and sale age can materially affect value."
+          : "Price comparison only. The current auction can still rise before it closes."}</div>
       ${usedBroadFallback ? `<div class="caf-clean-advice">No exact bonus match was found, so this shows broader history for the same item.</div>` : ""}
       <button class="caf-clean-toggle" style="width:100%;margin-top:5px">Previous Sales ▼</button>
       <div class="caf-clean-sales">
@@ -2838,10 +3271,10 @@
           const shortBonuses = saleBonuses(sale, true);
           return `
             <div class="caf-clean-grid caf-clean-grid-row">
-              <span style="color:${compareColor(price, item.bid, low, high, true)};font-weight:700">${money(price)}</span>
-              <span style="color:${compareColor(damage, item.damage, damageMin, damageMax)};font-weight:700">${damage === null ? "?" : damage.toFixed(1)}</span>
-              <span style="color:${compareColor(accuracy, item.accuracy, accuracyMin, accuracyMax)};font-weight:700">${accuracy === null ? "?" : accuracy.toFixed(1)}</span>
-              <span style="color:${compareColor(quality, item.quality, qualityMin, qualityMax)};font-weight:700">${quality === null ? "?" : quality.toFixed(1)}</span>
+              <span style="color:${inventoryHistory ? "#ffd166" : compareColor(price, item.bid, low, high, true)};font-weight:700">${money(price)}</span>
+              <span style="color:${compareColor(damage, currentDamage, damageMin, damageMax)};font-weight:700">${damage === null ? "?" : damage.toFixed(1)}</span>
+              <span style="color:${compareColor(accuracy, currentAccuracy, accuracyMin, accuracyMax)};font-weight:700">${accuracy === null ? "?" : accuracy.toFixed(1)}</span>
+              <span style="color:${compareColor(quality, currentQuality, qualityMin, qualityMax)};font-weight:700">${quality === null ? "?" : quality.toFixed(1)}</span>
               <span class="caf-clean-bonus" title="${escapeAttr(fullBonuses)}">${escapeHtml(shortBonuses)}</span>
               <span>${daysAgo(sale.timestamp)}</span>
             </div>
@@ -4314,6 +4747,65 @@
     });
   }
 
+  function injectInventoryPanel() {
+    if (!isInventoryPage() || document.getElementById(INVENTORY_PANEL_ID) || !document.body) return;
+    const current = loadInventorySettings();
+    const collapsed = localStorage.getItem(INVENTORY_COLLAPSED_KEY) !== "false";
+    const panel = document.createElement("section");
+    panel.id = INVENTORY_PANEL_ID;
+    panel.innerHTML = `
+      <button type="button" class="caf-clean-inventory-toggle">CAF Inventory AH History (${inventoryItems.size}) ${collapsed ? "▶" : "▼"}</button>
+      <div class="caf-clean-inventory-body" style="display:${collapsed ? "none" : "block"}">
+        <div class="caf-clean-inventory-note">Open Torn's Weapons, Primary, Secondary, or Melee inventory view, then load the weapon cards Torn has already rendered. CAF will not equip, move, sell, or otherwise change an item.</div>
+        <div class="caf-clean-inventory-controls">
+          <label>History sales
+            <select id="caf-clean-inventory-count">
+              ${[12, 25, 50, 100].map(count => `<option value="${count}" ${Number(current.count) === count ? "selected" : ""}>${count}</option>`).join("")}
+            </select>
+          </label>
+          <label class="caf-clean-inventory-check"><input id="caf-clean-inventory-match-bonuses" type="checkbox" ${current.matchBonuses ? "checked" : ""}> Match visible bonus types</label>
+          <button type="button" class="caf-clean-inventory-load">Load Weapons from Inventory</button>
+          <button type="button" class="caf-clean-inventory-all-history">Load AH History for All</button>
+          <button type="button" class="caf-clean-inventory-clear">Clear Loaded List</button>
+        </div>
+        <div class="caf-clean-inventory-status">Ready. Open a weapon inventory view and tap Load.</div>
+        <div class="caf-clean-inventory-list"></div>
+        <details class="caf-clean-inventory-disclosure">
+          <summary>Data use</summary>
+          <div>Load reads only inventory cards already rendered on this visible page and keeps their snapshots only in page memory. An Auction History tap sends the parsed item name, visible stats, and visible bonuses to the disclosed external Supabase history service. No Torn password, cookie, API key, inventory request, or game action is sent.</div>
+        </details>
+      </div>
+    `;
+    document.body.prepend(panel);
+    panel.querySelector(".caf-clean-inventory-toggle").addEventListener("click", event => {
+      event.preventDefault();
+      const body = panel.querySelector(".caf-clean-inventory-body");
+      const willCollapse = body.style.display !== "none";
+      body.style.display = willCollapse ? "none" : "block";
+      localStorage.setItem(INVENTORY_COLLAPSED_KEY, willCollapse ? "true" : "false");
+      updateInventoryPanelToggle();
+    });
+    panel.querySelector(".caf-clean-inventory-load").addEventListener("click", loadInventoryWeapons);
+    panel.querySelector(".caf-clean-inventory-all-history").addEventListener("click", loadAllInventoryHistory);
+    panel.querySelector(".caf-clean-inventory-clear").addEventListener("click", clearInventoryWeapons);
+    panel.querySelectorAll("select, input").forEach(element => element.addEventListener("change", saveInventorySettings));
+    renderInventoryItems();
+  }
+
+  function scheduleInventoryRefresh() {
+    if (inventoryRefreshTimer) clearTimeout(inventoryRefreshTimer);
+    inventoryRefreshTimer = setTimeout(() => {
+      inventoryRefreshTimer = null;
+      if (!isInventoryPage()) {
+        document.getElementById(INVENTORY_PANEL_ID)?.remove();
+        inventoryItems.clear();
+        inventorySourceById.clear();
+        return;
+      }
+      if (isActiveView()) injectInventoryPanel();
+    }, 150);
+  }
+
   function injectPanel() {
     if (!isAuctionPage() || document.getElementById(PANEL_ID) || !document.body) return;
     const current = settings();
@@ -4440,12 +4932,18 @@
     renderWatchBar();
     injectPanel();
     injectMarketPanel();
+    injectInventoryPanel();
     schedulePendingWatchLocate();
     scheduleMarketRefresh();
+    scheduleInventoryRefresh();
     window.addEventListener("hashchange", scheduleMarketRefresh);
     window.addEventListener("popstate", scheduleMarketRefresh);
     window.addEventListener("focus", scheduleMarketRefresh);
     document.addEventListener("visibilitychange", scheduleMarketRefresh);
+    window.addEventListener("hashchange", scheduleInventoryRefresh);
+    window.addEventListener("popstate", scheduleInventoryRefresh);
+    window.addEventListener("focus", scheduleInventoryRefresh);
+    document.addEventListener("visibilitychange", scheduleInventoryRefresh);
     if (document.body) {
       const marketObserver = new MutationObserver(records => {
         const hasMarketPageMutation = records.some(record =>
@@ -4454,6 +4952,11 @@
         if (hasMarketPageMutation) scheduleMarketRefresh();
       });
       marketObserver.observe(document.body, { childList: true, subtree: true });
+      const inventoryObserver = new MutationObserver(records => {
+        const hasInventoryMutation = records.some(record => !record.target.closest?.(`#${INVENTORY_PANEL_ID}`));
+        if (hasInventoryMutation) scheduleInventoryRefresh();
+      });
+      inventoryObserver.observe(document.body, { childList: true, subtree: true });
     }
   }
 
