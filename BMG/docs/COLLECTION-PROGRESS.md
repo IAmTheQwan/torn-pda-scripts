@@ -1,5 +1,29 @@
 # Historical collection progress
 
+## API-Football reviewed-label checkpoint — 2026-08-13
+
+The second conservative tier resolved explicit same-competition renames and
+structural labels such as World Cup groups, league playoffs, and championship
+groups. The reviewed registry covers 58 Torn targets representing 610 wagers
+and $21,052,225,293 of historical stake. Provider identity and season approval
+are checked exactly before any collection begins.
+
+- 59 unique league-season jobs were planned; 57 were new and two were already
+  present from the exact tier.
+- 13,487 additional provider matches and 942 standings rows imported with zero
+  failed jobs, using 114 API requests.
+- The canonical reference database now contains 44,908 matches and 3,025
+  standings rows across 177 provider capture runs.
+- Confirmed Torn/match links increased to 617, producing 617 auditable outcome
+  records and linking 731 of 3,371 historical football wagers.
+- The collection backlog now has 31 fully reconciled competition targets and
+  32 progressed targets.
+
+Partial coverage inside an imported competition is expected when Torn and the
+provider spell a team differently. Those remaining events stay unconfirmed
+until team-alias evidence is reviewed; the importer never promotes a fuzzy team
+match just because the competition mapping is approved.
+
 ## API-Football exact-tier checkpoint — 2026-08-13
 
 The Ultra integration is active and the first conservative structured backfill

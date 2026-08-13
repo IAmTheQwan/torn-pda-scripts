@@ -4,6 +4,7 @@ import base64
 import contextlib
 import gzip
 import io
+import json
 import sqlite3
 import sys
 import tempfile
@@ -416,6 +417,82 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertEqual([(50, 2025), (50, 2026)], [
             (job["league_id"], job["season"]) for job in jobs
         ])
+
+    def test_api_football_reviewed_backfill_is_explicit_and_fails_closed_on_drift(self) -> None:
+        audit = {
+            "targets": [{
+                "target_id": "renamed",
+                "competition_family": "Old League Name",
+                "jurisdiction": "Testland 1",
+                "required_seasons": [2025, 2026],
+                "wager_count": 4,
+                "staked": 500,
+            }]
+        }
+        catalog = {
+            "leagues": [{
+                "league": {"id": 80, "name": "New League Name"},
+                "country": {"name": "Testland"},
+                "seasons": [{"year": 2025}, {"year": 2026}],
+            }]
+        }
+        registry = {
+            "schema_version": "bmg.api-football-reviewed-mappings.v1",
+            "mappings": [{
+                "target_id": "renamed",
+                "competition_family": "Old League Name",
+                "jurisdiction": "Testland 1",
+                "league_id": 80,
+                "provider_name": "New League Name",
+                "provider_country": "Testland",
+                "seasons": [2025, 2026],
+                "reason": "Documented competition rename.",
+            }],
+        }
+
+        jobs = api_football.reviewed_backfill_jobs(audit, catalog, registry)
+
+        self.assertEqual([(80, 2025), (80, 2026)], [
+            (job["league_id"], job["season"]) for job in jobs
+        ])
+        self.assertEqual(500, jobs[0]["staked"])
+        drifted = json.loads(json.dumps(registry))
+        drifted["mappings"][0]["provider_name"] = "Unexpected Name"
+        with self.assertRaises(api_football.ApiFootballError):
+            api_football.reviewed_backfill_jobs(audit, catalog, drifted)
+
+    def test_api_football_reviewed_backfill_requires_exact_season_approval(self) -> None:
+        audit = {
+            "targets": [{
+                "target_id": "season-drift",
+                "competition_family": "League",
+                "jurisdiction": "Testland 1",
+                "required_seasons": [2026],
+            }]
+        }
+        catalog = {
+            "leagues": [{
+                "league": {"id": 90, "name": "League"},
+                "country": {"name": "Testland"},
+                "seasons": [{"year": 2025}, {"year": 2026}],
+            }]
+        }
+        registry = {
+            "schema_version": "bmg.api-football-reviewed-mappings.v1",
+            "mappings": [{
+                "target_id": "season-drift",
+                "competition_family": "League",
+                "jurisdiction": "Testland 1",
+                "league_id": 90,
+                "provider_name": "League",
+                "provider_country": "Testland",
+                "seasons": [2025],
+                "reason": "Test mapping.",
+            }],
+        }
+
+        with self.assertRaises(api_football.ApiFootballError):
+            api_football.reviewed_backfill_jobs(audit, catalog, registry)
 
     def test_api_football_duplicate_standings_group_names_get_unique_scopes(self) -> None:
         league = {

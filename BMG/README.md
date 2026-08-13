@@ -86,11 +86,15 @@ state. The first milestone is trustworthy data.
    python .\BMG\src\api_football.py collect-season LEAGUE_ID SEASON
    python .\BMG\src\api_football.py backfill-exact --dry-run
    python .\BMG\src\api_football.py backfill-exact
+   python .\BMG\src\api_football.py backfill-reviewed --dry-run
+   python .\BMG\src\api_football.py backfill-reviewed
    ```
 
    The catalog and audit live under ignored `BMG/data/`; captures live under
    ignored `BMG/exports/`. API-Football fixture IDs are imported into the same
    canonical reference tables as Flashscore data. See `docs/API-FOOTBALL.md`.
+   Reviewed aliases and stage mappings live in the committed, drift-checked
+   `BMG/config/api-football-reviewed-mappings.json` registry.
 
 For a smoke test without Torn data:
 

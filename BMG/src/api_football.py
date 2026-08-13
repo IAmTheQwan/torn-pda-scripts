@@ -28,6 +28,8 @@ DEFAULT_DB = PROJECT_DIR / "data" / "bmg.sqlite"
 DEFAULT_CATALOG = PROJECT_DIR / "data" / "api-football-catalog.json"
 DEFAULT_AUDIT = PROJECT_DIR / "data" / "api-football-coverage-audit.json"
 DEFAULT_BACKFILL_REPORT = PROJECT_DIR / "data" / "api-football-exact-backfill.json"
+DEFAULT_REVIEWED_MAPPINGS = PROJECT_DIR / "config" / "api-football-reviewed-mappings.json"
+DEFAULT_REVIEWED_BACKFILL_REPORT = PROJECT_DIR / "data" / "api-football-reviewed-backfill.json"
 DEFAULT_BASE_URL = "https://v3.football.api-sports.io"
 SOURCE = "api-football"
 
@@ -679,6 +681,107 @@ def exact_backfill_jobs(audit: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
 
+def reviewed_backfill_jobs(
+    audit: dict[str, Any],
+    catalog: dict[str, Any],
+    registry: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build jobs only from explicit, drift-checked human-reviewed mappings."""
+    if registry.get("schema_version") != "bmg.api-football-reviewed-mappings.v1":
+        raise ApiFootballError("Unsupported reviewed mapping registry.")
+    targets = {
+        str(target.get("target_id")): target
+        for target in (audit.get("targets") or [])
+        if isinstance(target, dict) and target.get("target_id")
+    }
+    leagues = {
+        int(entry["league"]["id"]): entry
+        for entry in (catalog.get("leagues") or [])
+        if isinstance(entry, dict)
+        and isinstance(entry.get("league"), dict)
+        and entry["league"].get("id") is not None
+    }
+    jobs: dict[tuple[int, int], dict[str, Any]] = {}
+    seen_targets: set[str] = set()
+    for mapping in registry.get("mappings") or []:
+        if not isinstance(mapping, dict):
+            raise ApiFootballError("Reviewed mapping entries must be objects.")
+        target_id = str(mapping.get("target_id") or "")
+        if not target_id or target_id in seen_targets:
+            raise ApiFootballError(f"Missing or duplicate reviewed target_id: {target_id or '<empty>'}")
+        seen_targets.add(target_id)
+        target = targets.get(target_id)
+        if target is None:
+            raise ApiFootballError(f"Reviewed target is absent from the current audit: {target_id}")
+        expected_family = str(mapping.get("competition_family") or "")
+        expected_jurisdiction = str(mapping.get("jurisdiction") or "")
+        if (
+            expected_family != str(target.get("competition_family") or "")
+            or expected_jurisdiction != str(target.get("jurisdiction") or "")
+        ):
+            raise ApiFootballError(f"Reviewed target labels drifted: {target_id}")
+        reason = str(mapping.get("reason") or "").strip()
+        if not reason:
+            raise ApiFootballError(f"Reviewed mapping has no rationale: {target_id}")
+        try:
+            league_id = int(mapping["league_id"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ApiFootballError(f"Reviewed mapping has an invalid league_id: {target_id}") from error
+        entry = leagues.get(league_id)
+        if entry is None:
+            raise ApiFootballError(f"Reviewed provider league is absent from the catalog: {league_id}")
+        league = entry["league"]
+        country = entry.get("country") if isinstance(entry.get("country"), dict) else {}
+        provider_name = str(league.get("name") or "")
+        provider_country = str(country.get("name") or "")
+        if (
+            provider_name != str(mapping.get("provider_name") or "")
+            or provider_country != str(mapping.get("provider_country") or "")
+        ):
+            raise ApiFootballError(f"Reviewed provider labels drifted: {target_id}")
+        required = {int(value) for value in (target.get("required_seasons") or [])}
+        approved = {int(value) for value in (mapping.get("seasons") or [])}
+        if not required or approved != required:
+            raise ApiFootballError(
+                f"Reviewed seasons no longer exactly match the audit for {target_id}: "
+                f"approved={sorted(approved)}, required={sorted(required)}"
+            )
+        available = {
+            int(season["year"])
+            for season in (entry.get("seasons") or [])
+            if isinstance(season, dict) and season.get("year") is not None
+        }
+        if not approved.issubset(available):
+            raise ApiFootballError(
+                f"Reviewed provider lacks approved seasons for {target_id}: "
+                f"{sorted(approved - available)}"
+            )
+        for season in sorted(approved):
+            key = (league_id, season)
+            job = jobs.setdefault(
+                key,
+                {
+                    "league_id": league_id,
+                    "season": season,
+                    "provider_name": provider_name,
+                    "provider_country": provider_country,
+                    "target_ids": [],
+                    "wager_count": 0,
+                    "staked": 0,
+                    "review_reasons": [],
+                },
+            )
+            job["target_ids"].append(target_id)
+            job["wager_count"] += int(target.get("wager_count") or 0)
+            job["staked"] += int(target.get("staked") or 0)
+            if reason not in job["review_reasons"]:
+                job["review_reasons"].append(reason)
+    return sorted(
+        jobs.values(),
+        key=lambda job: (-int(job["staked"]), -int(job["wager_count"]), job["league_id"], job["season"]),
+    )
+
+
 def season_is_imported(database: Path, league_id: int, season: int) -> bool:
     if not database.exists():
         return False
@@ -754,41 +857,49 @@ def command_collect_season(args: argparse.Namespace) -> None:
         print("imported=" + ", ".join(f"{key}:{value}" for key, value in counts.items()))
 
 
-def command_backfill_exact(args: argparse.Namespace) -> None:
-    audit = json.loads(args.audit.read_text(encoding="utf-8"))
+def read_audit(path: Path) -> dict[str, Any]:
+    audit = json.loads(path.read_text(encoding="utf-8"))
     if audit.get("schema_version") != "bmg.api-football-coverage-audit.v1":
         raise ApiFootballError("Unsupported coverage audit; run the audit command again.")
-    jobs = exact_backfill_jobs(audit)
-    if args.limit is not None:
-        jobs = jobs[: max(0, args.limit)]
-    if args.dry_run:
-        selected_target_ids = {
-            target_id for job in jobs for target_id in (job.get("target_ids") or []) if target_id
-        }
-        selected_targets = [
-            target
-            for target in (audit.get("targets") or [])
-            if isinstance(target, dict) and target.get("target_id") in selected_target_ids
-        ]
+    return audit
+
+
+def print_backfill_plan(tier: str, audit: dict[str, Any], jobs: list[dict[str, Any]]) -> None:
+    selected_target_ids = {
+        target_id for job in jobs for target_id in (job.get("target_ids") or []) if target_id
+    }
+    selected_targets = [
+        target
+        for target in (audit.get("targets") or [])
+        if isinstance(target, dict) and target.get("target_id") in selected_target_ids
+    ]
+    print(
+        f"{tier} backfill jobs={len(jobs)}; expected API calls<={len(jobs) * 2}; "
+        f"unique targets={len(selected_targets)}; "
+        f"wagers={sum(int(target.get('wager_count') or 0) for target in selected_targets)}; "
+        f"staked={sum(int(target.get('staked') or 0) for target in selected_targets)}"
+    )
+    for job in jobs[:20]:
         print(
-            f"exact backfill jobs={len(jobs)}; expected API calls<={len(jobs) * 2}; "
-            f"unique targets={len(selected_targets)}; "
-            f"wagers={sum(int(target.get('wager_count') or 0) for target in selected_targets)}; "
-            f"staked={sum(int(target.get('staked') or 0) for target in selected_targets)}"
+            f"{job['provider_country']} / {job['provider_name']} {job['season']} "
+            f"id={job['league_id']} wagers={job['wager_count']}"
         )
-        for job in jobs[:20]:
-            print(
-                f"{job['provider_country']} / {job['provider_name']} {job['season']} "
-                f"id={job['league_id']} wagers={job['wager_count']}"
-            )
-        return
-    client = make_client(args.env)
-    catalog = fetch_catalog(client, args.catalog) if args.refresh_catalog or not args.catalog.exists() else read_catalog(args.catalog)
+
+
+def run_backfill(
+    args: argparse.Namespace,
+    audit: dict[str, Any],
+    jobs: list[dict[str, Any]],
+    catalog: dict[str, Any],
+    client: ApiFootballClient,
+    tier: str,
+) -> None:
     report: dict[str, Any] = {
         "schema_version": "bmg.api-football-backfill.v1",
         "started_at": utc_now(),
         "updated_at": utc_now(),
         "source": SOURCE,
+        "tier": tier,
         "audit": str(args.audit),
         "database": str(args.db),
         "jobs_total": len(jobs),
@@ -838,6 +949,38 @@ def command_backfill_exact(args: argparse.Namespace) -> None:
     )
 
 
+def command_backfill_exact(args: argparse.Namespace) -> None:
+    audit = read_audit(args.audit)
+    jobs = exact_backfill_jobs(audit)
+    if args.limit is not None:
+        jobs = jobs[: max(0, args.limit)]
+    if args.dry_run:
+        print_backfill_plan("exact", audit, jobs)
+        return
+    client = make_client(args.env)
+    catalog = fetch_catalog(client, args.catalog) if args.refresh_catalog or not args.catalog.exists() else read_catalog(args.catalog)
+    run_backfill(args, audit, jobs, catalog, client, "exact")
+
+
+def command_backfill_reviewed(args: argparse.Namespace) -> None:
+    audit = read_audit(args.audit)
+    registry = json.loads(args.mappings.read_text(encoding="utf-8"))
+    client: ApiFootballClient | None = None
+    if args.refresh_catalog or not args.catalog.exists():
+        client = make_client(args.env)
+        catalog = fetch_catalog(client, args.catalog)
+    else:
+        catalog = read_catalog(args.catalog)
+    jobs = reviewed_backfill_jobs(audit, catalog, registry)
+    if args.limit is not None:
+        jobs = jobs[: max(0, args.limit)]
+    if args.dry_run:
+        print_backfill_plan("reviewed", audit, jobs)
+        return
+    client = client or make_client(args.env)
+    run_backfill(args, audit, jobs, catalog, client, "reviewed")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env", type=Path, default=DEFAULT_ENV)
@@ -870,6 +1013,18 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument("--refresh-catalog", action="store_true")
     backfill.add_argument("--limit", type=int)
     backfill.add_argument("--dry-run", action="store_true")
+
+    reviewed = subparsers.add_parser(
+        "backfill-reviewed", help="resume the explicit human-reviewed mapping tier"
+    )
+    reviewed.add_argument("--db", type=Path, default=DEFAULT_DB)
+    reviewed.add_argument("--audit", type=Path, default=DEFAULT_AUDIT)
+    reviewed.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
+    reviewed.add_argument("--mappings", type=Path, default=DEFAULT_REVIEWED_MAPPINGS)
+    reviewed.add_argument("--report", type=Path, default=DEFAULT_REVIEWED_BACKFILL_REPORT)
+    reviewed.add_argument("--refresh-catalog", action="store_true")
+    reviewed.add_argument("--limit", type=int)
+    reviewed.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -884,6 +1039,8 @@ def main(argv: list[str] | None = None) -> int:
             command_collect_season(args)
         elif args.command == "backfill-exact":
             command_backfill_exact(args)
+        elif args.command == "backfill-reviewed":
+            command_backfill_reviewed(args)
         return 0
     except (ApiFootballError, OSError, ValueError, json.JSONDecodeError, sqlite3.Error) as error:
         print(f"API-Football error: {error}")

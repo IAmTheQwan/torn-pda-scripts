@@ -45,6 +45,22 @@ python .\BMG\src\api_football.py backfill-exact --dry-run
 python .\BMG\src\api_football.py backfill-exact
 ```
 
+The next tier uses the committed
+`BMG/config/api-football-reviewed-mappings.json` registry. Each entry records
+the Torn target labels, exact provider league ID/name/country, explicitly
+approved seasons, and a rationale. The command fails closed if the current
+audit or provider catalog drifts from any of those reviewed values; it does not
+fall back to fuzzy matching.
+
+```powershell
+python .\BMG\src\api_football.py backfill-reviewed --dry-run
+python .\BMG\src\api_football.py backfill-reviewed
+```
+
+Add mappings only after confirming that a rename or stage label denotes the
+same competition. Common names in the wrong country and similar-looking cup or
+league labels must remain outside the registry.
+
 ## League-season collection
 
 Run a pilot with a confirmed provider league ID and API season year:
