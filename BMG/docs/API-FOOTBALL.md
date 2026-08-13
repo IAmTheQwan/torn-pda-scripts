@@ -88,6 +88,12 @@ Awarded, walkover, and abandoned statuses require manual review.
 Extra-time and penalty finishes also require manual review because ordinary-time
 Torn markets cannot be settled from an ambiguous final-score field.
 
+Score-model runs grade ordinary-time 1X2, BTTS, draw-no-bet, double chance,
+match/team totals, Asian handicap, and win-to-nil from the same canonical
+score. Whole lines push; quarter lines record a 0.5 half-win/half-loss
+settlement fraction. Expanded-market closing value uses the median exact
+external contract observed no later than scheduled kickoff.
+
 Running the command again is safe. Settlement and evaluation identities are
 stable, while a corrected final provider score can update the stored result and
 derived metrics. The API key is never written to the capture or report.

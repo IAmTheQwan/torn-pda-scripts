@@ -88,7 +88,11 @@ coverage—the omitted draw remains a losing outcome.
 
 1. Torn API adapter for disclosed, authorized money and Bookie log fields.
 2. Reconciliation jobs joining Torn game IDs, provider fixtures, and settled bets — **schema and conservative exact-link CLI implemented**.
-3. Model tables for forecasts, closing-line value, calibration, and pick decisions — **schema plus an external-price paper benchmark implemented; a predictive team model remains deliberately unregistered**.
+3. Model tables for forecasts, closing-line value, calibration, and pick decisions — **implemented with an external-price benchmark plus a frozen, chronologically validated recency/Dixon-Coles score model; live graduation remains disabled pending forward samples**.
 4. Source-neutral timestamped external-odds import — **implemented as `bmg.market-odds.v1`**.
+
+Fixture state is append-only in `match_status_observations`. The score review
+uses the latest provider observation no later than each Torn capture and fails
+closed on missing, live, scored, reached, or disagreeing kickoff evidence.
 
 Adapters append observations. They do not rewrite source history.

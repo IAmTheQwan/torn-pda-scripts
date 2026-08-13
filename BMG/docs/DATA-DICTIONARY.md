@@ -83,6 +83,8 @@ cannot silently distort the other's ETA.
 ## Modeling and evaluation entities
 
 - `research_slates`, `research_slate_events` — the full candidate pool at a decision time.
+- `match_status_observations` — immutable scheduled/live/final state, score, and
+  provider kickoff at each reference capture for leakage-safe as-of checks.
 - `model_versions` — immutable model identity, feature specification, and training cutoff.
 - `team_rating_snapshots` — as-of team strength and uncertainty states.
 - `forecast_runs`, `match_forecasts` — timestamped probability distributions and fair odds.
@@ -90,7 +92,8 @@ cannot silently distort the other's ETA.
 - `market_review_coverage` — one row for every Torn market visible to a paper
   run, with captured selection depth, completeness, external book count, and
   an explicit eligibility or rejection status.
-- `match_market_settlements` — rules-aware win/loss/push/void evidence.
+- `match_market_settlements` — rules-aware win/loss/push/void evidence plus a
+  0.5 settlement fraction for Asian quarter-line half wins/losses.
 - `forecast_evaluations` — calibration, hypothetical profit, closing odds,
   closing-line value, and JSON evidence naming the closing captures, book count,
   cutoff, formula, and result sources.

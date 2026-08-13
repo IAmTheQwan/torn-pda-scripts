@@ -1,6 +1,6 @@
 # Modeling and backtesting database
 
-BMG schema v4 separates evidence from predictions so a profitable-looking
+BMG schema v9 separates evidence from predictions so a profitable-looking
 backtest cannot quietly use information that was unavailable at decision time.
 
 ## The three evidence layers
@@ -17,6 +17,10 @@ backtest cannot quietly use information that was unavailable at decision time.
 
 `event_match_links` is the reviewed bridge between Torn and canonical matches.
 An outcome is copied into Torn history only after that bridge is confirmed.
+
+`match_status_observations` is the immutable provider-state history. A later
+live or final refresh can never be used to reconstruct what was known at a
+morning Torn capture.
 
 The reciprocal-odds opportunity screen only evaluates complete three-way,
 two-way moneyline, yes/no both-teams-to-score, and complementary over/under
@@ -38,8 +42,9 @@ nil are excluded even when their displayed reciprocal sum is below one.
 - `market_review_coverage` stores every displayed Torn market considered by a
   paper run, including its selection depth and why it was eligible, partial,
   unsupported, unmapped, settlement-incompatible, or short of external books.
-- `match_market_settlements` records the applicable ruleset before a forecast is
-  scored; ordinary time, extra time, pushes, refunds, and voids are not guessed.
+- `match_market_settlements` records the applicable ruleset and settlement
+  fraction before a forecast is scored; ordinary time, half wins/losses,
+  pushes, refunds, and voids are not guessed.
 - `forecast_evaluations` stores outcome, Brier score, log loss, realized profit,
   closing price, and closing-line value.
 - `backtest_runs` and `backtest_metrics` enforce chronological train/test windows.
@@ -90,11 +95,11 @@ nil are excluded even when their displayed reciprocal sum is below one.
    ```
 
    Each event keeps its own Torn capture and information cutoff. External
-   prices observed after that cutoff are excluded. The first benchmark version
+   prices observed after that cutoff are excluded. The external-price benchmark
    supports ordinary-time 1X2, both-teams-to-score, and half-goal full-match
    totals. Whole-goal totals remain settlement mismatches until push
-   probability is modeled; handicaps and other surfaces remain explicitly
-   unsupported rather than being forced into an approximate comparison.
+   probability is modeled. This command intentionally remains narrower than
+   the score-model review.
 
    A `paper_pick` requires the 25th-percentile de-vigged bookmaker probability
    to clear the EV threshold. Its recorded paper stake uses fractional Kelly,
@@ -131,14 +136,39 @@ nil are excluded even when their displayed reciprocal sum is below one.
    later than scheduled kickoff. Post-kickoff observations cannot leak into it.
    Passes are scored for calibration but carry zero hypothetical stake.
 
-9. Register a predictive model only when its implementation and features are frozen:
+9. Run the frozen chronological score-model holdout, then score the full Torn
+   surface:
 
    ```powershell
-   python .\BMG\src\bmg.py model-register bmg-football 0.1.0 `
-     --algorithm "recency Elo plus Dixon-Coles Poisson" `
-     --feature-spec '{"elo":true,"goals":true,"xg":false}' `
-     --training-cutoff 2026-05-31 --active
+   python .\BMG\src\bmg.py model-backtest `
+     --test-start 2026-05-01T00:00:00Z `
+     --test-end 2026-08-01T00:00:00Z
+   python .\BMG\src\bmg.py score-review --date 2026-08-13 `
+     --snapshot-label morning --min-ev 0.05 `
+     --output .\BMG\data\score-review-2026-08-13.md
    ```
+
+   `score-review` fits only records strictly earlier than the first Torn
+   capture. It builds a recency-weighted, competition-shrunk attack/defense
+   Poisson grid with a Dixon-Coles low-score adjustment. A timestamp-safe
+   external 1X2 consensus anchors cross-league strength, while the historical
+   model supplies score and total shape. Each supported selection must also
+   have a same-contract external reference price.
+
+   Supported ordinary-time contracts are 1X2, BTTS, DNB, double chance,
+   match totals, home/away team totals, Asian handicaps in quarter-goal
+   increments, and win-to-nil. Quarter lines retain half-win/half-loss payoff
+   math and settle at a 0.5 fraction. No contract is converted to a binary bet
+   when its push or split payoff differs.
+
+   The priority-1 kickoff gate requires an as-of provider status and matching
+   kickoff. If the provider was live/scored, the real kickoff had been reached,
+   the times disagree, or no provider state existed by the Torn capture, every
+   selection for that event is rejected. A timing mismatch is never a pick.
+
+   A replay created after kickoff is labeled `retrospective_asof_replay`, not
+   forward paper evidence. See `SCORE-MODEL-VALIDATION.md` for the first frozen
+   holdout and replay results.
 
 10. Inspect readiness and descriptive wager history:
 

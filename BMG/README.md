@@ -76,6 +76,12 @@ state. The first milestone is trustworthy data.
    python .\BMG\src\bmg.py daily-review --date 2026-08-13 `
      --snapshot-label morning `
      --output .\BMG\data\paper-review-2026-08-13.md
+   python .\BMG\src\bmg.py model-backtest `
+     --test-start 2026-05-01T00:00:00Z `
+     --test-end 2026-08-01T00:00:00Z
+   python .\BMG\src\bmg.py score-review --date 2026-08-13 `
+     --snapshot-label morning `
+     --output .\BMG\data\score-review-2026-08-13.md
    python .\BMG\src\api_football.py settle-review `
      --output .\BMG\data\settlement-review-2026-08-13.md
    ```
@@ -94,6 +100,14 @@ state. The first milestone is trustworthy data.
    `--snapshot-label pre-kickoff`; both runs retain their own cutoffs and prices.
    API-Football `settle-review` refreshes only that run's fixtures and evaluates
    final results. Live or unclear results remain pending.
+
+   `model-backtest` freezes a chronological holdout and persists its metrics.
+   `score-review` evaluates all normalized ordinary-time football markets with
+   the historical score grid: 1X2, BTTS, DNB, double chance, match/team totals,
+   Asian handicaps, and win-to-nil. It requires a timestamp-safe external 1X2
+   anchor, same-contract price evidence, model uncertainty, and the priority-1
+   kickoff-integrity gate. It remains paper-only; retrospective replays are
+   labeled separately from forward samples.
 
    Timestamped external price captures import with `import-odds`. Full schema,
    slate, forecast, decision, settlement, and backtest details are in

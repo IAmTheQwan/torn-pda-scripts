@@ -18,6 +18,7 @@ sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 import bmg  # noqa: E402
 import api_football  # noqa: E402
+import score_model  # noqa: E402
 
 
 FIXTURE = PROJECT_DIR / "tests" / "fixtures" / "capture-history-v1.json"
@@ -1077,6 +1078,137 @@ class BmgDatabaseTests(unittest.TestCase):
                 """,
                 (model_id,),
             )
+
+    def test_score_model_payoffs_cover_expanded_markets_and_split_lines(self) -> None:
+        grid = {(2, 1): 1.0}
+        self.assertEqual(1.0, score_model.market_outcomes(
+            grid, kind="double_chance", selection="home+draw"
+        )["win"])
+        self.assertEqual(1.0, score_model.market_outcomes(
+            grid, kind="draw_no_bet", selection="home"
+        )["win"])
+        self.assertEqual(1.0, score_model.market_outcomes(
+            grid, kind="total", selection="over", line=1.5, subject="home"
+        )["win"])
+        self.assertEqual("half_win", score_model.asian_result(1, -0.75))
+        self.assertEqual("half_loss", score_model.total_result(2, 2.25, "over"))
+        outcomes = {"win": 0.4, "half_win": 0.1, "push": 0.1, "half_loss": 0.1, "loss": 0.3}
+        self.assertAlmostEqual(0.1, score_model.expected_value(outcomes, 2.0))
+
+    def test_score_distribution_anchor_matches_timestamp_safe_one_x_two(self) -> None:
+        original = score_model.score_distribution(1.2, 0.9)
+        target = {"home": 0.25, "draw": 0.30, "away": 0.45}
+        anchored = score_model.anchor_three_way_distribution(original, target)
+        actual = score_model.three_way_probabilities(anchored)
+        for role in target:
+            self.assertAlmostEqual(target[role], actual[role], places=9)
+        self.assertAlmostEqual(1.0, sum(anchored.values()), places=9)
+
+    def test_expanded_torn_market_descriptors_are_unambiguous(self) -> None:
+        cases = [
+            ("Draw No Bet Ordinary time", "draw no bet", "Home", None, None, "draw_no_bet", "home"),
+            ("Double Chance Ordinary time", "double chance", "Home or Draw", None, None, "double_chance", "home+draw"),
+            ("Home Score Over/Under 1.5 Total Goals Ordinary time", "total", "Over 1.5 Total Goals", 1.5, None, "team_total", "home:over"),
+            ("Asian Handicap 0.5 Ordinary time", "asian handicap", "Away (+0.5)", None, 0.5, "asian_handicap", "away"),
+            ("Win to nil Ordinary time", "win to nil", "Away", None, None, "win_to_nil", "away"),
+        ]
+        for market_name, market_type, selection, line, handicap, kind, key in cases:
+            descriptor, status = bmg.score_selection_descriptor(
+                market_name=market_name,
+                market_type=market_type,
+                period="Ordinary time",
+                selection_name=selection,
+                line=line,
+                handicap=handicap,
+                home_team="Home",
+                away_team="Away",
+            )
+            self.assertEqual("eligible", status)
+            self.assertEqual(kind, descriptor["forecast_kind"])
+            self.assertEqual(key, descriptor["selection_key"])
+
+    def test_fixture_status_asof_does_not_leak_later_live_state(self) -> None:
+        capture = json.loads(FLASHSCORE_FIXTURE.read_text(encoding="utf-8"))
+        capture["capture_id"] = "fixture-status-scheduled"
+        capture["observed_at"] = "2026-08-13T12:00:00Z"
+        capture["matches"][0].update({
+            "scheduled_at": "2026-08-13T13:00:00Z",
+            "status": "scheduled",
+            "home_score": None,
+            "away_score": None,
+        })
+        bmg.import_flashscore_capture(self.connection, capture)
+        match_id = int(self.connection.execute(
+            "SELECT match_id FROM match_sources WHERE source_match_id = 'fixture-match-1'"
+        ).fetchone()[0])
+        later = json.loads(json.dumps(capture))
+        later["capture_id"] = "fixture-status-live"
+        later["observed_at"] = "2026-08-13T13:05:00Z"
+        later["matches"][0].update({"status": "live", "home_score": 1, "away_score": 0})
+        bmg.import_flashscore_capture(self.connection, later)
+        integrity = bmg.kickoff_integrity_as_of(
+            self.connection,
+            match_id=match_id,
+            torn_scheduled_at="2026-08-13T13:00:00Z",
+            capture_observed_at="2026-08-13T12:00:00Z",
+        )
+        self.assertTrue(integrity["safe"])
+        self.assertEqual("scheduled", integrity["observation"]["status"])
+
+    def test_score_training_excludes_results_inside_availability_lag(self) -> None:
+        capture = json.loads(FLASHSCORE_FIXTURE.read_text(encoding="utf-8"))
+        capture["capture_id"] = "training-lag"
+        capture["observed_at"] = "2026-08-13T18:00:00Z"
+        older = capture["matches"][0]
+        older.update({
+            "source_match_id": "training-old",
+            "scheduled_at": "2026-08-13T10:00:00Z",
+            "status": "finished",
+            "home_score": 2,
+            "away_score": 1,
+        })
+        recent = json.loads(json.dumps(older))
+        recent.update({
+            "source_match_id": "training-recent",
+            "scheduled_at": "2026-08-13T15:00:00Z",
+            "home_score": 0,
+            "away_score": 0,
+        })
+        capture["matches"] = [older, recent]
+        bmg.import_flashscore_capture(self.connection, capture)
+        _, _, matches = score_model.load_training_matches(
+            self.connection,
+            cutoff="2026-08-13T17:00:00Z",
+            window_days=30,
+            half_life_days=180,
+            result_availability_lag_hours=6,
+        )
+        self.assertEqual(["training-old"], [
+            self.connection.execute(
+                "SELECT source_match_id FROM match_sources WHERE match_id = ?",
+                (match.match_id,),
+            ).fetchone()[0]
+            for match in matches
+        ])
+
+    def test_expanded_settlement_uses_subject_handicap_and_half_fraction(self) -> None:
+        team_total = json.dumps({"descriptor": {
+            "kind": "total", "selection": "over", "subject": "home", "line": 1.5, "handicap": None,
+        }})
+        self.assertEqual(
+            ("win", 1.0),
+            bmg.football_selection_settlement("team_total", "home:over", 1.5, 2, 1, team_total),
+        )
+        handicap = json.dumps({"descriptor": {
+            "kind": "asian_handicap", "selection": "home", "subject": "match", "line": None, "handicap": -0.75,
+        }})
+        self.assertEqual(
+            ("win", 0.5),
+            bmg.football_selection_settlement("asian_handicap", "home", -0.75, 2, 1, handicap),
+        )
+        self.assertEqual("draw_no_bet", bmg.classify_market("Draw No Bet Ordinary time"))
+        self.assertEqual("double_chance", bmg.classify_market("Double Chance Ordinary time"))
+        self.assertEqual("win_to_nil", bmg.classify_market("Win to nil Ordinary time"))
 
     def test_collection_plan_tracks_priority_timing_and_eta(self) -> None:
         bmg.import_file(self.connection, FIXTURE)
