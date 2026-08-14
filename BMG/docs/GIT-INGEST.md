@@ -56,13 +56,22 @@ After the player says to retrieve new captures, Codex will:
 5. move accepted files to `processed/` and push that bookkeeping change only
    after the user-authorized retrieval command.
 
-## Setup still required
+## Implemented locally
+
+- `gateway/src/worker.mjs` validates authenticated uploads and writes
+  content-addressed files through the GitHub Contents API.
+- `gateway/test/worker.test.mjs` covers authorization, credential rejection,
+  Git creation, and idempotent retry behavior.
+- `src/capture_inbox.py` validates a prompted pull, imports it idempotently,
+  and moves accepted files from `incoming/` to `processed/`.
+
+## External setup still required
 
 1. Create or select a private inbox repository.
 2. Deploy and connect the write-only gateway.
 3. Add its URL and public disclosure text to BMG settings.
 4. Add the explicit **Upload session** button and test it with sanitized data.
-5. Connect the private inbox as a separate local remote or approved GitHub
+5. Connect the private inbox as a separate local checkout or approved GitHub
    integration for prompted retrieval.
 
 Until those steps are complete, **Copy session** and **Export outbox** remain

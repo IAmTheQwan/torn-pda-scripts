@@ -3,6 +3,9 @@
 *.user
 *.sqlite
 BMG/.env
+BMG/gateway/.dev.vars
+BMG/gateway/.wrangler/
+BMG/gateway/node_modules/
 BMG/data/*
 !BMG/data/.gitkeep
 BMG/exports/*

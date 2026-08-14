@@ -1,0 +1,10 @@
+name = "bmg-capture-inbox"
+main = "src/worker.mjs"
+compatibility_date = "2026-08-14"
+workers_dev = true
+
+[vars]
+ALLOWED_ORIGINS = "https://www.torn.com"
+GITHUB_OWNER = "IAmTheQwan"
+GITHUB_REPO = "bmg-capture-inbox"
+GITHUB_BRANCH = "main"

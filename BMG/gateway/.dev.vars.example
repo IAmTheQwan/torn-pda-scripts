@@ -1,0 +1,2 @@
+GITHUB_TOKEN=server-side-private-repo-token
+UPLOAD_SECRET=long-random-revocable-upload-secret
