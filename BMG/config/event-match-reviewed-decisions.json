@@ -493,6 +493,96 @@
       "bet_count_at_review": 0,
       "stake_at_review": 0,
       "reason": "Confirmed live-slate link: same women’s teams and home/away roles, Damallsvenskan scope, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3711,
+      "match_id": 64027,
+      "decision": "confirmed",
+      "event": {"home_team": "Klaksvik", "away_team": "Lech Poznan", "league": "Europa League Qualification 2026/2027 (Europa League Qualification 1)", "event_time": "2026-08-14T18:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1607181", "home_team_id": 3321, "home_team": "KI Klaksvik", "away_team_id": 981, "away_team": "Lech Poznan", "competition": "UEFA Europa League", "country": "World", "scheduled_at": "2026-08-14T18:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, Europa League scope, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3824,
+      "match_id": 67411,
+      "decision": "confirmed",
+      "event": {"home_team": "Sporting Hasselt", "away_team": "FCV Dender EH", "league": "Challenger Pro League 2026/2027 (Belgium 2)", "event_time": "2026-08-14T18:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1559127", "home_team_id": 4510, "home_team": "Sporting Hasselt", "away_team_id": 3767, "away_team": "Dender", "competition": "Challenger Pro League", "country": "Belgium", "scheduled_at": "2026-08-14T18:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, Belgium second-tier competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3825,
+      "match_id": 67412,
+      "decision": "confirmed",
+      "event": {"home_team": "RFC Seraing", "away_team": "KSC Lokeren", "league": "Challenger Pro League 2026/2027 (Belgium 2)", "event_time": "2026-08-14T18:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1559128", "home_team_id": 1504, "home_team": "Seraing United", "away_team_id": 1501, "away_team": "Lokeren-Temse", "competition": "Challenger Pro League", "country": "Belgium", "scheduled_at": "2026-08-14T18:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, Belgium second-tier competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3827,
+      "match_id": 67407,
+      "decision": "confirmed",
+      "event": {"home_team": "Napredak", "away_team": "FK Metalac", "league": "Prva Liga 2026/2027 (Serbia 2)", "event_time": "2026-08-14T18:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1554117", "home_team_id": 1090, "home_team": "Napredak", "away_team_id": 4506, "away_team": "Metalac GM", "competition": "Prva Liga", "country": "Serbia", "scheduled_at": "2026-08-14T18:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, Serbia second-tier competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3828,
+      "match_id": 67408,
+      "decision": "confirmed",
+      "event": {"home_team": "FK Spartak Subotica", "away_team": "Teleoptik", "league": "Prva Liga 2026/2027 (Serbia 2)", "event_time": "2026-08-14T18:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1554118", "home_team_id": 1089, "home_team": "FK Spartak Zdrepceva KRV", "away_team_id": 4507, "away_team": "Teleoptik", "competition": "Prva Liga", "country": "Serbia", "scheduled_at": "2026-08-14T18:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, Serbia second-tier competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3829,
+      "match_id": 67409,
+      "decision": "confirmed",
+      "event": {"home_team": "Vozdovac", "away_team": "FK Graficar", "league": "Prva Liga 2026/2027 (Serbia 2)", "event_time": "2026-08-14T18:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1554119", "home_team_id": 4508, "home_team": "FK Vozdovac", "away_team_id": 4509, "away_team": "Grafičar", "competition": "Prva Liga", "country": "Serbia", "scheduled_at": "2026-08-14T18:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, Serbia second-tier competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3834,
+      "match_id": 67403,
+      "decision": "confirmed",
+      "event": {"home_team": "Roda JC Kerkrade", "away_team": "Helmond Sport", "league": "Eerste Divisie 2026/2027 (Netherlands 2)", "event_time": "2026-08-14T18:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1551751", "home_team_id": 416, "home_team": "Roda", "away_team_id": 426, "away_team": "Helmond Sport", "competition": "Eerste Divisie", "country": "Netherlands", "scheduled_at": "2026-08-14T18:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, Netherlands second-tier competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3836,
+      "match_id": 67410,
+      "decision": "confirmed",
+      "event": {"home_team": "Tabor", "away_team": "ND Triglav", "league": "2. Division 2026/2027 (Slovenia 2)", "event_time": "2026-08-14T18:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1558902", "home_team_id": 3532, "home_team": "Tabor Sežana", "away_team_id": 3530, "away_team": "Triglav", "competition": "2. SNL", "country": "Slovenia", "scheduled_at": "2026-08-14T18:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, Slovenia second-tier competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3837,
+      "match_id": 67416,
+      "decision": "confirmed",
+      "event": {"home_team": "Celik Zenica", "away_team": "Siroki Brijeg", "league": "Premier League 2026/2027 (Bosnia and Herzegovina 1)", "event_time": "2026-08-14T18:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1582771", "home_team_id": 4516, "home_team": "Čelik", "away_team_id": 3611, "away_team": "Siroki Brijeg", "competition": "Premijer Liga", "country": "Bosnia", "scheduled_at": "2026-08-14T18:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, Bosnia top-flight competition, unique provider fixture, and identical kickoff time."
     }
   ]
 }

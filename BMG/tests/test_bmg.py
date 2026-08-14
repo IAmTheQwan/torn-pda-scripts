@@ -619,8 +619,8 @@ class BmgDatabaseTests(unittest.TestCase):
         decisions = registry["decisions"]
         event_ids = [item["event_id"] for item in decisions]
         self.assertEqual(len(event_ids), len(set(event_ids)))
-        self.assertEqual(49, len(decisions))
-        self.assertEqual(48, sum(item["decision"] == "confirmed" for item in decisions))
+        self.assertEqual(58, len(decisions))
+        self.assertEqual(57, sum(item["decision"] == "confirmed" for item in decisions))
         self.assertEqual(1, sum(item["decision"] == "rejected" for item in decisions))
         for item in decisions:
             self.assertIn(item["decision"], {"confirmed", "rejected"})
@@ -1209,6 +1209,19 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertEqual(1, slate["events"])
         slate_event = self.connection.execute("SELECT * FROM research_slate_events").fetchone()
         self.assertEqual("confirmed", slate_event["mapping_status"])
+        review_date, resolved_slate = bmg.resolve_score_review_slate(
+            self.connection,
+            slate_id=slate["slate_id"],
+        )
+        self.assertEqual("2026-05-24", review_date)
+        self.assertEqual(slate["slate_id"], resolved_slate["slate_id"])
+        self.assertEqual(1, resolved_slate["events"])
+        with self.assertRaisesRegex(ValueError, "must match"):
+            bmg.resolve_score_review_slate(
+                self.connection,
+                review_date="2026-05-25",
+                slate_id=slate["slate_id"],
+            )
 
     def test_backtests_must_be_strictly_out_of_sample(self) -> None:
         self.connection.execute(

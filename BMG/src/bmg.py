@@ -3865,10 +3865,56 @@ def render_daily_paper_review(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def resolve_score_review_slate(
+    connection: sqlite3.Connection,
+    *,
+    review_date: str | None = None,
+    slate_id: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Resolve either an explicitly frozen slate or the latest daily aggregate."""
+    requested_slate = clean_text(slate_id)
+    if not requested_slate:
+        resolved_date = resolve_review_date(connection, review_date, "football")
+        return resolved_date, create_daily_research_slate(
+            connection,
+            review_date=resolved_date,
+            sport="football",
+        )
+    row = connection.execute(
+        """
+        SELECT rs.slate_id, rs.sport, rs.observed_at, rs.capture_complete,
+               COUNT(rse.event_id) AS events
+        FROM research_slates rs
+        LEFT JOIN research_slate_events rse ON rse.slate_id = rs.slate_id
+        WHERE rs.slate_id = ?
+        GROUP BY rs.slate_id
+        """,
+        (requested_slate,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Unknown research slate {requested_slate!r}.")
+    if canonical(row["sport"]) != "football":
+        raise ValueError("Score review currently supports football slates only.")
+    observed_date = clean_text(row["observed_at"])[:10]
+    resolved_date = resolve_review_date(connection, review_date or observed_date, "football")
+    if review_date and resolved_date != observed_date:
+        raise ValueError("--date must match the explicit slate observation date.")
+    if int(row["events"] or 0) < 1:
+        raise ValueError("The selected research slate has no events.")
+    return resolved_date, {
+        "slate_id": requested_slate,
+        "review_date": resolved_date,
+        "observed_at": row["observed_at"],
+        "capture_complete": int(bool(row["capture_complete"])),
+        "events": int(row["events"]),
+    }
+
+
 def run_score_model_review(
     connection: sqlite3.Connection,
     *,
     review_date: str | None = None,
+    slate_id: str | None = None,
     min_ev: float = 0.05,
     kelly_fraction: float = 0.10,
     max_bankroll_fraction: float = 0.005,
@@ -3884,8 +3930,11 @@ def run_score_model_review(
         raise ValueError("Invalid EV, Kelly, or bankroll-fraction setting.")
     if min_effective_matches < 0 or min_anchor_books < 1 or min_reference_edge < 0:
         raise ValueError("min_effective_matches cannot be negative.")
-    resolved_date = resolve_review_date(connection, review_date, "football")
-    slate = create_daily_research_slate(connection, review_date=resolved_date, sport="football")
+    resolved_date, slate = resolve_score_review_slate(
+        connection,
+        review_date=review_date,
+        slate_id=slate_id,
+    )
     slate_rows = connection.execute(
         """
         SELECT rse.event_id, rse.capture_id, cr.observed_at, e.scheduled_at
@@ -5901,6 +5950,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="score every supported Torn football selection with the validated team model",
     )
     score_review_parser.add_argument("--date", help="UTC date (YYYY-MM-DD); defaults to latest slate")
+    score_review_parser.add_argument(
+        "--slate-id",
+        help="score one explicitly frozen slate instead of the whole daily aggregate",
+    )
     score_review_parser.add_argument("--min-ev", type=float, default=0.05)
     score_review_parser.add_argument("--kelly-fraction", type=float, default=0.10)
     score_review_parser.add_argument("--max-bankroll-fraction", type=float, default=0.005)
@@ -6146,6 +6199,7 @@ def main(argv: list[str] | None = None) -> int:
                 result = run_score_model_review(
                     connection,
                     review_date=args.date,
+                    slate_id=args.slate_id,
                     min_ev=args.min_ev,
                     kelly_fraction=args.kelly_fraction,
                     max_bankroll_fraction=args.max_bankroll_fraction,
