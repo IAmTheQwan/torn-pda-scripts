@@ -21,11 +21,15 @@ state. The first milestone is trustworthy data.
    ```
 
 2. Install `userscripts/bmg-capture.user.js` in Torn PDA or a userscript manager.
-3. Manually open one football game. The script never opens a game, navigates,
-   scrolls to a pick, refreshes the page, fills a stake, or places a wager.
-4. Press **Expand + capture**. That single foreground action activates the open
-   event's **Show additional betting options** controls, waits for the markets
-   to render, and saves the odds locally. Press **Export outbox** when ready;
+3. On Bookie, manually open one football game. The script never navigates
+   between slate games, scrolls to a pick, refreshes the page, fills a stake,
+   or places a wager. On My Bets, the capture button opens only the first
+   currently visible result row.
+4. Press **Expand + capture**. On Bookie, that single foreground action activates
+   the open event's **Show additional betting options** controls. On **My Bets**,
+   it opens the first visible row, waits for its detail panel, and activates its
+   additional-options controls. It then saves the loaded odds and settlement
+   information locally. Press **Export outbox** when ready;
    the export remains on your device until you choose to send it for import.
 5. Import any exported capture and inspect the result:
 

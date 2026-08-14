@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         BMG One-Click Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.5.1
-// @description  Expand the already-open Torn football event and capture its loaded odds after one foreground click
+// @version      0.6.0
+// @description  Open and expand one visible Torn football event or My Bets row, then capture it after one foreground click
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
 // @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
@@ -20,6 +20,7 @@
     const STORE_NAME = 'captures';
     const PANEL_ID = 'bmg-capture-panel';
     const FOOTBALL_ONLY = true;
+    const MY_BETS_OPEN_TIMEOUT_MS = 12000;
 
     function isBookiePage() {
         try {
@@ -139,6 +140,11 @@
             card.querySelector('a[href*="#/"]')?.getAttribute('href') || ''
         ];
         for (const href of hrefs) {
+            const myBetsMatch = String(href).match(/#\/your-bets\/([^/?#]+)/i);
+            if (myBetsMatch) {
+                const sport = canonical(card.querySelector('li.game')?.getAttribute('title')) || 'unknown';
+                return { sport, source_event_id: myBetsMatch[1], href };
+            }
             const match = String(href).match(/#\/([^/]+)\/([^/?#]+)/i);
             if (match) return { sport: canonical(match[1]) || 'unknown', source_event_id: match[2], href };
         }
@@ -332,20 +338,11 @@
         });
     }
 
-    async function expandOpenEvent() {
-        if (document.visibilityState !== 'visible') {
-            throw new Error('Bring Torn Bookie to the foreground before expanding markets.');
-        }
-        const cards = activeEventCards();
-        if (!cards.length) throw new Error('Manually open one Bookie event first.');
-        if (FOOTBALL_ONLY && !isFootballCard(cards[0])) {
-            throw new Error('BMG is currently scoped to Football only.');
-        }
-
+    async function expandAdditionalMarkets(cards, timeoutMs = 12000) {
         let currentCards = cards;
         let controlsActivated = 0;
         const activatedControlKeys = new Set();
-        const expansionDeadline = Date.now() + 12000;
+        const expansionDeadline = Date.now() + timeoutMs;
         for (let round = 0; round < 4; round += 1) {
             const pendingControls = currentCards.flatMap(card => {
                 const sourceId = routeDetails(card).source_event_id;
@@ -369,6 +366,101 @@
             if (Date.now() >= expansionDeadline) break;
         }
         return { cards: currentCards, controlsActivated };
+    }
+
+    async function expandOpenEvent() {
+        if (document.visibilityState !== 'visible') {
+            throw new Error('Bring Torn Bookie to the foreground before expanding markets.');
+        }
+        const cards = activeEventCards();
+        if (!cards.length) throw new Error('Manually open one Bookie event first.');
+        if (FOOTBALL_ONLY && !isFootballCard(cards[0])) {
+            throw new Error('BMG is currently scoped to Football only.');
+        }
+
+        return expandAdditionalMarkets(cards);
+    }
+
+    function myBetsLinks() {
+        return [...new Set(Array.from(document.querySelectorAll(
+            'a[href*="#/your-bets/"], a[href*="/your-bets/"]'
+        )))];
+    }
+
+    function myBetSourceId(link) {
+        return String(link?.getAttribute('href') || '').match(/#\/your-bets\/([^/?#]+)/i)?.[1] || '';
+    }
+
+    function isVisibleControl(element) {
+        if (!element) return false;
+        if (document.documentElement.dataset.bmgTestFixture === 'true') return true;
+        const style = getComputedStyle(element);
+        return style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && element.getClientRects().length > 0;
+    }
+
+    function myBetCard(sourceId) {
+        const cards = Array.from(document.querySelectorAll('li.c-pointer'));
+        return cards.find(card => routeDetails(card).source_event_id === sourceId) || null;
+    }
+
+    function waitForMyBetCard(sourceId, timeoutMs = MY_BETS_OPEN_TIMEOUT_MS) {
+        return new Promise((resolve, reject) => {
+            let settleTimer = null;
+            const readyCard = () => {
+                const card = myBetCard(sourceId);
+                if (!card?.classList.contains('active')) return null;
+                return card.querySelector('.info-wrap ul.bets-wrap li.bets') ? card : null;
+            };
+            const finish = card => {
+                observer.disconnect();
+                clearTimeout(timeoutTimer);
+                if (settleTimer) clearTimeout(settleTimer);
+                resolve(card);
+            };
+            const check = () => {
+                const card = readyCard();
+                if (!card) return;
+                if (settleTimer) clearTimeout(settleTimer);
+                settleTimer = setTimeout(() => finish(card), 350);
+            };
+            const observer = new MutationObserver(check);
+            observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+            const timeoutTimer = setTimeout(() => {
+                observer.disconnect();
+                if (settleTimer) clearTimeout(settleTimer);
+                reject(new Error('The My Bets detail did not finish opening. Tap the bet row once, then try Capture again.'));
+            }, timeoutMs);
+            check();
+        });
+    }
+
+    async function openAndExpandMyBet() {
+        if (document.visibilityState !== 'visible') {
+            throw new Error('Bring Torn My Bets to the foreground before capturing.');
+        }
+        const links = myBetsLinks().filter(isVisibleControl);
+        if (!links.length) {
+            throw new Error('No visible My Bets rows were found. Open the current results section and try again.');
+        }
+        const activeCard = Array.from(document.querySelectorAll('li.c-pointer.active'))
+            .find(card => myBetSourceId(card.querySelector('a[href*="/your-bets/"]')));
+        const targetLink = activeCard?.querySelector('a[href*="/your-bets/"]') || links[0];
+        const sourceId = myBetSourceId(targetLink);
+        if (!sourceId) throw new Error('The visible My Bets row did not include a game ID.');
+
+        let card = myBetCard(sourceId);
+        const alreadyOpen = card?.classList.contains('active')
+            && card.querySelector('.info-wrap ul.bets-wrap li.bets');
+        if (!alreadyOpen) {
+            targetLink.click();
+            card = await waitForMyBetCard(sourceId);
+        }
+        if (FOOTBALL_ONLY && !isFootballCard(card)) {
+            throw new Error('The first visible My Bets row is not Football. Open a Football bet and try again.');
+        }
+        return expandAdditionalMarkets([card]);
     }
 
     function titleValuesForMyBet(link) {
@@ -437,7 +529,7 @@
     }
 
     function parseMyBets() {
-        const links = Array.from(document.querySelectorAll('a[href*="#/your-bets/"]'));
+        const links = myBetsLinks();
         const occurrences = new Map();
         const bets = [];
         links.forEach(link => {
@@ -478,15 +570,19 @@
         return bets;
     }
 
-    function buildCapture(eventCards = null) {
+    function isMyBetsPage() {
+        return /^#\/your-bets(?:\/|$)/i.test(location.hash) || myBetsLinks().length > 0;
+    }
+
+    function buildCapture(eventCards = null, capturedBets = null) {
         if (document.visibilityState !== 'visible') {
             throw new Error('Bring Torn Bookie to the foreground before capturing.');
         }
         if (!isBookiePage()) throw new Error('Open Torn Bookie first.');
-        const onMyBets = /^#\/your-bets(?:\/|$)/i.test(location.hash);
+        const onMyBets = isMyBetsPage();
         const sourceCards = (eventCards || expandedEventCards()).filter(card => !FOOTBALL_ONLY || isFootballCard(card));
-        const events = onMyBets ? [] : sourceCards.map(parseEventCard).filter(event => event.title && event.markets.length);
-        const bets = onMyBets ? parseMyBets() : [];
+        const events = sourceCards.map(parseEventCard).filter(event => event.title && event.markets.length);
+        const bets = onMyBets ? (capturedBets || parseMyBets()) : [];
         if (!events.length && !bets.length) {
             throw new Error(onMyBets
                 ? 'No visible Pending/Won/Lost/Refunded My Bets rows were found.'
@@ -496,7 +592,9 @@
             schema_version: CAPTURE_SCHEMA,
             capture_id: newId(),
             observed_at: new Date().toISOString(),
-            source: onMyBets ? 'torn-visible-mybets-dom' : 'torn-visible-bookie-dom',
+            source: onMyBets && events.length
+                ? 'torn-visible-mybets-expanded-dom'
+                : onMyBets ? 'torn-visible-mybets-dom' : 'torn-visible-bookie-dom',
             page_url: safePageUrl(),
             page_hash: location.hash,
             events,
@@ -519,11 +617,15 @@
     }
 
     async function expandAndCapture(panel) {
-        const onMyBets = /^#\/your-bets(?:\/|$)/i.test(location.hash);
-        const expansion = onMyBets
-            ? { cards: null, controlsActivated: 0 }
-            : await expandOpenEvent();
-        const capture = buildCapture(expansion.cards);
+        const onMyBets = isMyBetsPage();
+        const betsBeforeExpansion = onMyBets ? parseMyBets() : null;
+        const expansion = onMyBets ? await openAndExpandMyBet() : await expandOpenEvent();
+        const betsAfterExpansion = onMyBets ? parseMyBets() : [];
+        const capturedBets = onMyBets
+            ? [...new Map([...betsBeforeExpansion, ...betsAfterExpansion]
+                .map(bet => [bet.external_bet_id, bet])).values()]
+            : null;
+        const capture = buildCapture(expansion.cards, capturedBets);
         await saveCapture(capture, panel);
         return { capture, controlsActivated: expansion.controlsActivated };
     }
@@ -561,8 +663,8 @@
         panel.id = PANEL_ID;
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:285px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:14px">BMG One-Click Capture <span style="color:#888;font-size:9px">v0.5.1</span></div>
-            <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Open one game yourself. Capture activates its additional-odds controls, waits for them to load, then saves the event. My Bets remains visible-rows only.</div>
+            <div style="font-weight:800;font-size:14px">BMG One-Click Capture <span style="color:#888;font-size:9px">v0.6.0</span></div>
+            <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Bookie: open one game first. My Bets: the first visible row opens automatically. Capture expands additional markets and saves the loaded details.</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px">
                 <button type="button" data-action="capture">Expand + capture</button>
                 <button type="button" data-action="export">Export outbox</button>
@@ -583,7 +685,9 @@
         captureButton.addEventListener('click', async () => {
             captureButton.disabled = true;
             try {
-                show('Expanding the open event and capturing its loaded odds…');
+                show(isMyBetsPage()
+                    ? 'Opening the first visible My Bets row, expanding it, and capturing…'
+                    : 'Expanding the open event and capturing its loaded odds…');
                 const result = await expandAndCapture(panel);
                 const expansionNote = result.controlsActivated
                     ? ` Activated ${result.controlsActivated} additional-options control(s).`

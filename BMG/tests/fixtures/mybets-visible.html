@@ -7,7 +7,7 @@
 <body>
     <main>
         <ul>
-            <li class="c-pointer">
+            <li class="c-pointer" data-expandable-mybets-row>
                 <a href="#/your-bets/9001">
                     <ul class="pop-game">
                         <li class="game" title="Football"></li>
@@ -17,6 +17,27 @@
                         </li>
                     </ul>
                 </a>
+                <div class="info-wrap" style="display:none">
+                    <ul class="bets-wrap clearfix">
+                        <li class="market-name-cell"><span class="bold">3-Way Ordinary time</span></li>
+                        <li class="bets bg-green">
+                            <span class="bet-cell odds">11/10</span>
+                            <span class="bet-cell odds decimal">Multiplier: x2.10</span>
+                            <span class="bet-cell result">North City</span>
+                        </li>
+                        <li class="bets">
+                            <span class="bet-cell odds">2/1</span>
+                            <span class="bet-cell odds decimal">Multiplier: x3.00</span>
+                            <span class="bet-cell result">Draw</span>
+                        </li>
+                        <li class="bets">
+                            <span class="bet-cell odds">5/2</span>
+                            <span class="bet-cell odds decimal">Multiplier: x3.50</span>
+                            <span class="bet-cell result">South United</span>
+                        </li>
+                    </ul>
+                    <button type="button" data-additional>Show 1 additional betting options</button>
+                </div>
             </li>
             <li class="c-pointer">
                 <a href="#/your-bets/9002">
@@ -33,6 +54,25 @@
             </li>
         </ul>
     </main>
+    <script>
+        document.querySelector('[data-expandable-mybets-row] > a').addEventListener('click', event => {
+            event.preventDefault();
+            const row = event.currentTarget.closest('li.c-pointer');
+            row.classList.add('active');
+            row.querySelector('.info-wrap').style.display = 'block';
+            history.replaceState(null, '', event.currentTarget.getAttribute('href'));
+        });
+        document.querySelector('[data-additional]').addEventListener('click', event => {
+            const market = document.createElement('ul');
+            market.className = 'bets-wrap clearfix';
+            market.innerHTML = `
+                <li class="market-name-cell"><span class="bold">Both Teams To Score Ordinary time</span></li>
+                <li class="bets"><span class="bet-cell odds">4/5</span><span class="bet-cell odds decimal">Multiplier: x1.80</span><span class="bet-cell result">Yes</span></li>
+                <li class="bets"><span class="bet-cell odds">1/1</span><span class="bet-cell odds decimal">Multiplier: x2.00</span><span class="bet-cell result">No</span></li>`;
+            event.currentTarget.before(market);
+            event.currentTarget.remove();
+        });
+    </script>
     <script src="../../userscripts/bmg-capture.user.js"></script>
 </body>
 </html>

@@ -47,6 +47,10 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertIn("Expand + capture", script)
         self.assertIn("expandAndCapture(panel)", script)
         self.assertIn("controls.forEach(control => control.click())", script)
+        self.assertIn("async function openAndExpandMyBet()", script)
+        self.assertIn("targetLink.click()", script)
+        self.assertIn("await waitForMyBetCard(sourceId)", script)
+        self.assertIn("return expandAdditionalMarkets([card])", script)
         self.assertIn("const observer = new MutationObserver(scheduleFinish)", script)
         for prohibited in (
             "PICKS_URL",
