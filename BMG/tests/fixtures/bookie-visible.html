@@ -10,7 +10,7 @@
             <a href="#/your-bets/8999">Retained hidden My Bets row</a>
         </div>
         <ul>
-            <li class="c-pointer active">
+            <li class="c-pointer active" data-event-id="9001">
                 <a href="#/football/9001">
                     <ul class="pop-game">
                         <li class="game" title="Football"></li>
@@ -53,6 +53,24 @@
                     <button type="button" id="additional-options">Show 2 additional betting options</button>
                 </div>
             </li>
+            <li class="c-pointer" data-event-id="9002">
+                <a href="#/football/9002">
+                    <ul class="pop-game">
+                        <li class="game" title="Football"></li>
+                        <li class="matchName"><p title="East FC v West FC - Test Cup">East FC v West FC</p></li>
+                        <li class="state-wrap"><span class="state" title="Due to start at 20:00 - 13/08/2026 TCT">Due to start</span></li>
+                    </ul>
+                </a>
+                <div class="info-wrap" style="display:none">
+                    <ul class="bets-wrap">
+                        <li class="market-name-cell"><span class="bold">3-Way Ordinary time</span></li>
+                        <li class="bets"><span class="bet-cell result">East FC</span><span class="bet-cell odds decimal">x2.30</span></li>
+                        <li class="bets"><span class="bet-cell result">Draw</span><span class="bet-cell odds decimal">x3.00</span></li>
+                        <li class="bets"><span class="bet-cell result">West FC</span><span class="bet-cell odds decimal">x3.10</span></li>
+                    </ul>
+                    <button type="button" id="additional-options-2">Show 1 additional betting options</button>
+                </div>
+            </li>
         </ul>
     </main>
     <script>
@@ -74,6 +92,32 @@
             `);
             event.currentTarget.remove();
         }, { once: true });
+        document.getElementById('additional-options-2').addEventListener('click', event => {
+            event.currentTarget.insertAdjacentHTML('beforebegin', `
+                <ul class="bets-wrap">
+                    <li class="market-name-cell"><span class="bold">Over/Under 2.5 Total Goals Ordinary time</span></li>
+                    <li class="bets"><span class="bet-cell result">Over 2.5</span><span class="bet-cell odds decimal">x1.95</span></li>
+                    <li class="bets"><span class="bet-cell result">Under 2.5</span><span class="bet-cell odds decimal">x1.85</span></li>
+                </ul>
+            `);
+            event.currentTarget.remove();
+        }, { once: true });
+        document.querySelectorAll('li.c-pointer[data-event-id] > a').forEach(link => {
+            link.addEventListener('click', event => {
+                event.preventDefault();
+                const selected = event.currentTarget.closest('li.c-pointer');
+                const wasOpen = selected.classList.contains('active');
+                document.querySelectorAll('li.c-pointer[data-event-id]').forEach(card => {
+                    card.classList.remove('active');
+                    card.querySelector('.info-wrap').style.display = 'none';
+                });
+                if (!wasOpen) {
+                    selected.classList.add('active');
+                    selected.querySelector('.info-wrap').style.display = 'block';
+                    history.replaceState(null, '', event.currentTarget.getAttribute('href'));
+                }
+            });
+        });
     </script>
     <script src="../../userscripts/bmg-capture.user.js"></script>
 </body>

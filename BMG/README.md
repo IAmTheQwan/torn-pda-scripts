@@ -21,13 +21,15 @@ state. The first milestone is trustworthy data.
    ```
 
 2. Install `userscripts/bmg-capture.user.js` in Torn PDA or a userscript manager.
-3. Manually open the exact football game or **My Bets** row you want. The script
-   never chooses the first row, navigates between games, scrolls to a pick,
-   refreshes the page, fills a stake, or places a wager.
-4. Press **Expand + capture**. That single foreground action follows the row you
-   selected, activates its **Show additional betting options** controls, and
-   saves the loaded odds and settlement information. **Capture visible** retains
-   the older direct-snapshot behavior for the rows already on screen. Press
+3. On the Football Bookie slate, press **Batch expand + capture**. That direct
+   foreground action processes up to 30 rendered football rows in page order:
+   open one game, activate its **Show additional betting options** controls,
+   save it, close it, and continue to the next rendered row. It does not scroll,
+   refresh, run on a timer, fill a stake, or place a wager.
+4. On **My Bets**, manually open the exact row you want before pressing the same
+   button. **Capture visible** retains the older direct-snapshot behavior for
+   the rows already on screen. **Copy last batch** copies only the captures made
+   by the most recent button run in the current page session. Press
    **Export outbox** when ready;
    the export remains on your device until you choose to send it for import.
 5. Import any exported capture and inspect the result:

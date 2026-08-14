@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         BMG One-Click Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.6.2
-// @description  Expand and capture the Torn football event or My Bets row you manually selected
+// @version      0.7.0
+// @description  Sequentially open, expand, capture, and close the visible Torn football slate after one foreground click
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
 // @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
@@ -21,6 +21,9 @@
     const PANEL_ID = 'bmg-capture-panel';
     const FOOTBALL_ONLY = true;
     const MY_BETS_OPEN_TIMEOUT_MS = 12000;
+    const BOOKIE_EVENT_OPEN_TIMEOUT_MS = 12000;
+    const BOOKIE_EVENT_CLOSE_TIMEOUT_MS = 4000;
+    const MAX_BOOKIE_BATCH_EVENTS = 30;
 
     function isBookiePage() {
         try {
@@ -299,6 +302,15 @@
         return (activeCards.length ? activeCards : expandedCards).slice(0, 1);
     }
 
+    function isRenderedElement(element) {
+        if (!element) return false;
+        if (document.documentElement.dataset.bmgTestFixture === 'true') return true;
+        const style = getComputedStyle(element);
+        return style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && element.getClientRects().length > 0;
+    }
+
     function isFootballCard(card) {
         return routeDetails(card).sport === 'football';
     }
@@ -379,6 +391,152 @@
         }
 
         return expandAdditionalMarkets(cards);
+    }
+
+    function bookieCardLink(card, sourceId = '') {
+        return Array.from(card?.querySelectorAll?.('a[href*="#/"]') || []).find(link => {
+            const route = String(link.getAttribute('href') || '').match(/#\/([^/]+)\/([^/?#]+)/i);
+            return route
+                && canonical(route[1]) === 'football'
+                && (!sourceId || route[2] === sourceId);
+        }) || null;
+    }
+
+    function bookieBatchSourceIds() {
+        const ids = [];
+        const seen = new Set();
+        Array.from(document.querySelectorAll('li.c-pointer')).forEach(card => {
+            if (!isRenderedElement(card)) return;
+            const link = bookieCardLink(card);
+            const route = String(link?.getAttribute('href') || '').match(/#\/football\/([^/?#]+)/i);
+            const sourceId = route?.[1] || '';
+            if (!sourceId || seen.has(sourceId)) return;
+            seen.add(sourceId);
+            ids.push(sourceId);
+        });
+        return ids.slice(0, MAX_BOOKIE_BATCH_EVENTS);
+    }
+
+    function bookieCardForSourceId(sourceId) {
+        return Array.from(document.querySelectorAll('li.c-pointer'))
+            .find(card => Boolean(bookieCardLink(card, sourceId))) || null;
+    }
+
+    function bookieCardIsOpen(card) {
+        if (!card?.classList.contains('active')) return false;
+        const info = card.querySelector('.info-wrap');
+        return Boolean(info?.querySelector('ul.bets-wrap li.bets'))
+            && (info.style.display !== 'none' && getComputedStyle(info).display !== 'none');
+    }
+
+    function waitForBookieCardOpen(sourceId, timeoutMs = BOOKIE_EVENT_OPEN_TIMEOUT_MS) {
+        return new Promise((resolve, reject) => {
+            let settleTimer = null;
+            const cleanup = () => {
+                observer.disconnect();
+                clearTimeout(timeoutTimer);
+                if (settleTimer) clearTimeout(settleTimer);
+            };
+            const check = () => {
+                const card = bookieCardForSourceId(sourceId);
+                if (!bookieCardIsOpen(card)) return;
+                if (settleTimer) clearTimeout(settleTimer);
+                settleTimer = setTimeout(() => {
+                    cleanup();
+                    resolve(bookieCardForSourceId(sourceId) || card);
+                }, 350);
+            };
+            const observer = new MutationObserver(check);
+            observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+            const timeoutTimer = setTimeout(() => {
+                cleanup();
+                reject(new Error(`Football event ${sourceId} did not finish opening.`));
+            }, timeoutMs);
+            check();
+        });
+    }
+
+    function waitForBookieCardClosed(sourceId, timeoutMs = BOOKIE_EVENT_CLOSE_TIMEOUT_MS) {
+        return new Promise(resolve => {
+            const finish = () => {
+                observer.disconnect();
+                clearTimeout(timeoutTimer);
+                resolve();
+            };
+            const check = () => {
+                const card = bookieCardForSourceId(sourceId);
+                if (!card || !card.classList.contains('active')) finish();
+            };
+            const observer = new MutationObserver(check);
+            observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+            const timeoutTimer = setTimeout(finish, timeoutMs);
+            check();
+        });
+    }
+
+    async function openBookieCard(sourceId) {
+        let card = bookieCardForSourceId(sourceId);
+        if (!card) throw new Error(`Football event ${sourceId} is no longer visible.`);
+        if (bookieCardIsOpen(card)) return card;
+        const link = bookieCardLink(card, sourceId);
+        if (!link) throw new Error(`Football event ${sourceId} has no open control.`);
+        link.click();
+        card = await waitForBookieCardOpen(sourceId);
+        return card;
+    }
+
+    async function closeBookieCard(sourceId) {
+        const card = bookieCardForSourceId(sourceId);
+        if (!card?.classList.contains('active')) return;
+        const link = bookieCardLink(card, sourceId);
+        if (!link) return;
+        link.click();
+        await waitForBookieCardClosed(sourceId);
+    }
+
+    async function expandAndCaptureBookieBatch(panel, progress = () => {}) {
+        if (document.visibilityState !== 'visible') {
+            throw new Error('Bring Torn Bookie to the foreground before starting the batch.');
+        }
+        const sourceIds = bookieBatchSourceIds();
+        if (!sourceIds.length) throw new Error('No rendered Football games were found on this Bookie page.');
+
+        const captures = [];
+        const failures = [];
+        let controlsActivated = 0;
+        for (let index = 0; index < sourceIds.length; index += 1) {
+            const sourceId = sourceIds[index];
+            if (document.visibilityState !== 'visible') {
+                failures.push({ source_event_id: sourceId, error: 'Page left the foreground.' });
+                break;
+            }
+            progress(`Game ${index + 1} of ${sourceIds.length}: opening, expanding, and capturing…`);
+            try {
+                const card = await openBookieCard(sourceId);
+                const expansion = await expandAdditionalMarkets([card]);
+                controlsActivated += expansion.controlsActivated;
+                const capture = buildCapture(expansion.cards);
+                await saveCapture(capture, panel);
+                captures.push(capture);
+            } catch (error) {
+                failures.push({ source_event_id: sourceId, error: error.message || String(error) });
+            } finally {
+                try {
+                    await closeBookieCard(sourceId);
+                } catch (error) {
+                    failures.push({ source_event_id: sourceId, error: `Close failed: ${error.message || error}` });
+                }
+            }
+        }
+        if (captures.length) panel.dataset.bmgLastBatch = JSON.stringify(captures);
+        return {
+            batch: true,
+            capture: captures[captures.length - 1] || null,
+            captures,
+            failures,
+            controlsActivated,
+            visibleOnly: false
+        };
     }
 
     function myBetsLinks() {
@@ -613,15 +771,17 @@
         return capture;
     }
 
-    async function expandAndCapture(panel) {
+    async function expandAndCapture(panel, progress = () => {}) {
         const onMyBets = isMyBetsPage();
+        if (!onMyBets) return expandAndCaptureBookieBatch(panel, progress);
         const betsBeforeExpansion = onMyBets ? parseMyBets() : null;
         if (onMyBets && !selectedMyBetCard()) {
             const capture = buildCapture([], betsBeforeExpansion);
             await saveCapture(capture, panel);
+            panel.dataset.bmgLastBatch = JSON.stringify([capture]);
             return { capture, controlsActivated: 0, visibleOnly: true };
         }
-        const expansion = onMyBets ? await expandSelectedMyBet() : await expandOpenEvent();
+        const expansion = await expandSelectedMyBet();
         const betsAfterExpansion = onMyBets ? parseMyBets() : [];
         const capturedBets = onMyBets
             ? [...new Map([...betsBeforeExpansion, ...betsAfterExpansion]
@@ -629,6 +789,7 @@
             : null;
         const capture = buildCapture(expansion.cards, capturedBets);
         await saveCapture(capture, panel);
+        panel.dataset.bmgLastBatch = JSON.stringify([capture]);
         return { capture, controlsActivated: expansion.controlsActivated, visibleOnly: false };
     }
 
@@ -636,6 +797,7 @@
         const onMyBets = isMyBetsPage();
         const capture = buildCapture(onMyBets ? [] : null);
         await saveCapture(capture, panel);
+        panel.dataset.bmgLastBatch = JSON.stringify([capture]);
         return capture;
     }
 
@@ -672,13 +834,13 @@
         panel.id = PANEL_ID;
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:285px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:14px">BMG One-Click Capture <span style="color:#888;font-size:9px">v0.6.2</span></div>
-            <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Tap the exact game or My Bets row first. Expand + capture follows that selection and opens its additional markets. Capture visible saves the rows already shown.</div>
+            <div style="font-weight:800;font-size:14px">BMG One-Click Capture <span style="color:#888;font-size:9px">v0.7.0</span></div>
+            <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Football: Batch capture opens each rendered game in order, expands its additional markets, saves it, and closes it. My Bets: tap the exact row first. No scrolling, refreshing, timers, or betting.</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px">
-                <button type="button" data-action="expand-capture">Expand + capture</button>
+                <button type="button" data-action="expand-capture">Batch expand + capture</button>
                 <button type="button" data-action="capture">Capture visible</button>
                 <button type="button" data-action="export">Export outbox</button>
-                <button type="button" data-action="copy">Copy latest</button>
+                <button type="button" data-action="copy">Copy last batch</button>
             </div>
             <div data-status style="margin-top:7px;color:#8ecbff;font-size:9px">Ready. One foreground action only.</div>
         `;
@@ -697,8 +859,16 @@
             try {
                 show(isMyBetsPage()
                     ? 'Expanding the selected My Bets row and capturing…'
-                    : 'Expanding the open event and capturing its loaded odds…');
-                const result = await expandAndCapture(panel);
+                    : 'Starting the rendered Football games batch…');
+                const result = await expandAndCapture(panel, message => show(message));
+                if (result.batch) {
+                    const marketTotal = result.captures.reduce(
+                        (sum, capture) => sum + capture.events.reduce((eventSum, event) => eventSum + event.markets.length, 0),
+                        0
+                    );
+                    show(`Batch finished: ${result.captures.length} game(s), ${marketTotal} market(s), ${result.controlsActivated} additional control(s), ${result.failures.length} failure(s).`);
+                    return;
+                }
                 const expansionNote = result.controlsActivated
                     ? ` Activated ${result.controlsActivated} additional-options control(s).`
                     : '';
@@ -741,11 +911,15 @@
 
         panel.querySelector('[data-action="copy"]').addEventListener('click', async () => {
             try {
-                const captures = await getCaptures();
-                const latest = captures[captures.length - 1];
-                if (!latest) throw new Error('The outbox is empty.');
-                await copyText(JSON.stringify({ schema_version: 'bmg.export.v1', captures: [latest] }, null, 2));
-                show('Copied the latest capture as JSON.');
+                let captures = JSON.parse(panel.dataset.bmgLastBatch || '[]');
+                if (!captures.length) {
+                    const outbox = await getCaptures();
+                    const latest = outbox[outbox.length - 1];
+                    if (latest) captures = [latest];
+                }
+                if (!captures.length) throw new Error('The outbox is empty.');
+                await copyText(JSON.stringify({ schema_version: 'bmg.export.v1', captures }, null, 2));
+                show(`Copied the last batch (${captures.length} capture(s)) as JSON.`);
             } catch (error) {
                 show(error.message || String(error), true);
             }

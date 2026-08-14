@@ -42,15 +42,14 @@ loads nor renders it.
 The userscript observes only:
 
 - Torn's currently visible Bookie or My Bets page;
-- event cards and market rows Torn loaded after the player manually opened the
-  event;
-- a direct **Expand + capture** click, which activates only that open event's
-  additional-options controls and waits for their market rows to render.
+- rendered football event cards and the market rows Torn loads after the direct
+  **Batch expand + capture** action opens each card;
+- the finite open, expand, capture, close sequence for up to 30 rendered rows.
 
-It does not highlight or scroll to picks, open events, cycle pages, refresh
-Torn, fill a stake, operate from a hidden tab, or place a bet. Its only Torn
-control activation is the finite additional-options expansion tied to the
-player's foreground click. A temporary observer waits for that event's markets
+It does not highlight or scroll to picks, cycle pages, refresh Torn, fill a
+stake, operate from a hidden tab, or place a bet. Its only Torn control
+activation is the bounded foreground open/close sequence and finite additional-
+options expansion tied to the player's click. A temporary observer waits for each event's markets
 and disconnects after settlement or an eight-second ceiling. IndexedDB stores
 the resulting local snapshot; **Export outbox** is another direct user action.
 
