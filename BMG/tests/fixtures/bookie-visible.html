@@ -113,8 +113,19 @@
                 if (!wasOpen) {
                     selected.classList.add('active');
                     selected.querySelector('.info-wrap').style.display = 'block';
-                    history.replaceState(null, '', event.currentTarget.getAttribute('href'));
+                    const openedHref = event.currentTarget.getAttribute('href');
+                    history.replaceState(null, '', openedHref);
+                    if (selected.dataset.eventId === '9002') {
+                        event.currentTarget.removeAttribute('href');
+                    }
                 }
+            });
+        });
+        window.addEventListener('hashchange', () => {
+            if (location.hash !== '#/football/') return;
+            document.querySelectorAll('li.c-pointer[data-event-id]').forEach(card => {
+                card.classList.remove('active');
+                card.querySelector('.info-wrap').style.display = 'none';
             });
         });
     </script>

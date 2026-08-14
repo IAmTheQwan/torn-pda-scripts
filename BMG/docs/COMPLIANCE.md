@@ -8,7 +8,7 @@ Last verified against official sources: 2026-08-13.
 
 Operational note: after account scrutiny was reported on 2026-08-13, BMG
 removed Torn-page pick delivery, highlighting, scrolling, refreshes, and
-background capture. Version 0.7.1 performs a finite foreground sequence after
+background capture. Version 0.8.0 performs a finite foreground sequence after
 the player presses **Batch expand + capture**: it opens each already-rendered
 football row, expands its markets, captures it, closes it, and stops after the
 loaded list (or 30 rows). That design choice is not a claim of permission; disable the userscript entirely if Torn

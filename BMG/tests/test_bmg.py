@@ -50,9 +50,12 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertIn("expandAndCapture(panel, message => show(message))", script)
         self.assertIn("controls.forEach(control => control.click())", script)
         self.assertIn("async function expandAndCaptureBookieBatch", script)
-        self.assertIn("const sourceIds = bookieBatchSourceIds()", script)
-        self.assertIn("const card = await openBookieCard(sourceId)", script)
-        self.assertIn("await closeBookieCard(sourceId)", script)
+        self.assertIn("const hrefs = bookieBatchHrefs()", script)
+        self.assertIn("function findFootballItemForHref(href)", script)
+        self.assertIn("if (location.hash === href)", script)
+        self.assertIn("const card = await openBookieHref(href)", script)
+        self.assertIn("await closeBookieReview(lastOpenedHref)", script)
+        self.assertIn("location.hash = '#/football/'", script)
         self.assertIn("panel.dataset.bmgLastBatch = JSON.stringify(captures)", script)
         self.assertIn("async function expandSelectedMyBet()", script)
         self.assertIn("function selectedMyBetCard()", script)
@@ -62,7 +65,7 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertIn("return /^#\\/your-bets(?:\\/|$)/i.test(location.hash);", script)
         self.assertIn("const observer = new MutationObserver(scheduleFinish)", script)
         self.assertIn("currentControlCount >= initialControlCount", script)
-        self.assertIn("if (bookieCardIsOpen(card)) return;", script)
+        self.assertIn("if (bookieCardIsOpen(card)) return card;", script)
         for prohibited in (
             "PICKS_URL",
             "fetch(",
