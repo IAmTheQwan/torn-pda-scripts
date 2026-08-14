@@ -41,21 +41,20 @@ class BmgDatabaseTests(unittest.TestCase):
     def count(self, table: str) -> int:
         return int(self.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
 
-    def test_torn_userscript_is_manual_capture_only(self) -> None:
+    def test_torn_userscript_has_bounded_one_click_capture(self) -> None:
         script = MANUAL_CAPTURE_USERSCRIPT.read_text(encoding="utf-8")
-        self.assertIn("@name         BMG Manual Capture", script)
-        self.assertIn("Capture visible", script)
-        self.assertIn("buildCapture()", script)
+        self.assertIn("@name         BMG One-Click Capture", script)
+        self.assertIn("Expand + capture", script)
+        self.assertIn("expandAndCapture(panel)", script)
+        self.assertIn("controls.forEach(control => control.click())", script)
+        self.assertIn("const observer = new MutationObserver(scheduleFinish)", script)
         for prohibited in (
             "PICKS_URL",
             "fetch(",
-            "MutationObserver",
-            "expandAndCapture",
-            "expandEventCards",
-            "controls.forEach",
             "highlightPicks",
             "scrollIntoView",
             "setInterval",
+            "window.addEventListener('hashchange'",
         ):
             self.assertNotIn(prohibited, script)
 

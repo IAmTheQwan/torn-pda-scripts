@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         BMG Manual Capture
+// @name         BMG One-Click Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.5.0
-// @description  Capture only the Torn Bookie odds or My Bets rows already visible when you press Capture
+// @version      0.5.1
+// @description  Expand the already-open Torn football event and capture its loaded odds after one foreground click
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
 // @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
@@ -287,8 +287,88 @@
         });
     }
 
+    function activeEventCards() {
+        const expandedCards = expandedEventCards();
+        const activeCards = expandedCards.filter(card => card.classList.contains('active'));
+        return (activeCards.length ? activeCards : expandedCards).slice(0, 1);
+    }
+
     function isFootballCard(card) {
         return routeDetails(card).sport === 'football';
+    }
+
+    function cardsForSourceIds(sourceIds, fallbackCards = []) {
+        const allCards = Array.from(document.querySelectorAll('li.c-pointer'));
+        return sourceIds.map((sourceId, index) => {
+            if (!sourceId) return fallbackCards[index];
+            return allCards.find(card => routeDetails(card).source_event_id === sourceId) || fallbackCards[index];
+        }).filter(Boolean);
+    }
+
+    function marketCount(cards) {
+        return cards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0);
+    }
+
+    function waitForAdditionalMarkets(cards, initialMarketCount, timeoutMs = 8000) {
+        return new Promise(resolve => {
+            let settleTimer = null;
+            const sourceIds = cards.map(card => routeDetails(card).source_event_id);
+            const currentCards = () => cardsForSourceIds(sourceIds, cards);
+            const finish = () => {
+                observer.disconnect();
+                clearTimeout(timeoutTimer);
+                if (settleTimer) clearTimeout(settleTimer);
+                resolve(currentCards());
+            };
+            const scheduleFinish = () => {
+                if (marketCount(currentCards()) <= initialMarketCount) return;
+                if (settleTimer) clearTimeout(settleTimer);
+                settleTimer = setTimeout(finish, 500);
+            };
+            const observer = new MutationObserver(scheduleFinish);
+            observer.observe(document.body, { childList: true, subtree: true });
+            const timeoutTimer = setTimeout(finish, timeoutMs);
+            scheduleFinish();
+        });
+    }
+
+    async function expandOpenEvent() {
+        if (document.visibilityState !== 'visible') {
+            throw new Error('Bring Torn Bookie to the foreground before expanding markets.');
+        }
+        const cards = activeEventCards();
+        if (!cards.length) throw new Error('Manually open one Bookie event first.');
+        if (FOOTBALL_ONLY && !isFootballCard(cards[0])) {
+            throw new Error('BMG is currently scoped to Football only.');
+        }
+
+        let currentCards = cards;
+        let controlsActivated = 0;
+        const activatedControlKeys = new Set();
+        const expansionDeadline = Date.now() + 12000;
+        for (let round = 0; round < 4; round += 1) {
+            const pendingControls = currentCards.flatMap(card => {
+                const sourceId = routeDetails(card).source_event_id;
+                return additionalMarketControls(card).map(control => ({
+                    control,
+                    key: `${sourceId}|${canonical(control.textContent)}`
+                }));
+            }).filter(item => !activatedControlKeys.has(item.key));
+            const controls = pendingControls.map(item => item.control);
+            if (!controls.length) break;
+            pendingControls.forEach(item => activatedControlKeys.add(item.key));
+            const initialMarketCount = marketCount(currentCards);
+            controls.forEach(control => control.click());
+            controlsActivated += controls.length;
+            const remainingMs = Math.max(500, expansionDeadline - Date.now());
+            currentCards = await waitForAdditionalMarkets(
+                currentCards,
+                initialMarketCount,
+                Math.min(8000, remainingMs)
+            );
+            if (Date.now() >= expansionDeadline) break;
+        }
+        return { cards: currentCards, controlsActivated };
     }
 
     function titleValuesForMyBet(link) {
@@ -438,6 +518,16 @@
         return capture;
     }
 
+    async function expandAndCapture(panel) {
+        const onMyBets = /^#\/your-bets(?:\/|$)/i.test(location.hash);
+        const expansion = onMyBets
+            ? { cards: null, controlsActivated: 0 }
+            : await expandOpenEvent();
+        const capture = buildCapture(expansion.cards);
+        await saveCapture(capture, panel);
+        return { capture, controlsActivated: expansion.controlsActivated };
+    }
+
     function downloadJson(filename, value) {
         const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
@@ -471,14 +561,14 @@
         panel.id = PANEL_ID;
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:285px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:14px">BMG Manual Capture <span style="color:#888;font-size:9px">v0.5.0</span></div>
-            <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Open the game and every odds section yourself. BMG does nothing until you press Capture; it only reads rows already visible on this page.</div>
+            <div style="font-weight:800;font-size:14px">BMG One-Click Capture <span style="color:#888;font-size:9px">v0.5.1</span></div>
+            <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Open one game yourself. Capture activates its additional-odds controls, waits for them to load, then saves the event. My Bets remains visible-rows only.</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px">
-                <button type="button" data-action="capture">Capture visible</button>
+                <button type="button" data-action="capture">Expand + capture</button>
                 <button type="button" data-action="export">Export outbox</button>
                 <button type="button" data-action="copy">Copy latest</button>
             </div>
-            <div data-status style="margin-top:7px;color:#8ecbff;font-size:9px">Ready. Manual foreground actions only.</div>
+            <div data-status style="margin-top:7px;color:#8ecbff;font-size:9px">Ready. One foreground action only.</div>
         `;
         panel.querySelectorAll('button').forEach(button => {
             button.style.cssText = 'background:#2d5d7b;color:#fff;border:1px solid #4a8eb8;border-radius:4px;padding:6px;cursor:pointer;font-size:10px';
@@ -489,13 +579,20 @@
             status.style.color = error ? '#ff8b8b' : '#8ecbff';
         };
 
-        panel.querySelector('[data-action="capture"]').addEventListener('click', async () => {
+        const captureButton = panel.querySelector('[data-action="capture"]');
+        captureButton.addEventListener('click', async () => {
+            captureButton.disabled = true;
             try {
-                const capture = buildCapture();
-                await saveCapture(capture, panel);
-                show(captureSummary(capture));
+                show('Expanding the open event and capturing its loaded odds…');
+                const result = await expandAndCapture(panel);
+                const expansionNote = result.controlsActivated
+                    ? ` Activated ${result.controlsActivated} additional-options control(s).`
+                    : '';
+                show(`${captureSummary(result.capture)}${expansionNote}`);
             } catch (error) {
                 show(error.message || String(error), true);
+            } finally {
+                captureButton.disabled = false;
             }
         });
 
