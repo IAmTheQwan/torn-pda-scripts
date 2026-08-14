@@ -21,13 +21,12 @@ state. The first milestone is trustworthy data.
    ```
 
 2. Install `userscripts/bmg-capture.user.js` in Torn PDA or a userscript manager.
-3. The compact **BMG Picks** panel loads `config/current-picks.json`. Green
-   highlights the recommended game; after you manually open it, gold highlights
-   the exact market option. Red means the live odds fell below the stated
-   minimum and the wager must not be placed.
-4. Capture is now optional and collapsed under **Manual capture tools**. Use
-   **Expand + capture** and **Export outbox** only when a new Torn snapshot is
-   needed.
+3. Manually open one football game and manually expand every odds section you
+   want recorded. The script never opens, expands, scrolls to, highlights, or
+   refreshes Torn content.
+4. Press **Capture visible**, then **Export outbox**. Capturing reads only the
+   rows already rendered in the visible foreground page. The export remains on
+   your device until you choose to send it for import.
 5. Import any exported capture and inspect the result:
 
    ```powershell
@@ -103,6 +102,10 @@ state. The first milestone is trustworthy data.
    `--snapshot-label pre-kickoff`; both runs retain their own cutoffs and prices.
    API-Football `settle-review` refreshes only that run's fixtures and evaluates
    final results. Live or unclear results remain pending.
+
+   Pick recommendations are returned outside Torn after an exported capture is
+   imported and researched. The Torn userscript does not load or display a pick
+   feed.
 
    `model-backtest` freezes a chronological holdout and persists its metrics.
    `score-review` evaluates all normalized ordinary-time football markets with

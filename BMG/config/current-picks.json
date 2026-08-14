@@ -1,23 +1,7 @@
 {
   "schema_version": "bmg.picks.v1",
-  "published_at": "2026-08-14T00:45:00Z",
-  "expires_at": "2026-08-14T16:25:00Z",
-  "message": "One active position from the currently visible Friday football window.",
-  "picks": [
-    {
-      "source_event_id": "5852772",
-      "sport": "football",
-      "event_title": "Cagliari v S.S. Arezzo - Coppa Italia 2026/2027 (Italy Cup 1)",
-      "kickoff_at": "2026-08-14T16:30:00Z",
-      "grade": "A",
-      "stake": 912224,
-      "market_name": "Asian Handicap 2 Ordinary time",
-      "selection_name": "S.S. Arezzo",
-      "selection_display": "S.S. Arezzo +2",
-      "handicap": 2,
-      "target_odds": 1.37,
-      "minimum_odds": 1.33,
-      "note": "Primary position only; do not stack the other Arezzo handicaps."
-    }
-  ]
+  "published_at": "2026-08-14T02:07:23Z",
+  "expires_at": "2026-08-14T02:07:23Z",
+  "message": "Torn-page pick delivery is paused; recommendations are provided outside Torn after manual capture and research.",
+  "picks": []
 }

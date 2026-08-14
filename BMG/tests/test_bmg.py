@@ -24,6 +24,7 @@ import score_model  # noqa: E402
 FIXTURE = PROJECT_DIR / "tests" / "fixtures" / "capture-history-v1.json"
 FLASHSCORE_FIXTURE = PROJECT_DIR / "tests" / "fixtures" / "flashscore-league-v1.json"
 MARKET_ODDS_FIXTURE = PROJECT_DIR / "tests" / "fixtures" / "market-odds-v1.json"
+MANUAL_CAPTURE_USERSCRIPT = PROJECT_DIR / "userscripts" / "bmg-capture.user.js"
 
 
 class BmgDatabaseTests(unittest.TestCase):
@@ -39,6 +40,24 @@ class BmgDatabaseTests(unittest.TestCase):
 
     def count(self, table: str) -> int:
         return int(self.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+    def test_torn_userscript_is_manual_capture_only(self) -> None:
+        script = MANUAL_CAPTURE_USERSCRIPT.read_text(encoding="utf-8")
+        self.assertIn("@name         BMG Manual Capture", script)
+        self.assertIn("Capture visible", script)
+        self.assertIn("buildCapture()", script)
+        for prohibited in (
+            "PICKS_URL",
+            "fetch(",
+            "MutationObserver",
+            "expandAndCapture",
+            "expandEventCards",
+            "controls.forEach",
+            "highlightPicks",
+            "scrollIntoView",
+            "setInterval",
+        ):
+            self.assertNotIn(prohibited, script)
 
     def test_initial_bankroll_and_risk_limits(self) -> None:
         row = bmg.latest_bankroll(self.connection)

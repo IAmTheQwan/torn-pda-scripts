@@ -6,6 +6,12 @@ source. The repository-wide `TORN-SCRIPTING-COMPLIANCE.md` is the baseline.
 
 Last verified against official sources: 2026-08-13.
 
+Operational note: after account scrutiny was reported on 2026-08-13, BMG
+removed Torn-page pick delivery, highlighting, scrolling, automatic expansion,
+and automatic capture. Version 0.5.0 is a manual foreground reader only. That
+design choice is not a claim of permission; disable the userscript entirely if
+Torn staff instructs the player to stop using page readers or userscripts.
+
 - [Torn game rules](https://www.torn.com/rules.php)
 - [Scripting and scraping clarification](https://www.torn.com/forums.php?p=threads&t=16534470)
 - [Torn API documentation and acceptable usage](https://www.torn.com/api.html)
@@ -14,8 +20,6 @@ Last verified against official sources: 2026-08-13.
 
 - Process Torn API data through documented endpoints and access levels.
 - Parse data already loaded on the Torn page the player is actively viewing.
-- From an explicit foreground event click, activate Torn's additional-options
-  control and capture the currently open event.
 - Save and analyze local snapshots after a direct Capture action.
 - Query independent sports data providers under their terms.
 - Perform a finite, visible in-app-browser league check after the player directly
@@ -51,10 +55,14 @@ avoid cache-bypass parameters unless fresh data is genuinely required.
 ## Release checklist
 
 - Every non-API Torn read is tied to the visible page and a direct user action.
+- Opening games and expanding odds sections is performed manually by the player;
+  BMG never activates Torn page controls.
 - Every Flashscore browser batch is tied to a new direct user instruction, remains
   visible, and ends after its stated finite scope. A prior run never schedules the next one.
 - Capture aborts when `document.visibilityState !== "visible"`.
 - No timer, observer, or page lifecycle event makes a Torn request.
+- The Torn userscript makes no network request and performs no pick highlighting,
+  scrolling, navigation, or automatic capture.
 - Export occurs only after a direct user action.
 - Saved observations are labeled with source and timestamp.
 - Analysis never claims certainty from incomplete market coverage.

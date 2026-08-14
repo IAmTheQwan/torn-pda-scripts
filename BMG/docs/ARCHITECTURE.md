@@ -31,11 +31,11 @@ Explicit user request -> visible in-app Flashscore league/match pages
         -> event_match_links -> Torn events, odds, and historical bets
 ```
 
-The userscript makes one read-only request for the public static
-`config/current-picks.json` feed when the Bookie page opens or the player
-presses **Refresh BMG picks**. It never uploads or transmits Torn page data.
-Capture exports remain local and player initiated, keeping failed imports
-recoverable and private Torn data on the device.
+The userscript makes no network request and never uploads or transmits Torn page
+data. Capture exports remain local and player initiated, keeping failed imports
+recoverable and private Torn data on the device. `config/current-picks.json` may
+still be used as an offline planning artifact, but the Torn userscript neither
+loads nor renders it.
 
 ## Capture boundary
 
@@ -43,16 +43,14 @@ The userscript observes only:
 
 - Torn's currently visible Bookie or My Bets page;
 - event cards and market rows Torn loaded after the player manually opened the
-  event; an explicit **Expand active** click may activate Torn's own additional
-  options control for that visible event;
-- a direct BMG capture click from the collapsed manual tools.
+  event and manually expanded Torn's own additional-options controls;
+- a direct **Capture visible** click.
 
-It highlights matching Torn game IDs already present in the rendered page and,
-after the player opens a game, the configured market/selection. It does not open
-events, cycle pages, refresh Torn, fill a stake, operate from a hidden tab, or
-place a bet. Expansion and capture are limited to the player's explicit manual
-tool click. IndexedDB stores the resulting local snapshot; Export outbox is
-another direct user action.
+It does not highlight or scroll to picks, open or expand events, activate Torn
+controls, cycle pages, refresh Torn, fill a stake, operate from a hidden tab, or
+place a bet. A capture is a synchronous read of already-visible DOM state after
+the button press. IndexedDB stores the resulting local snapshot; **Export
+outbox** is another direct user action.
 
 ## Stable identities
 

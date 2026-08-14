@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         BMG Picks
+// @name         BMG Manual Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.4.0
-// @description  Highlight current BMG football picks and keep manual capture tools available on demand
+// @version      0.5.0
+// @description  Capture only the Torn Bookie odds or My Bets rows already visible when you press Capture
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
 // @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
@@ -20,31 +20,6 @@
     const STORE_NAME = 'captures';
     const PANEL_ID = 'bmg-capture-panel';
     const FOOTBALL_ONLY = true;
-    const PICKS_URL = 'https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/config/current-picks.json';
-    const PICK_FEED_SCHEMA = 'bmg.picks.v1';
-    const EMBEDDED_PICK_FEED = {
-        schema_version: PICK_FEED_SCHEMA,
-        published_at: '2026-08-14T00:45:00Z',
-        expires_at: '2026-08-14T16:25:00Z',
-        picks: [{
-            source_event_id: '5852772',
-            sport: 'football',
-            event_title: 'Cagliari v S.S. Arezzo - Coppa Italia 2026/2027 (Italy Cup 1)',
-            kickoff_at: '2026-08-14T16:30:00Z',
-            grade: 'A',
-            stake: 912224,
-            market_name: 'Asian Handicap 2 Ordinary time',
-            selection_name: 'S.S. Arezzo',
-            selection_display: 'S.S. Arezzo +2',
-            handicap: 2,
-            target_odds: 1.37,
-            minimum_odds: 1.33,
-            note: 'Primary position only; do not stack the other Arezzo handicaps.'
-        }]
-    };
-    let pickFeed = window.__BMG_PICK_FEED__ || EMBEDDED_PICK_FEED;
-    let highlightObserver = null;
-    let highlightQueued = false;
 
     function isBookiePage() {
         try {
@@ -312,73 +287,8 @@
         });
     }
 
-    function activeEventCards() {
-        const expandedCards = expandedEventCards();
-        const activeCards = expandedCards.filter(card => card.classList.contains('active'));
-        return (activeCards.length ? activeCards : expandedCards).slice(0, 1);
-    }
-
     function isFootballCard(card) {
         return routeDetails(card).sport === 'football';
-    }
-
-    function cardsForSourceIds(sourceIds, fallbackCards = []) {
-        const allCards = Array.from(document.querySelectorAll('li.c-pointer'));
-        return sourceIds.map((sourceId, index) => {
-            if (!sourceId) return fallbackCards[index];
-            return allCards.find(card => routeDetails(card).source_event_id === sourceId) || fallbackCards[index];
-        }).filter(Boolean);
-    }
-
-    function waitForAdditionalMarkets(cards, initialMarketCount, timeoutMs = 8000) {
-        return new Promise(resolve => {
-            let settleTimer = null;
-            const sourceIds = cards.map(card => routeDetails(card).source_event_id);
-            const currentCards = () => cardsForSourceIds(sourceIds, cards);
-            const finish = () => {
-                observer.disconnect();
-                clearTimeout(timeoutTimer);
-                if (settleTimer) clearTimeout(settleTimer);
-                const resolvedCards = currentCards();
-                resolve({
-                    cards: resolvedCards,
-                    market_count: resolvedCards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0)
-                });
-            };
-            const scheduleFinish = () => {
-                const resolvedCards = currentCards();
-                const currentCount = resolvedCards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0);
-                if (currentCount <= initialMarketCount) return;
-                if (settleTimer) clearTimeout(settleTimer);
-                settleTimer = setTimeout(finish, 500);
-            };
-            const observer = new MutationObserver(scheduleFinish);
-            observer.observe(document.body, { childList: true, subtree: true });
-            const timeoutTimer = setTimeout(finish, timeoutMs);
-            scheduleFinish();
-        });
-    }
-
-    async function expandEventCards(cards) {
-        if (document.visibilityState !== 'visible') {
-            throw new Error('Bring Torn Bookie to the foreground before expanding markets.');
-        }
-        if (!isBookiePage() || /^#\/your-bets(?:\/|$)/i.test(location.hash)) {
-            throw new Error('Open a Bookie event first.');
-        }
-        if (!cards.length) throw new Error('Manually open a Bookie event first.');
-        const controls = cards.flatMap(card => additionalMarketControls(card).slice(0, 1));
-        if (!controls.length) {
-            return {
-                requested: 0,
-                cards,
-                market_count: cards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0)
-            };
-        }
-        const initialMarketCount = cards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0);
-        controls.forEach(control => control.click());
-        const result = await waitForAdditionalMarkets(cards, initialMarketCount);
-        return { requested: controls.length, cards: result.cards, market_count: result.market_count };
     }
 
     function titleValuesForMyBet(link) {
@@ -528,18 +438,6 @@
         return capture;
     }
 
-    async function expandAndCapture(cards, panel) {
-        const selectedCards = cards?.length ? cards.slice(0, 1) : activeEventCards();
-        if (!selectedCards.length) throw new Error('Manually open a Bookie event first.');
-        if (FOOTBALL_ONLY && !isFootballCard(selectedCards[0])) {
-            throw new Error('BMG is currently scoped to Football only.');
-        }
-        const expansion = await expandEventCards(selectedCards);
-        const capture = buildCapture(expansion.cards);
-        await saveCapture(capture, panel);
-        return { capture, expansion };
-    }
-
     function downloadJson(filename, value) {
         const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
@@ -567,333 +465,29 @@
         textarea.remove();
     }
 
-    function formatMoney(value) {
-        return `$${Math.round(Number(value) || 0).toLocaleString('en-US')}`;
-    }
-
-    function validPickFeed(value) {
-        return value
-            && value.schema_version === PICK_FEED_SCHEMA
-            && Array.isArray(value.picks);
-    }
-
-    function activePicks() {
-        const now = Date.now();
-        const feedExpires = Date.parse(pickFeed?.expires_at || '');
-        if (Number.isFinite(feedExpires) && feedExpires <= now) return [];
-        return (pickFeed?.picks || []).filter(pick => {
-            if (!pick || !/^\d+$/.test(String(pick.source_event_id || ''))) return false;
-            if (canonical(pick.sport) !== 'football') return false;
-            const expires = Date.parse(pick.expires_at || '');
-            return !Number.isFinite(expires) || expires > now;
-        });
-    }
-
-    async function loadPickFeed() {
-        const fixtureFeed = window.__BMG_PICK_FEED__;
-        if (document.documentElement.dataset.bmgTestFixture === 'true' && validPickFeed(fixtureFeed)) {
-            pickFeed = fixtureFeed;
-            return { source: 'test', error: '' };
-        }
-        try {
-            const separator = PICKS_URL.includes('?') ? '&' : '?';
-            const response = await fetch(`${PICKS_URL}${separator}v=${Date.now()}`, {
-                cache: 'no-store',
-                credentials: 'omit',
-                referrerPolicy: 'no-referrer'
-            });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const remote = await response.json();
-            if (!validPickFeed(remote)) throw new Error('Invalid BMG pick feed.');
-            pickFeed = remote;
-            return { source: 'live', error: '' };
-        } catch (error) {
-            pickFeed = EMBEDDED_PICK_FEED;
-            return { source: 'built-in', error: error.message || String(error) };
-        }
-    }
-
-    function injectPickStyles() {
-        if (document.getElementById('bmg-pick-styles')) return;
-        const style = document.createElement('style');
-        style.id = 'bmg-pick-styles';
-        style.textContent = `
-            .bmg-pick-game {
-                background: linear-gradient(90deg, rgba(41, 150, 83, .38), rgba(41, 150, 83, .08)) !important;
-                box-shadow: inset 4px 0 #50dc88, 0 0 0 1px rgba(80, 220, 136, .75) !important;
-                position: relative;
-            }
-            [data-bmg-pick-label]::after {
-                content: attr(data-bmg-pick-label);
-                float: right;
-                margin-left: 8px;
-                padding: 1px 5px;
-                border-radius: 3px;
-                background: #1f8a4c;
-                color: #fff;
-                font-size: 9px;
-                font-weight: 800;
-                line-height: 16px;
-            }
-            .bmg-pick-option {
-                background: linear-gradient(90deg, rgba(255, 202, 40, .42), rgba(255, 202, 40, .08)) !important;
-                box-shadow: inset 5px 0 #ffca28, 0 0 0 2px #ffca28 !important;
-                position: relative;
-                z-index: 2;
-            }
-            .bmg-pick-too-low {
-                background: linear-gradient(90deg, rgba(213, 67, 67, .45), rgba(213, 67, 67, .08)) !important;
-                box-shadow: inset 5px 0 #ff6868, 0 0 0 2px #ff6868 !important;
-            }
-            #${PANEL_ID} button:focus-visible, .bmg-pick-game:focus-visible {
-                outline: 2px solid #8ecbff;
-                outline-offset: 2px;
-            }
-        `;
-        document.head.appendChild(style);
-    }
-
-    function gameElementsForPick(pick) {
-        const id = String(pick.source_event_id);
-        const links = Array.from(document.querySelectorAll('a[href]')).filter(link => {
-            return String(link.getAttribute('href') || '').match(/^#\/football\/([^/?#]+)/i)?.[1] === id;
-        });
-        const cards = Array.from(document.querySelectorAll('li.c-pointer')).filter(card => {
-            return routeDetails(card).source_event_id === id;
-        });
-        return { links, cards: [...new Set(cards)] };
-    }
-
-    function marketNameForWrap(wrap) {
-        return cleanText(wrap.querySelector('.market-name-cell .bold')?.textContent)
-            || cleanText(wrap.querySelector('.market-name-cell')?.textContent).split(' due to start')[0];
-    }
-
-    function rawSelectionForRow(row) {
-        return cleanText(row.querySelector('.bet-cell.result')?.textContent)
-            || cleanText(row.querySelector('[class*="description"] span')?.textContent)
-            || cleanText(row.querySelector('[class*="description"]')?.textContent);
-    }
-
-    function oddsForRow(row) {
-        return parseOdds(row.querySelector('.bet-cell.odds.decimal')?.textContent)
-            || parseOdds(row.querySelector('[class*="multiplier"]')?.textContent);
-    }
-
-    function selectionMatchesPick(rawName, pick) {
-        const handicapMatch = cleanText(rawName).match(/\(\s*([+-]?\d+(?:[.,]\d+)?)\s*\)\s*$/);
-        const selectionName = cleanText(rawName).replace(/\s*\(\s*[+-]?\d+(?:[.,]\d+)?\s*\)\s*$/, '');
-        if (canonical(selectionName) !== canonical(pick.selection_name)) return false;
-        if (pick.handicap === null || pick.handicap === undefined) return true;
-        if (!handicapMatch) return false;
-        return Math.abs(Number(handicapMatch[1].replace(',', '.')) - Number(pick.handicap)) < 0.0001;
-    }
-
-    function clearPickHighlights() {
-        document.querySelectorAll('.bmg-pick-game').forEach(element => element.classList.remove('bmg-pick-game'));
-        document.querySelectorAll('[data-bmg-pick-label]').forEach(element => element.removeAttribute('data-bmg-pick-label'));
-        document.querySelectorAll('.bmg-pick-option, .bmg-pick-too-low').forEach(element => {
-            element.classList.remove('bmg-pick-option', 'bmg-pick-too-low');
-        });
-    }
-
-    function highlightPicks() {
-        highlightQueued = false;
-        clearPickHighlights();
-        const results = [];
-        activePicks().forEach(pick => {
-            const elements = gameElementsForPick(pick);
-            const grade = cleanText(pick.grade || 'PICK').toUpperCase();
-            elements.links.forEach(link => {
-                link.classList.add('bmg-pick-game');
-                link.setAttribute('data-bmg-pick-label', `BMG ${grade}`);
-            });
-            elements.cards.forEach(card => card.classList.add('bmg-pick-game'));
-
-            let option = null;
-            for (const card of elements.cards) {
-                const wraps = Array.from(card.querySelectorAll('.info-wrap ul.bets-wrap'));
-                const market = wraps.find(wrap => canonical(marketNameForWrap(wrap)) === canonical(pick.market_name));
-                if (!market) continue;
-                const rows = Array.from(market.querySelectorAll(':scope > li')).filter(row => rawSelectionForRow(row));
-                const row = rows.find(candidate => selectionMatchesPick(rawSelectionForRow(candidate), pick));
-                if (!row) continue;
-                const odds = oddsForRow(row);
-                const amount = row.querySelector('input.amount, input[name="amount"]');
-                const unavailable = !odds
-                    || row.classList.contains('disabled')
-                    || Boolean(amount?.disabled)
-                    || /suspended|unavailable/i.test(String(amount?.value || ''));
-                const tooLow = odds && Number(pick.minimum_odds) && odds < Number(pick.minimum_odds);
-                row.classList.add('bmg-pick-option');
-                if (tooLow || unavailable) row.classList.add('bmg-pick-too-low');
-                option = { odds: odds || null, too_low: Boolean(tooLow), unavailable };
-                break;
-            }
-            results.push({
-                source_event_id: String(pick.source_event_id),
-                game_found: Boolean(elements.links.length || elements.cards.length),
-                option
-            });
-        });
-        updateLivePickStatus(results);
-        return results;
-    }
-
-    function queueHighlight() {
-        if (highlightQueued) return;
-        highlightQueued = true;
-        setTimeout(highlightPicks, 80);
-    }
-
-    function updateLivePickStatus(results) {
-        const panel = document.getElementById(PANEL_ID);
-        if (!panel) return;
-        results.forEach(result => {
-            const line = panel.querySelector(`[data-live-pick="${result.source_event_id}"]`);
-            if (!line) return;
-            if (!result.game_found) {
-                line.textContent = 'Not currently visible in Torn’s rolling window.';
-                line.dataset.state = 'missing';
-            } else if (!result.option) {
-                line.textContent = 'Game highlighted. Open it to highlight the exact option.';
-                line.dataset.state = 'game';
-            } else if (result.option.unavailable) {
-                line.textContent = 'Exact option is currently unavailable. DO NOT BET.';
-                line.dataset.state = 'low';
-            } else if (result.option.too_low) {
-                line.textContent = `Current odds ${result.option.odds.toFixed(2)} — BELOW MINIMUM. DO NOT BET.`;
-                line.dataset.state = 'low';
-            } else {
-                line.textContent = `Exact option highlighted at ${result.option.odds.toFixed(2)}.`;
-                line.dataset.state = 'ready';
-            }
-            line.style.color = line.dataset.state === 'low'
-                ? '#ff8b8b'
-                : line.dataset.state === 'ready' ? '#7ee2a5' : '#8ecbff';
-        });
-    }
-
-    function renderPicks(panel) {
-        const container = panel.querySelector('[data-picks]');
-        container.replaceChildren();
-        const picks = activePicks();
-        if (!picks.length) {
-            const empty = document.createElement('div');
-            empty.style.cssText = 'padding:9px;border:1px solid #555;border-radius:6px;color:#bbb';
-            empty.textContent = 'No active BMG picks. Do not force a bet.';
-            container.appendChild(empty);
-            return;
-        }
-        picks.forEach(pick => {
-            const card = document.createElement('article');
-            card.style.cssText = 'border:1px solid #397b55;border-left:4px solid #50dc88;border-radius:6px;padding:8px;background:#202823;margin-top:7px';
-
-            const heading = document.createElement('div');
-            heading.style.cssText = 'font-weight:800;font-size:12px;line-height:1.3;color:#fff';
-            heading.textContent = `${cleanText(pick.grade || 'Pick').toUpperCase()} · ${cleanText(pick.event_title)}`;
-            card.appendChild(heading);
-
-            const selection = document.createElement('div');
-            selection.style.cssText = 'font-weight:800;font-size:13px;color:#ffda68;margin-top:6px';
-            selection.textContent = cleanText(pick.selection_display || pick.selection_name);
-            card.appendChild(selection);
-
-            const terms = document.createElement('div');
-            terms.style.cssText = 'font-size:11px;color:#ddd;margin-top:3px';
-            terms.textContent = `Stake ${formatMoney(pick.stake)} · target ${Number(pick.target_odds).toFixed(2)} · minimum ${Number(pick.minimum_odds).toFixed(2)}`;
-            card.appendChild(terms);
-
-            const live = document.createElement('div');
-            live.setAttribute('data-live-pick', String(pick.source_event_id));
-            live.style.cssText = 'font-size:10px;color:#8ecbff;margin-top:5px;line-height:1.3';
-            live.textContent = 'Looking for this game…';
-            card.appendChild(live);
-
-            if (pick.note) {
-                const note = document.createElement('div');
-                note.style.cssText = 'font-size:9px;color:#aaa;margin-top:4px;line-height:1.3';
-                note.textContent = cleanText(pick.note);
-                card.appendChild(note);
-            }
-
-            const find = document.createElement('button');
-            find.type = 'button';
-            find.setAttribute('data-find-event', String(pick.source_event_id));
-            find.textContent = 'Find highlighted game';
-            find.style.cssText = 'margin-top:7px;width:100%;background:#286b45;color:#fff;border:1px solid #4aa56f;border-radius:4px;padding:6px;cursor:pointer;font-size:10px';
-            card.appendChild(find);
-            container.appendChild(card);
-        });
-    }
-
     function mountPanel() {
         if (document.getElementById(PANEL_ID) || !document.body) return;
-        injectPickStyles();
         const panel = document.createElement('section');
         panel.id = PANEL_ID;
-        panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:285px;max-height:70vh;overflow:auto;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
+        panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:285px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:14px">BMG Picks <span style="color:#888;font-size:9px">v0.4.0</span></div>
-            <div style="color:#bbb;font-size:10px;line-height:1.35;margin-top:3px">Green marks the game; gold marks the exact option. You still open the game and place every wager yourself.</div>
-            <div data-picks></div>
-            <button type="button" data-action="refresh-picks" style="margin-top:8px;width:100%">Refresh BMG picks</button>
-            <details style="margin-top:8px;border-top:1px solid #444;padding-top:6px">
-                <summary style="cursor:pointer;color:#888;font-size:10px">Manual capture tools</summary>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:7px">
-                    <button type="button" data-action="expand-capture">Expand + capture</button>
-                    <button type="button" data-action="capture">Capture open/My Bets</button>
-                    <button type="button" data-action="export">Export outbox</button>
-                    <button type="button" data-action="copy">Copy latest</button>
-                </div>
-            </details>
-            <div data-status style="margin-top:7px;color:#8ecbff;font-size:9px">Loading picks…</div>
+            <div style="font-weight:800;font-size:14px">BMG Manual Capture <span style="color:#888;font-size:9px">v0.5.0</span></div>
+            <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Open the game and every odds section yourself. BMG does nothing until you press Capture; it only reads rows already visible on this page.</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px">
+                <button type="button" data-action="capture">Capture visible</button>
+                <button type="button" data-action="export">Export outbox</button>
+                <button type="button" data-action="copy">Copy latest</button>
+            </div>
+            <div data-status style="margin-top:7px;color:#8ecbff;font-size:9px">Ready. Manual foreground actions only.</div>
         `;
         panel.querySelectorAll('button').forEach(button => {
             button.style.cssText = 'background:#2d5d7b;color:#fff;border:1px solid #4a8eb8;border-radius:4px;padding:6px;cursor:pointer;font-size:10px';
         });
-        panel.querySelector('[data-action="refresh-picks"]').style.cssText += ';margin-top:8px;width:100%';
         const status = panel.querySelector('[data-status]');
         const show = (message, error = false) => {
             status.textContent = message;
             status.style.color = error ? '#ff8b8b' : '#8ecbff';
         };
-
-        panel.querySelector('[data-action="refresh-picks"]').addEventListener('click', async () => {
-            show('Refreshing BMG picks…');
-            const result = await loadPickFeed();
-            renderPicks(panel);
-            const highlighted = highlightPicks();
-            show(result.error
-                ? `Using built-in picks; live feed unavailable. ${highlighted.length} active.`
-                : `Live picks refreshed. ${highlighted.length} active.`, Boolean(result.error));
-        });
-
-        panel.addEventListener('click', event => {
-            const button = event.target.closest?.('[data-find-event]');
-            if (!button) return;
-            const pick = activePicks().find(item => String(item.source_event_id) === button.getAttribute('data-find-event'));
-            if (!pick) return;
-            const elements = gameElementsForPick(pick);
-            const target = elements.links[0] || elements.cards[0];
-            if (!target) {
-                show('That game is not in Torn’s currently loaded rolling window.', true);
-                return;
-            }
-            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            target.focus?.({ preventScroll: true });
-            show('Scrolled to the highlighted game.');
-        });
-
-        panel.querySelector('[data-action="expand-capture"]').addEventListener('click', async () => {
-            try {
-                show('Expanding and capturing the open event…');
-                const result = await expandAndCapture(null, panel);
-                show(captureSummary(result.capture));
-            } catch (error) {
-                show(error.message || String(error), true);
-            }
-        });
 
         panel.querySelector('[data-action="capture"]').addEventListener('click', async () => {
             try {
@@ -935,18 +529,6 @@
         });
 
         document.body.appendChild(panel);
-        renderPicks(panel);
-        highlightPicks();
-        loadPickFeed().then(result => {
-            renderPicks(panel);
-            const highlighted = highlightPicks();
-            show(result.error
-                ? `Built-in picks loaded. ${highlighted.length} active.`
-                : `Live picks loaded. ${highlighted.length} active.`);
-        });
-        highlightObserver = new MutationObserver(queueHighlight);
-        highlightObserver.observe(document.body, { childList: true, subtree: true });
-        window.addEventListener('hashchange', queueHighlight);
     }
 
     if (document.readyState === 'loading') {
