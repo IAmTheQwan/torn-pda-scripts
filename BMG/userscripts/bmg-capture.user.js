@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         BMG One-Click Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.6.0
-// @description  Open and expand one visible Torn football event or My Bets row, then capture it after one foreground click
+// @version      0.6.1
+// @description  Expand and capture the Torn football event or My Bets row you manually selected
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
 // @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
@@ -391,15 +391,6 @@
         return String(link?.getAttribute('href') || '').match(/#\/your-bets\/([^/?#]+)/i)?.[1] || '';
     }
 
-    function isVisibleControl(element) {
-        if (!element) return false;
-        if (document.documentElement.dataset.bmgTestFixture === 'true') return true;
-        const style = getComputedStyle(element);
-        return style.display !== 'none'
-            && style.visibility !== 'hidden'
-            && element.getClientRects().length > 0;
-    }
-
     function myBetCard(sourceId) {
         const cards = Array.from(document.querySelectorAll('li.c-pointer'));
         return cards.find(card => routeDetails(card).source_event_id === sourceId) || null;
@@ -430,35 +421,41 @@
             const timeoutTimer = setTimeout(() => {
                 observer.disconnect();
                 if (settleTimer) clearTimeout(settleTimer);
-                reject(new Error('The My Bets detail did not finish opening. Tap the bet row once, then try Capture again.'));
+                reject(new Error('The selected My Bets detail did not finish opening. Tap that bet row once, then try Expand + capture again.'));
             }, timeoutMs);
             check();
         });
     }
 
-    async function openAndExpandMyBet() {
+    function selectedMyBetCard() {
+        const routeSourceId = String(location.hash).match(/#\/your-bets\/([^/?#]+)/i)?.[1] || '';
+        if (routeSourceId) {
+            const routedCard = myBetCard(routeSourceId);
+            if (routedCard) return routedCard;
+        }
+        return Array.from(document.querySelectorAll('li.c-pointer.active'))
+            .find(card => myBetSourceId(card.querySelector('a[href*="/your-bets/"]'))) || null;
+    }
+
+    async function expandSelectedMyBet() {
         if (document.visibilityState !== 'visible') {
             throw new Error('Bring Torn My Bets to the foreground before capturing.');
         }
-        const links = myBetsLinks().filter(isVisibleControl);
-        if (!links.length) {
-            throw new Error('No visible My Bets rows were found. Open the current results section and try again.');
+        const selectedCard = selectedMyBetCard();
+        if (!selectedCard) {
+            throw new Error('Tap the exact My Bets row you want first, then press Expand + capture.');
         }
-        const activeCard = Array.from(document.querySelectorAll('li.c-pointer.active'))
-            .find(card => myBetSourceId(card.querySelector('a[href*="/your-bets/"]')));
-        const targetLink = activeCard?.querySelector('a[href*="/your-bets/"]') || links[0];
-        const sourceId = myBetSourceId(targetLink);
-        if (!sourceId) throw new Error('The visible My Bets row did not include a game ID.');
+        const sourceId = routeDetails(selectedCard).source_event_id;
+        if (!sourceId) throw new Error('The selected My Bets row did not include a game ID.');
 
-        let card = myBetCard(sourceId);
-        const alreadyOpen = card?.classList.contains('active')
+        let card = selectedCard;
+        const alreadyOpen = card.classList.contains('active')
             && card.querySelector('.info-wrap ul.bets-wrap li.bets');
         if (!alreadyOpen) {
-            targetLink.click();
             card = await waitForMyBetCard(sourceId);
         }
         if (FOOTBALL_ONLY && !isFootballCard(card)) {
-            throw new Error('The first visible My Bets row is not Football. Open a Football bet and try again.');
+            throw new Error('The selected My Bets row is not Football. Open a Football bet and try again.');
         }
         return expandAdditionalMarkets([card]);
     }
@@ -619,7 +616,12 @@
     async function expandAndCapture(panel) {
         const onMyBets = isMyBetsPage();
         const betsBeforeExpansion = onMyBets ? parseMyBets() : null;
-        const expansion = onMyBets ? await openAndExpandMyBet() : await expandOpenEvent();
+        if (onMyBets && !selectedMyBetCard()) {
+            const capture = buildCapture([], betsBeforeExpansion);
+            await saveCapture(capture, panel);
+            return { capture, controlsActivated: 0, visibleOnly: true };
+        }
+        const expansion = onMyBets ? await expandSelectedMyBet() : await expandOpenEvent();
         const betsAfterExpansion = onMyBets ? parseMyBets() : [];
         const capturedBets = onMyBets
             ? [...new Map([...betsBeforeExpansion, ...betsAfterExpansion]
@@ -627,7 +629,14 @@
             : null;
         const capture = buildCapture(expansion.cards, capturedBets);
         await saveCapture(capture, panel);
-        return { capture, controlsActivated: expansion.controlsActivated };
+        return { capture, controlsActivated: expansion.controlsActivated, visibleOnly: false };
+    }
+
+    async function captureVisible(panel) {
+        const onMyBets = isMyBetsPage();
+        const capture = buildCapture(onMyBets ? [] : null);
+        await saveCapture(capture, panel);
+        return capture;
     }
 
     function downloadJson(filename, value) {
@@ -663,10 +672,11 @@
         panel.id = PANEL_ID;
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:285px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:14px">BMG One-Click Capture <span style="color:#888;font-size:9px">v0.6.0</span></div>
-            <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Bookie: open one game first. My Bets: the first visible row opens automatically. Capture expands additional markets and saves the loaded details.</div>
+            <div style="font-weight:800;font-size:14px">BMG One-Click Capture <span style="color:#888;font-size:9px">v0.6.1</span></div>
+            <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Tap the exact game or My Bets row first. Expand + capture follows that selection and opens its additional markets. Capture visible saves the rows already shown.</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px">
-                <button type="button" data-action="capture">Expand + capture</button>
+                <button type="button" data-action="expand-capture">Expand + capture</button>
+                <button type="button" data-action="capture">Capture visible</button>
                 <button type="button" data-action="export">Export outbox</button>
                 <button type="button" data-action="copy">Copy latest</button>
             </div>
@@ -681,22 +691,34 @@
             status.style.color = error ? '#ff8b8b' : '#8ecbff';
         };
 
-        const captureButton = panel.querySelector('[data-action="capture"]');
-        captureButton.addEventListener('click', async () => {
-            captureButton.disabled = true;
+        const expandCaptureButton = panel.querySelector('[data-action="expand-capture"]');
+        expandCaptureButton.addEventListener('click', async () => {
+            expandCaptureButton.disabled = true;
             try {
                 show(isMyBetsPage()
-                    ? 'Opening the first visible My Bets row, expanding it, and capturing…'
+                    ? 'Expanding the selected My Bets row and capturing…'
                     : 'Expanding the open event and capturing its loaded odds…');
                 const result = await expandAndCapture(panel);
                 const expansionNote = result.controlsActivated
                     ? ` Activated ${result.controlsActivated} additional-options control(s).`
                     : '';
-                show(`${captureSummary(result.capture)}${expansionNote}`);
+                const visibleNote = result.visibleOnly
+                    ? ' No row was open, so the visible settlement list was captured. Tap the exact row for full details.'
+                    : '';
+                show(`${captureSummary(result.capture)}${expansionNote}${visibleNote}`);
             } catch (error) {
                 show(error.message || String(error), true);
             } finally {
-                captureButton.disabled = false;
+                expandCaptureButton.disabled = false;
+            }
+        });
+
+        panel.querySelector('[data-action="capture"]').addEventListener('click', async () => {
+            try {
+                const capture = await captureVisible(panel);
+                show(captureSummary(capture));
+            } catch (error) {
+                show(error.message || String(error), true);
             }
         });
 
