@@ -1896,6 +1896,10 @@ def competition_alias_compatible(
     provider_is_women = any(
         token in competition_key for token in ("female", "women", "femenil", "feminine")
     )
+    provider_is_women = provider_is_women or competition_key in {
+        "damallsvenskan",
+        "toppserien",
+    }
     if event_is_women != provider_is_women:
         return False
     event_youth = set(re.findall(r"\bu\s*(\d{2})\b", event_key))

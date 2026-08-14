@@ -1,6 +1,6 @@
 {
   "schema_version": "bmg.event-match-reviewed-decisions.v1",
-  "reviewed_at": "2026-08-13",
+  "reviewed_at": "2026-08-14",
   "policy": "Manual confirmation requires the same home/away roles, compatible competition scope, a unique provider fixture, and kickoff within six hours. Rejections document close-looking false pairs.",
   "decisions": [
     {
@@ -423,6 +423,76 @@
       "bet_count_at_review": 0,
       "stake_at_review": 0,
       "reason": "Confirmed live-slate link: exact home/away roles, competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3815,
+      "match_id": 67254,
+      "decision": "confirmed",
+      "event": {"home_team": "NK Bratstvo", "away_team": "Posusje", "league": "1. Division FBiH 2026/2027 (Bosnia and Herzegovina 2)", "event_time": "2026-08-14T15:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1606097", "home_team_id": 4287, "home_team": "Bratstvo Gračanica", "away_team_id": 3615, "away_team": "Posušje", "competition": "1st League - FBiH", "country": "Bosnia", "scheduled_at": "2026-08-14T15:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, compatible Bosnia second-tier competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3816,
+      "match_id": 67257,
+      "decision": "confirmed",
+      "event": {"home_team": "Kispest Honved", "away_team": "Vasas Budapest", "league": "NB I 2026/2027 (Hungary 1)", "event_time": "2026-08-14T15:30:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1560220", "home_team_id": 1479, "home_team": "Budapest Honved", "away_team_id": 1478, "away_team": "Vasas", "competition": "NB I", "country": "Hungary", "scheduled_at": "2026-08-14T15:30:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, Hungary top-flight competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3817,
+      "match_id": 67260,
+      "decision": "confirmed",
+      "event": {"home_team": "Turan Tovuz", "away_team": "FK Qabala", "league": "Premier League 2026/2027 (Azerbaijan 1)", "event_time": "2026-08-14T15:30:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1600295", "home_team_id": 1603, "home_team": "Turan", "away_team_id": 1611, "away_team": "Qabala", "competition": "Premyer Liqa", "country": "Azerbaijan", "scheduled_at": "2026-08-14T15:30:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, Azerbaijan top-flight competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3819,
+      "match_id": 67264,
+      "decision": "confirmed",
+      "event": {"home_team": "Al Naft", "away_team": "Al Karkh", "league": "Stars League 2026/2027 (Iraq 1)", "event_time": "2026-08-14T15:30:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1627034", "home_team_id": 2794, "home_team": "Naft", "away_team_id": 2789, "away_team": "Al Karkh", "competition": "Iraqi League", "country": "Iraq", "scheduled_at": "2026-08-14T15:30:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, Iraq top-flight competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3821,
+      "match_id": 45762,
+      "decision": "confirmed",
+      "event": {"home_team": "Bodoe/Glimt", "away_team": "Vaalerenga", "league": "Toppserien 2026 (Norway 1, female)", "event_time": "2026-08-14T16:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1495366", "home_team_id": 2947, "home_team": "Bodø / Glimt W", "away_team_id": 2939, "away_team": "Vålerenga W", "competition": "Toppserien", "country": "Norway", "scheduled_at": "2026-08-14T16:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same women’s teams and home/away roles, Toppserien scope, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3822,
+      "match_id": 17621,
+      "decision": "confirmed",
+      "event": {"home_team": "Nomme United", "away_team": "Tammeka", "league": "Meistriliiga 2026 (Estonia 1)", "event_time": "2026-08-14T16:00:00.000Z"},
+      "provider": {"source": "api-football", "source_match_id": "1513604", "home_team_id": 813, "home_team": "Nõmme United", "away_team_id": 809, "away_team": "Tammeka", "competition": "Meistriliiga", "country": "Estonia", "scheduled_at": "2026-08-14T16:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same home/away roles, Estonia top-flight competition, unique provider fixture, and identical kickoff time."
+    },
+    {
+      "event_id": 3783,
+      "match_id": 46244,
+      "decision": "confirmed",
+      "event": {"home_team": "Vaexjoe", "away_team": "Djurgaarden", "league": "Damallsvenskan 2026 (Sweden 1, female)", "event_time": "2026-08-14T17:00:00Z"},
+      "provider": {"source": "api-football", "source_match_id": "1495529", "home_team_id": 2972, "home_team": "Växjö W", "away_team_id": 2966, "away_team": "Djurgården W", "competition": "Damallsvenskan", "country": "Sweden", "scheduled_at": "2026-08-14T17:00:00Z"},
+      "bet_count_at_review": 0,
+      "stake_at_review": 0,
+      "reason": "Confirmed live-slate link: same women’s teams and home/away roles, Damallsvenskan scope, unique provider fixture, and identical kickoff time."
     }
   ]
 }

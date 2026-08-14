@@ -619,8 +619,8 @@ class BmgDatabaseTests(unittest.TestCase):
         decisions = registry["decisions"]
         event_ids = [item["event_id"] for item in decisions]
         self.assertEqual(len(event_ids), len(set(event_ids)))
-        self.assertEqual(42, len(decisions))
-        self.assertEqual(41, sum(item["decision"] == "confirmed" for item in decisions))
+        self.assertEqual(49, len(decisions))
+        self.assertEqual(48, sum(item["decision"] == "confirmed" for item in decisions))
         self.assertEqual(1, sum(item["decision"] == "rejected" for item in decisions))
         for item in decisions:
             self.assertIn(item["decision"], {"confirmed", "rejected"})
@@ -946,6 +946,15 @@ class BmgDatabaseTests(unittest.TestCase):
         ))
         self.assertFalse(bmg.competition_alias_compatible(
             "Division 1 2025/2026 (France 1, female)", "Ligue 1", "France", countries
+        ))
+        self.assertTrue(bmg.competition_alias_compatible(
+            "Toppserien 2026 (Norway 1, female)", "Toppserien", "Norway", countries | {"norway"}
+        ))
+        self.assertTrue(bmg.competition_alias_compatible(
+            "Damallsvenskan 2026 (Sweden 1, female)", "Damallsvenskan", "Sweden", countries | {"sweden"}
+        ))
+        self.assertFalse(bmg.competition_alias_compatible(
+            "Eliteserien 2026 (Norway 1)", "Toppserien", "Norway", countries | {"norway"}
         ))
         self.assertFalse(bmg.competition_alias_compatible(
             "Premier League 2025/2026 (England 1)", "Ligue 1", "France", countries
