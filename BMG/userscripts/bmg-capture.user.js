@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BMG One-Click Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.7.0
+// @version      0.7.1
 // @description  Sequentially open, expand, capture, and close the visible Torn football slate after one foreground click
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
@@ -327,7 +327,7 @@
         return cards.reduce((sum, card) => sum + card.querySelectorAll('.info-wrap ul.bets-wrap').length, 0);
     }
 
-    function waitForAdditionalMarkets(cards, initialMarketCount, timeoutMs = 8000) {
+    function waitForAdditionalMarkets(cards, initialMarketCount, initialControlCount, timeoutMs = 8000) {
         return new Promise(resolve => {
             let settleTimer = null;
             const sourceIds = cards.map(card => routeDetails(card).source_event_id);
@@ -339,7 +339,14 @@
                 resolve(currentCards());
             };
             const scheduleFinish = () => {
-                if (marketCount(currentCards()) <= initialMarketCount) return;
+                const resolvedCards = currentCards();
+                const currentMarketCount = marketCount(resolvedCards);
+                const currentControlCount = resolvedCards.reduce(
+                    (sum, card) => sum + additionalMarketControls(card).length,
+                    0
+                );
+                if (currentMarketCount <= initialMarketCount
+                    && currentControlCount >= initialControlCount) return;
                 if (settleTimer) clearTimeout(settleTimer);
                 settleTimer = setTimeout(finish, 500);
             };
@@ -367,12 +374,17 @@
             if (!controls.length) break;
             pendingControls.forEach(item => activatedControlKeys.add(item.key));
             const initialMarketCount = marketCount(currentCards);
+            const initialControlCount = currentCards.reduce(
+                (sum, card) => sum + additionalMarketControls(card).length,
+                0
+            );
             controls.forEach(control => control.click());
             controlsActivated += controls.length;
             const remainingMs = Math.max(500, expansionDeadline - Date.now());
             currentCards = await waitForAdditionalMarkets(
                 currentCards,
                 initialMarketCount,
+                initialControlCount,
                 Math.min(8000, remainingMs)
             );
             if (Date.now() >= expansionDeadline) break;
@@ -423,10 +435,12 @@
     }
 
     function bookieCardIsOpen(card) {
-        if (!card?.classList.contains('active')) return false;
+        if (!card) return false;
         const info = card.querySelector('.info-wrap');
+        const expanded = card.classList.contains('active')
+            || (info && info.style.display !== 'none' && getComputedStyle(info).display !== 'none');
         return Boolean(info?.querySelector('ul.bets-wrap li.bets'))
-            && (info.style.display !== 'none' && getComputedStyle(info).display !== 'none');
+            && expanded;
     }
 
     function waitForBookieCardOpen(sourceId, timeoutMs = BOOKIE_EVENT_OPEN_TIMEOUT_MS) {
@@ -458,14 +472,18 @@
 
     function waitForBookieCardClosed(sourceId, timeoutMs = BOOKIE_EVENT_CLOSE_TIMEOUT_MS) {
         return new Promise(resolve => {
+            let settleTimer = null;
             const finish = () => {
                 observer.disconnect();
                 clearTimeout(timeoutTimer);
+                if (settleTimer) clearTimeout(settleTimer);
                 resolve();
             };
             const check = () => {
                 const card = bookieCardForSourceId(sourceId);
-                if (!card || !card.classList.contains('active')) finish();
+                if (bookieCardIsOpen(card)) return;
+                if (settleTimer) clearTimeout(settleTimer);
+                settleTimer = setTimeout(finish, 250);
             };
             const observer = new MutationObserver(check);
             observer.observe(document.body, { childList: true, subtree: true, attributes: true });
@@ -487,7 +505,7 @@
 
     async function closeBookieCard(sourceId) {
         const card = bookieCardForSourceId(sourceId);
-        if (!card?.classList.contains('active')) return;
+        if (!bookieCardIsOpen(card)) return;
         const link = bookieCardLink(card, sourceId);
         if (!link) return;
         link.click();
@@ -510,11 +528,13 @@
                 failures.push({ source_event_id: sourceId, error: 'Page left the foreground.' });
                 break;
             }
-            progress(`Game ${index + 1} of ${sourceIds.length}: opening, expanding, and capturing…`);
+            progress(`Game ${index + 1} of ${sourceIds.length}: opening…`);
             try {
                 const card = await openBookieCard(sourceId);
+                progress(`Game ${index + 1} of ${sourceIds.length}: expanding markets…`);
                 const expansion = await expandAdditionalMarkets([card]);
                 controlsActivated += expansion.controlsActivated;
+                progress(`Game ${index + 1} of ${sourceIds.length}: saving capture…`);
                 const capture = buildCapture(expansion.cards);
                 await saveCapture(capture, panel);
                 captures.push(capture);
@@ -522,6 +542,7 @@
                 failures.push({ source_event_id: sourceId, error: error.message || String(error) });
             } finally {
                 try {
+                    progress(`Game ${index + 1} of ${sourceIds.length}: closing…`);
                     await closeBookieCard(sourceId);
                 } catch (error) {
                     failures.push({ source_event_id: sourceId, error: `Close failed: ${error.message || error}` });
@@ -834,7 +855,7 @@
         panel.id = PANEL_ID;
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:285px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:14px">BMG One-Click Capture <span style="color:#888;font-size:9px">v0.7.0</span></div>
+            <div style="font-weight:800;font-size:14px">BMG One-Click Capture <span style="color:#888;font-size:9px">v0.7.1</span></div>
             <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Football: Batch capture opens each rendered game in order, expands its additional markets, saves it, and closes it. My Bets: tap the exact row first. No scrolling, refreshing, timers, or betting.</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px">
                 <button type="button" data-action="expand-capture">Batch expand + capture</button>

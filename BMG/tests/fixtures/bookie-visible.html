@@ -68,6 +68,11 @@
                         <li class="bets"><span class="bet-cell result">Draw</span><span class="bet-cell odds decimal">x3.00</span></li>
                         <li class="bets"><span class="bet-cell result">West FC</span><span class="bet-cell odds decimal">x3.10</span></li>
                     </ul>
+                    <ul class="bets-wrap" id="preloaded-additional-market" style="display:none">
+                        <li class="market-name-cell"><span class="bold">Over/Under 2.5 Total Goals Ordinary time</span></li>
+                        <li class="bets"><span class="bet-cell result">Over 2.5</span><span class="bet-cell odds decimal">x1.95</span></li>
+                        <li class="bets"><span class="bet-cell result">Under 2.5</span><span class="bet-cell odds decimal">x1.85</span></li>
+                    </ul>
                     <button type="button" id="additional-options-2">Show 1 additional betting options</button>
                 </div>
             </li>
@@ -93,13 +98,7 @@
             event.currentTarget.remove();
         }, { once: true });
         document.getElementById('additional-options-2').addEventListener('click', event => {
-            event.currentTarget.insertAdjacentHTML('beforebegin', `
-                <ul class="bets-wrap">
-                    <li class="market-name-cell"><span class="bold">Over/Under 2.5 Total Goals Ordinary time</span></li>
-                    <li class="bets"><span class="bet-cell result">Over 2.5</span><span class="bet-cell odds decimal">x1.95</span></li>
-                    <li class="bets"><span class="bet-cell result">Under 2.5</span><span class="bet-cell odds decimal">x1.85</span></li>
-                </ul>
-            `);
+            document.getElementById('preloaded-additional-market').style.display = 'block';
             event.currentTarget.remove();
         }, { once: true });
         document.querySelectorAll('li.c-pointer[data-event-id] > a').forEach(link => {

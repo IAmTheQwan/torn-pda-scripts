@@ -61,6 +61,8 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertIn("async function captureVisible(panel)", script)
         self.assertIn("return /^#\\/your-bets(?:\\/|$)/i.test(location.hash);", script)
         self.assertIn("const observer = new MutationObserver(scheduleFinish)", script)
+        self.assertIn("currentControlCount >= initialControlCount", script)
+        self.assertIn("if (bookieCardIsOpen(card)) return;", script)
         for prohibited in (
             "PICKS_URL",
             "fetch(",
