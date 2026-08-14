@@ -3,9 +3,9 @@
 ## Data flow
 
 ```text
-Manually opened Torn Bookie/My Bets page
+Manually viewed Torn Bookie/My Bets page
         |
-        | direct Capture button, foreground page only
+        | one direct Capture press per game, foreground page only
         v
 BMG userscript -> IndexedDB outbox -> local JSON export
                                          |
@@ -31,9 +31,9 @@ Explicit user request -> visible in-app Flashscore league/match pages
         -> event_match_links -> Torn events, odds, and historical bets
 ```
 
-The userscript makes no network request and never uploads or transmits Torn page
-data. Capture exports remain local and player initiated, keeping failed imports
-recoverable and private Torn data on the device. `config/current-picks.json` may
+Version 0.9.0 makes no network request and never uploads or transmits Torn page
+data. Capture exports remain local and player initiated while the private Git
+inbox gateway described in `GIT-INGEST.md` is prepared. `config/current-picks.json` may
 still be used as an offline planning artifact, but the Torn userscript neither
 loads nor renders it.
 
@@ -42,14 +42,14 @@ loads nor renders it.
 The userscript observes only:
 
 - Torn's currently visible Bookie or My Bets page;
-- rendered football event cards and the market rows Torn loads after the direct
-  **Batch expand + capture** action opens each card;
-- the finite open, expand, capture, close sequence for up to 30 rendered rows.
+- one rendered football event card and the market rows Torn loads after each
+  direct **Capture game** press;
+- a manual session index that cannot advance again without another player press.
 
 It does not highlight or scroll to picks, cycle pages, refresh Torn, fill a
 stake, operate from a hidden tab, or place a bet. Its only Torn control
-activation is the bounded foreground open/close sequence and finite additional-
-options expansion tied to the player's click. A temporary observer waits for each event's markets
+activation is the single-row foreground open/close handoff and finite additional-
+options expansion tied to that row's player click. A temporary observer waits for the event's markets
 and disconnects after settlement or an eight-second ceiling. IndexedDB stores
 the resulting local snapshot; **Export outbox** is another direct user action.
 

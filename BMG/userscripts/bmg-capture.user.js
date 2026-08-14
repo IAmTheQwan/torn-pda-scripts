@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         BMG One-Click Capture
+// @name         BMG Manual Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.8.0
-// @description  Sequentially open, expand, capture, and close the visible Torn football slate after one foreground click
+// @version      0.9.0
+// @description  Manually step through Torn football games one direct capture press at a time
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
 // @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
@@ -110,7 +110,7 @@
 
     function parseScheduledAt(stateTitle) {
         const match = cleanText(stateTitle).match(
-            /Due to start at\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s+-\s+(\d{1,2})\/(\d{1,2})\/(\d{4})\s+TCT/i
+            /Due to start at\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s+-\s+(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+TCT)?/i
         );
         if (!match) return '';
         return new Date(Date.UTC(
@@ -158,6 +158,10 @@
     function classifyMarket(name) {
         const value = canonical(name);
         if (/\b3 way\b/.test(value)) return 'three_way';
+        if (/draw no bet/.test(value)) return 'draw_no_bet';
+        if (/double chance/.test(value)) return 'double_chance';
+        if (/win to nil/.test(value)) return 'win_to_nil';
+        if (/odd even/.test(value)) return 'odd_even';
         if (/asian handicap/.test(value)) return 'asian_handicap';
         if (/handicap|spread/.test(value)) return 'spread';
         if (/over under|total goals|total points|total games|total sets/.test(value)) return 'total';
@@ -526,59 +530,86 @@
         await waitForBookieRouteClosed(href);
     }
 
-    async function expandAndCaptureBookieBatch(panel, progress = () => {}) {
-        if (document.visibilityState !== 'visible') {
-            throw new Error('Bring Torn Bookie to the foreground before starting the batch.');
-        }
-        const hrefs = bookieBatchHrefs();
-        if (!hrefs.length) throw new Error('No rendered Football games were found on this Bookie page.');
+    let bookieCaptureSession = {
+        hrefs: [],
+        index: -1,
+        captures: [],
+        controlsActivated: 0,
+        currentHref: ''
+    };
 
-        const captures = [];
-        const failures = [];
-        let controlsActivated = 0;
-        let lastOpenedHref = '';
-        for (let index = 0; index < hrefs.length; index += 1) {
-            const href = hrefs[index];
-            const sourceId = sourceIdForFootballHref(href);
-            if (document.visibilityState !== 'visible') {
-                failures.push({ source_event_id: sourceId, error: 'Page left the foreground.' });
-                break;
-            }
-            progress(`Game ${index + 1} of ${hrefs.length}: ${index ? 'switching from the previous game…' : 'opening…'}`);
-            try {
-                const card = await openBookieHref(href);
-                lastOpenedHref = href;
-                progress(`Game ${index + 1} of ${hrefs.length}: expanding markets…`);
-                const expansion = await expandAdditionalMarkets(
-                    [card],
-                    12000,
-                    () => {
-                        const currentCard = findFootballItemForHref(href);
-                        return currentCard ? [currentCard] : [];
-                    }
-                );
-                controlsActivated += expansion.controlsActivated;
-                progress(`Game ${index + 1} of ${hrefs.length}: saving capture…`);
-                const capture = buildCapture(expansion.cards);
-                await saveCapture(capture, panel);
-                captures.push(capture);
-            } catch (error) {
-                failures.push({ source_event_id: sourceId, error: error.message || String(error) });
-            }
-        }
-        if (lastOpenedHref) {
-            progress('Closing the final game…');
-            await closeBookieReview(lastOpenedHref);
-        }
-        if (captures.length) panel.dataset.bmgLastBatch = JSON.stringify(captures);
-        return {
-            batch: true,
-            capture: captures[captures.length - 1] || null,
-            captures,
-            failures,
-            controlsActivated,
-            visibleOnly: false
+    function resetBookieCaptureSession() {
+        bookieCaptureSession = {
+            hrefs: [],
+            index: -1,
+            captures: [],
+            controlsActivated: 0,
+            currentHref: ''
         };
+    }
+
+    async function captureNextBookieGame(panel, progress = () => {}) {
+        if (document.visibilityState !== 'visible') {
+            throw new Error('Bring Torn Bookie to the foreground before capturing the next game.');
+        }
+        if (!bookieCaptureSession.hrefs.length) {
+            const hrefs = bookieBatchHrefs();
+            if (!hrefs.length) throw new Error('No rendered Football games were found on this Bookie page.');
+            bookieCaptureSession.hrefs = hrefs;
+            panel.dataset.bmgLastBatch = '[]';
+        }
+
+        const nextIndex = bookieCaptureSession.index + 1;
+        const total = bookieCaptureSession.hrefs.length;
+        if (nextIndex >= total) {
+            return {
+                guided: true,
+                complete: true,
+                position: total,
+                total,
+                captures: bookieCaptureSession.captures,
+                controlsActivated: bookieCaptureSession.controlsActivated
+            };
+        }
+
+        const href = bookieCaptureSession.hrefs[nextIndex];
+        progress(`Game ${nextIndex + 1} of ${total}: opening…`);
+        const card = await openBookieHref(href);
+        bookieCaptureSession.currentHref = href;
+        progress(`Game ${nextIndex + 1} of ${total}: expanding markets…`);
+        const expansion = await expandAdditionalMarkets(
+            [card],
+            12000,
+            () => {
+                const currentCard = findFootballItemForHref(href);
+                return currentCard ? [currentCard] : [];
+            }
+        );
+        progress(`Game ${nextIndex + 1} of ${total}: saving capture…`);
+        const capture = buildCapture(expansion.cards);
+        await saveCapture(capture, panel);
+
+        bookieCaptureSession.index = nextIndex;
+        bookieCaptureSession.captures.push(capture);
+        bookieCaptureSession.controlsActivated += expansion.controlsActivated;
+        panel.dataset.bmgLastBatch = JSON.stringify(bookieCaptureSession.captures);
+        return {
+            guided: true,
+            complete: nextIndex >= total - 1,
+            position: nextIndex + 1,
+            total,
+            capture,
+            captures: bookieCaptureSession.captures,
+            controlsActivated: expansion.controlsActivated
+        };
+    }
+
+    async function endBookieCaptureSession() {
+        const currentHref = bookieCaptureSession.currentHref;
+        if (currentHref) await closeBookieReview(currentHref);
+        const captured = bookieCaptureSession.captures.length;
+        resetBookieCaptureSession();
+        return captured;
     }
 
     function myBetsLinks() {
@@ -815,7 +846,7 @@
 
     async function expandAndCapture(panel, progress = () => {}) {
         const onMyBets = isMyBetsPage();
-        if (!onMyBets) return expandAndCaptureBookieBatch(panel, progress);
+        if (!onMyBets) return captureNextBookieGame(panel, progress);
         const betsBeforeExpansion = onMyBets ? parseMyBets() : null;
         if (onMyBets && !selectedMyBetCard()) {
             const capture = buildCapture([], betsBeforeExpansion);
@@ -876,15 +907,16 @@
         panel.id = PANEL_ID;
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:285px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:14px">BMG One-Click Capture <span style="color:#888;font-size:9px">v0.8.0</span></div>
-            <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Football: Batch capture opens each rendered game in order, expands its additional markets, saves it, and closes it. My Bets: tap the exact row first. No scrolling, refreshing, timers, or betting.</div>
+            <div style="font-weight:800;font-size:14px">BMG Manual Capture <span style="color:#888;font-size:9px">v0.9.0</span></div>
+            <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Football: each direct press opens and captures exactly one game, then stops. Press again for the next game. My Bets: tap the exact row first. No automatic slate loop, scrolling, refreshing, timers, or betting.</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px">
-                <button type="button" data-action="expand-capture">Batch expand + capture</button>
+                <button type="button" data-action="expand-capture">Start game capture</button>
+                <button type="button" data-action="end-session">End / close</button>
                 <button type="button" data-action="capture">Capture visible</button>
                 <button type="button" data-action="export">Export outbox</button>
-                <button type="button" data-action="copy">Copy last batch</button>
+                <button type="button" data-action="copy">Copy session</button>
             </div>
-            <div data-status style="margin-top:7px;color:#8ecbff;font-size:9px">Ready. One foreground action only.</div>
+            <div data-status style="margin-top:7px;color:#8ecbff;font-size:9px">Ready. One game per foreground press.</div>
         `;
         panel.querySelectorAll('button').forEach(button => {
             button.style.cssText = 'background:#2d5d7b;color:#fff;border:1px solid #4a8eb8;border-radius:4px;padding:6px;cursor:pointer;font-size:10px';
@@ -896,19 +928,40 @@
         };
 
         const expandCaptureButton = panel.querySelector('[data-action="expand-capture"]');
+        const endSessionButton = panel.querySelector('[data-action="end-session"]');
+        const updateSessionControls = () => {
+            if (isMyBetsPage()) {
+                expandCaptureButton.textContent = 'Expand + capture';
+                expandCaptureButton.disabled = false;
+                endSessionButton.disabled = true;
+                return;
+            }
+            const total = bookieCaptureSession.hrefs.length;
+            const nextPosition = bookieCaptureSession.index + 2;
+            expandCaptureButton.textContent = !total
+                ? 'Start game capture'
+                : bookieCaptureSession.index >= total - 1
+                    ? `${total}/${total} captured`
+                    : `Capture next ${nextPosition}/${total}`;
+            expandCaptureButton.disabled = Boolean(total && bookieCaptureSession.index >= total - 1);
+            endSessionButton.disabled = !bookieCaptureSession.currentHref;
+        };
+        updateSessionControls();
         expandCaptureButton.addEventListener('click', async () => {
             expandCaptureButton.disabled = true;
             try {
                 show(isMyBetsPage()
                     ? 'Expanding the selected My Bets row and capturing…'
-                    : 'Starting the rendered Football games batch…');
+                    : 'Processing exactly one Football game…');
                 const result = await expandAndCapture(panel, message => show(message));
-                if (result.batch) {
-                    const marketTotal = result.captures.reduce(
-                        (sum, capture) => sum + capture.events.reduce((eventSum, event) => eventSum + event.markets.length, 0),
+                if (result.guided) {
+                    const marketTotal = result.capture?.events.reduce(
+                        (sum, event) => sum + event.markets.length,
                         0
-                    );
-                    show(`Batch finished: ${result.captures.length} game(s), ${marketTotal} market(s), ${result.controlsActivated} additional control(s), ${result.failures.length} failure(s).`);
+                    ) || 0;
+                    show(result.complete
+                        ? `Captured game ${result.position} of ${result.total} (${marketTotal} markets). Session complete; press End / close.`
+                        : `Captured game ${result.position} of ${result.total} (${marketTotal} markets). Press Capture next for one more game.`);
                     return;
                 }
                 const expansionNote = result.controlsActivated
@@ -922,6 +975,19 @@
                 show(error.message || String(error), true);
             } finally {
                 expandCaptureButton.disabled = false;
+                updateSessionControls();
+            }
+        });
+
+        endSessionButton.addEventListener('click', async () => {
+            endSessionButton.disabled = true;
+            try {
+                const captured = await endBookieCaptureSession();
+                show(`Session ended after ${captured} captured game(s). Copy session or export the outbox when ready.`);
+            } catch (error) {
+                show(error.message || String(error), true);
+            } finally {
+                updateSessionControls();
             }
         });
 
@@ -961,7 +1027,7 @@
                 }
                 if (!captures.length) throw new Error('The outbox is empty.');
                 await copyText(JSON.stringify({ schema_version: 'bmg.export.v1', captures }, null, 2));
-                show(`Copied the last batch (${captures.length} capture(s)) as JSON.`);
+                show(`Copied the current session (${captures.length} capture(s)) as JSON.`);
             } catch (error) {
                 show(error.message || String(error), true);
             }

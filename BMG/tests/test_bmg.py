@@ -41,22 +41,25 @@ class BmgDatabaseTests(unittest.TestCase):
     def count(self, table: str) -> int:
         return int(self.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
 
-    def test_torn_userscript_has_bounded_one_click_capture(self) -> None:
+    def test_torn_userscript_requires_one_direct_press_per_football_game(self) -> None:
         script = MANUAL_CAPTURE_USERSCRIPT.read_text(encoding="utf-8")
-        self.assertIn("@name         BMG One-Click Capture", script)
-        self.assertIn("Batch expand + capture", script)
+        self.assertIn("@name         BMG Manual Capture", script)
+        self.assertIn("Start game capture", script)
         self.assertIn("Capture visible", script)
-        self.assertIn("Copy last batch", script)
+        self.assertIn("Copy session", script)
         self.assertIn("expandAndCapture(panel, message => show(message))", script)
         self.assertIn("controls.forEach(control => control.click())", script)
-        self.assertIn("async function expandAndCaptureBookieBatch", script)
+        self.assertIn("async function captureNextBookieGame", script)
         self.assertIn("const hrefs = bookieBatchHrefs()", script)
+        self.assertIn("const nextIndex = bookieCaptureSession.index + 1", script)
         self.assertIn("function findFootballItemForHref(href)", script)
         self.assertIn("if (location.hash === href)", script)
         self.assertIn("const card = await openBookieHref(href)", script)
-        self.assertIn("await closeBookieReview(lastOpenedHref)", script)
+        self.assertIn("bookieCaptureSession.captures.push(capture)", script)
+        self.assertIn("async function endBookieCaptureSession", script)
+        self.assertIn("await closeBookieReview(currentHref)", script)
         self.assertIn("location.hash = '#/football/'", script)
-        self.assertIn("panel.dataset.bmgLastBatch = JSON.stringify(captures)", script)
+        self.assertIn("panel.dataset.bmgLastBatch = JSON.stringify(bookieCaptureSession.captures)", script)
         self.assertIn("async function expandSelectedMyBet()", script)
         self.assertIn("function selectedMyBetCard()", script)
         self.assertIn("await waitForMyBetCard(sourceId)", script)
@@ -66,6 +69,8 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertIn("const observer = new MutationObserver(scheduleFinish)", script)
         self.assertIn("currentControlCount >= initialControlCount", script)
         self.assertIn("if (bookieCardIsOpen(card)) return card;", script)
+        self.assertNotIn("async function expandAndCaptureBookieBatch", script)
+        self.assertNotIn("for (let index = 0; index < hrefs.length", script)
         for prohibited in (
             "PICKS_URL",
             "fetch(",

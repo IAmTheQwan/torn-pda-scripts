@@ -8,10 +8,10 @@ Last verified against official sources: 2026-08-13.
 
 Operational note: after account scrutiny was reported on 2026-08-13, BMG
 removed Torn-page pick delivery, highlighting, scrolling, refreshes, and
-background capture. Version 0.8.0 performs a finite foreground sequence after
-the player presses **Batch expand + capture**: it opens each already-rendered
-football row, expands its markets, captures it, closes it, and stops after the
-loaded list (or 30 rows). That design choice is not a claim of permission; disable the userscript entirely if Torn
+background capture. Version 0.9.0 requires one direct foreground press per
+football game. A press opens at most one row, expands its markets, captures it,
+and stops. A separate later press is required before BMG may move to the next
+row. That design choice is not a claim of permission; disable the userscript entirely if Torn
 staff instructs the player to stop using page readers or userscripts.
 
 - [Torn game rules](https://www.torn.com/rules.php)
@@ -22,8 +22,8 @@ staff instructs the player to stop using page readers or userscripts.
 
 - Process Torn API data through documented endpoints and access levels.
 - Parse data already loaded on the Torn page the player is actively viewing.
-- From one direct foreground Capture action, process a finite set of already-
-  rendered football rows in order: open, expand, capture, close, and stop.
+- From one direct foreground Capture action, process exactly one already-
+  rendered football row: open, expand, capture, and stop.
 - Save and analyze local snapshots after a direct Capture action.
 - Query independent sports data providers under their terms.
 - Perform a finite, visible in-app-browser league check after the player directly
@@ -59,8 +59,8 @@ avoid cache-bypass parameters unless fresh data is genuinely required.
 ## Release checklist
 
 - Every non-API Torn read is tied to the visible page and a direct user action.
-- Opening the bounded rendered-football sequence requires a direct player click;
-  the batch stops after that finite list and never scrolls or schedules another run.
+- Every rendered-football row requires a new direct player click; one click can
+  never advance through two rows or start another capture automatically.
 - Every Flashscore browser batch is tied to a new direct user instruction, remains
   visible, and ends after its stated finite scope. A prior run never schedules the next one.
 - Capture aborts when `document.visibilityState !== "visible"`.
@@ -69,7 +69,9 @@ avoid cache-bypass parameters unless fresh data is genuinely required.
 - The Torn userscript makes no direct network request and performs no pick
   highlighting, scrolling, refresh, background capture, stake entry, or bet
   placement. Its only page navigation is the foreground open/close sequence.
-- Export occurs only after a direct user action.
+- Local export occurs only after a direct user action. Any future remote inbox
+  upload must use a separate explicit button, disclose its destination, and
+  keep GitHub credentials outside the Torn userscript.
 - Saved observations are labeled with source and timestamp.
 - Analysis never claims certainty from incomplete market coverage.
 - Bet and exposure limits are enforced independently of model confidence.

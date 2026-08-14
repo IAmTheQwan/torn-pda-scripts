@@ -21,15 +21,16 @@ state. The first milestone is trustworthy data.
    ```
 
 2. Install `userscripts/bmg-capture.user.js` in Torn PDA or a userscript manager.
-3. On the Football Bookie slate, press **Batch expand + capture**. That direct
-   foreground action processes up to 30 rendered football rows in page order:
-   open one game, activate its **Show additional betting options** controls,
-   save it, close it, and continue to the next rendered row. It does not scroll,
-   refresh, run on a timer, fill a stake, or place a wager.
+3. On the Football Bookie slate, press **Start game capture**. That direct
+   foreground action opens and captures exactly one rendered football row, then
+   stops. Press **Capture next** again for each later game. Every press may
+   activate that one game's **Show additional betting options** control, but it
+   cannot continue into another game. It does not scroll, refresh, run on a
+   timer, fill a stake, or place a wager.
 4. On **My Bets**, manually open the exact row you want before pressing the same
    button. **Capture visible** retains the older direct-snapshot behavior for
-   the rows already on screen. **Copy last batch** copies only the captures made
-   by the most recent button run in the current page session. Press
+   the rows already on screen. **Copy session** copies the games captured by
+   the current manual session. Press
    **Export outbox** when ready;
    the export remains on your device until you choose to send it for import.
 5. Import any exported capture and inspect the result:
@@ -165,6 +166,10 @@ python -m unittest discover -s .\BMG\tests -v
 
 The live SQLite database, exports, `.env`, and credentials are ignored. The
 database is the evidence store; Git is the reproducible blueprint.
+
+Raw phone captures will use a separate private inbox repository once the
+authenticated upload gateway in `docs/GIT-INGEST.md` is connected. They must
+not be committed to this public code repository.
 
 ## Project map
 
