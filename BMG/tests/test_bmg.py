@@ -53,6 +53,7 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertIn("await waitForMyBetCard(sourceId)", script)
         self.assertIn("return expandAdditionalMarkets([card])", script)
         self.assertIn("async function captureVisible(panel)", script)
+        self.assertIn("return /^#\\/your-bets(?:\\/|$)/i.test(location.hash);", script)
         self.assertIn("const observer = new MutationObserver(scheduleFinish)", script)
         for prohibited in (
             "PICKS_URL",

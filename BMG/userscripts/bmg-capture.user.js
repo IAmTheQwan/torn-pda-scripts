@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BMG One-Click Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.6.1
+// @version      0.6.2
 // @description  Expand and capture the Torn football event or My Bets row you manually selected
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
@@ -568,7 +568,7 @@
     }
 
     function isMyBetsPage() {
-        return /^#\/your-bets(?:\/|$)/i.test(location.hash) || myBetsLinks().length > 0;
+        return /^#\/your-bets(?:\/|$)/i.test(location.hash);
     }
 
     function buildCapture(eventCards = null, capturedBets = null) {
@@ -672,7 +672,7 @@
         panel.id = PANEL_ID;
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:285px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:14px">BMG One-Click Capture <span style="color:#888;font-size:9px">v0.6.1</span></div>
+            <div style="font-weight:800;font-size:14px">BMG One-Click Capture <span style="color:#888;font-size:9px">v0.6.2</span></div>
             <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Tap the exact game or My Bets row first. Expand + capture follows that selection and opens its additional markets. Capture visible saves the rows already shown.</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px">
                 <button type="button" data-action="expand-capture">Expand + capture</button>
