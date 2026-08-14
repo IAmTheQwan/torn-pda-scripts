@@ -53,6 +53,23 @@
         </ul>
     </main>
     <script>
+        window.__BMG_PICK_FEED__ = {
+            schema_version: 'bmg.picks.v1',
+            published_at: '2026-08-13T12:00:00Z',
+            picks: [{
+                source_event_id: '9001',
+                sport: 'football',
+                event_title: 'North City v South United - Test League',
+                grade: 'A',
+                stake: 500000,
+                market_name: 'Asian Handicap 0.5 Ordinary time',
+                selection_name: 'North City',
+                selection_display: 'North City -0.5',
+                handicap: -0.5,
+                target_odds: 2.22,
+                minimum_odds: 2.10
+            }]
+        };
         document.getElementById('additional-options').addEventListener('click', event => {
             event.currentTarget.insertAdjacentHTML('beforebegin', `
                 <ul class="bets-wrap">

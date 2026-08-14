@@ -21,11 +21,14 @@ state. The first milestone is trustworthy data.
    ```
 
 2. Install `userscripts/bmg-capture.user.js` in Torn PDA or a userscript manager.
-3. Leave **Capture on game click** enabled and manually open a Torn Bookie game.
-   BMG expands that visible event's additional options and saves the capture.
-   Alternatively, press **Expand + capture** for the currently open game.
-4. Press **Export outbox** and save the JSON file under `BMG/exports/`.
-5. Import it and inspect the result:
+3. The compact **BMG Picks** panel loads `config/current-picks.json`. Green
+   highlights the recommended game; after you manually open it, gold highlights
+   the exact market option. Red means the live odds fell below the stated
+   minimum and the wager must not be placed.
+4. Capture is now optional and collapsed under **Manual capture tools**. Use
+   **Expand + capture** and **Export outbox** only when a new Torn snapshot is
+   needed.
+5. Import any exported capture and inspect the result:
 
    ```powershell
    python .\BMG\src\bmg.py import .\BMG\exports\bmg-captures-*.json

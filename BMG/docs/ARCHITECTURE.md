@@ -31,9 +31,11 @@ Explicit user request -> visible in-app Flashscore league/match pages
         -> event_match_links -> Torn events, odds, and historical bets
 ```
 
-There is deliberately no direct userscript-to-server connection. This keeps the
-first version inspectable, makes failed imports recoverable, and prevents private
-Torn data from silently leaving the device.
+The userscript makes one read-only request for the public static
+`config/current-picks.json` feed when the Bookie page opens or the player
+presses **Refresh BMG picks**. It never uploads or transmits Torn page data.
+Capture exports remain local and player initiated, keeping failed imports
+recoverable and private Torn data on the device.
 
 ## Capture boundary
 
@@ -43,13 +45,14 @@ The userscript observes only:
 - event cards and market rows Torn loaded after the player manually opened the
   event; an explicit **Expand active** click may activate Torn's own additional
   options control for that visible event;
-- a direct BMG capture click, or a direct player click that opens a game while
-  **Capture on game click** is armed.
+- a direct BMG capture click from the collapsed manual tools.
 
-It does not open events, cycle pages, refresh, operate from a hidden tab, notify
-from background observations, or place a bet. Expansion and capture are limited
-to the visible event produced by the player's trusted click. IndexedDB stores the
-resulting local snapshot; Export outbox is another direct user action.
+It highlights matching Torn game IDs already present in the rendered page and,
+after the player opens a game, the configured market/selection. It does not open
+events, cycle pages, refresh Torn, fill a stake, operate from a hidden tab, or
+place a bet. Expansion and capture are limited to the player's explicit manual
+tool click. IndexedDB stores the resulting local snapshot; Export outbox is
+another direct user action.
 
 ## Stable identities
 
