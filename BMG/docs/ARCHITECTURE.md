@@ -31,7 +31,7 @@ Explicit user request -> visible in-app Flashscore league/match pages
         -> event_match_links -> Torn events, odds, and historical bets
 ```
 
-Version 0.9.0 makes no network request and never uploads or transmits Torn page
+Version 0.9.1 makes no network request and never uploads or transmits Torn page
 data. Capture exports remain local and player initiated while the private Git
 inbox gateway described in `GIT-INGEST.md` is prepared. `config/current-picks.json` may
 still be used as an offline planning artifact, but the Torn userscript neither

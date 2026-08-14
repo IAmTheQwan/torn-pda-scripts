@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BMG Manual Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.9.0
+// @version      0.9.1
 // @description  Manually step through Torn football games one direct capture press at a time
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
@@ -886,6 +886,26 @@
         setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
+    function isIosWebView() {
+        return /iPad|iPhone|iPod/i.test(navigator.userAgent)
+            || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    }
+
+    function buildPreparedExport(captures) {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `bmg-captures-${stamp}.json`;
+        const payload = {
+            schema_version: 'bmg.export.v1',
+            generated_at: new Date().toISOString(),
+            captures
+        };
+        const text = JSON.stringify(payload, null, 2);
+        const file = typeof File === 'function'
+            ? new File([text], filename, { type: 'application/json' })
+            : null;
+        return { filename, payload, text, file, captureCount: captures.length };
+    }
+
     async function copyText(value) {
         if (navigator.clipboard?.writeText) {
             await navigator.clipboard.writeText(value);
@@ -907,13 +927,13 @@
         panel.id = PANEL_ID;
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:285px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:14px">BMG Manual Capture <span style="color:#888;font-size:9px">v0.9.0</span></div>
+            <div style="font-weight:800;font-size:14px">BMG Manual Capture <span style="color:#888;font-size:9px">v0.9.1</span></div>
             <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Football: each direct press opens and captures exactly one game, then stops. Press again for the next game. My Bets: tap the exact row first. No automatic slate loop, scrolling, refreshing, timers, or betting.</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px">
                 <button type="button" data-action="expand-capture">Start game capture</button>
                 <button type="button" data-action="end-session">End / close</button>
                 <button type="button" data-action="capture">Capture visible</button>
-                <button type="button" data-action="export">Export outbox</button>
+                <button type="button" data-action="export">Prepare export</button>
                 <button type="button" data-action="copy">Copy session</button>
             </div>
             <div data-status style="margin-top:7px;color:#8ecbff;font-size:9px">Ready. One game per foreground press.</div>
@@ -922,6 +942,8 @@
             button.style.cssText = 'background:#2d5d7b;color:#fff;border:1px solid #4a8eb8;border-radius:4px;padding:6px;cursor:pointer;font-size:10px';
         });
         const status = panel.querySelector('[data-status]');
+        const exportButton = panel.querySelector('[data-action="export"]');
+        let preparedOutboxExport = null;
         const show = (message, error = false) => {
             status.textContent = message;
             status.style.color = error ? '#ff8b8b' : '#8ecbff';
@@ -1000,21 +1022,63 @@
             }
         });
 
-        panel.querySelector('[data-action="export"]').addEventListener('click', async () => {
-            try {
-                if (document.visibilityState !== 'visible') throw new Error('Bring this page to the foreground before exporting.');
-                const captures = await getCaptures();
-                if (!captures.length) throw new Error('The outbox is empty.');
-                const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-                downloadJson(`bmg-captures-${stamp}.json`, {
-                    schema_version: 'bmg.export.v1',
-                    generated_at: new Date().toISOString(),
-                    captures
-                });
-                show(`Exported ${captures.length} capture(s). Imports are idempotent; the outbox was preserved.`);
-            } catch (error) {
-                show(error.message || String(error), true);
+        exportButton.addEventListener('click', () => {
+            if (document.visibilityState !== 'visible') {
+                show('Bring this page to the foreground before exporting.', true);
+                return;
             }
+            if (preparedOutboxExport) {
+                const prepared = preparedOutboxExport;
+                const shareData = prepared.file
+                    ? {
+                        files: [prepared.file],
+                        title: 'BMG capture export',
+                        text: `${prepared.captureCount} manual BMG capture(s)`
+                    }
+                    : null;
+                let canShareFile = false;
+                try {
+                    canShareFile = Boolean(shareData
+                        && navigator.share
+                        && (!navigator.canShare || navigator.canShare({ files: shareData.files })));
+                } catch {
+                    canShareFile = false;
+                }
+                if (canShareFile) {
+                    navigator.share(shareData).then(() => {
+                        show(`Shared ${prepared.captureCount} capture(s). The outbox was preserved.`);
+                    }).catch(error => {
+                        if (error?.name === 'AbortError') {
+                            show('Share cancelled. Press Share export to try again.');
+                            return;
+                        }
+                        show(`Share failed: ${error.message || String(error)}`, true);
+                    });
+                    return;
+                }
+                if (isIosWebView()) {
+                    copyText(prepared.text).then(() => {
+                        show(`Full ${prepared.captureCount}-capture export copied. Paste it into Codex.`);
+                    }).catch(error => show(`Copy failed: ${error.message || String(error)}`, true));
+                    return;
+                }
+                downloadJson(prepared.filename, prepared.payload);
+                show(`Downloaded ${prepared.captureCount} capture(s). The outbox was preserved.`);
+                return;
+            }
+
+            exportButton.disabled = true;
+            show('Preparing the complete outbox…');
+            getCaptures().then(captures => {
+                if (!captures.length) throw new Error('The outbox is empty.');
+                preparedOutboxExport = buildPreparedExport(captures);
+                exportButton.textContent = `Share export (${captures.length})`;
+                show(`Prepared ${captures.length} capture(s). Press Share export, then choose Save to Files.`);
+            }).catch(error => {
+                show(error.message || String(error), true);
+            }).finally(() => {
+                exportButton.disabled = false;
+            });
         });
 
         panel.querySelector('[data-action="copy"]').addEventListener('click', async () => {

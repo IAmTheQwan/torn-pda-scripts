@@ -8,7 +8,7 @@ Last verified against official sources: 2026-08-13.
 
 Operational note: after account scrutiny was reported on 2026-08-13, BMG
 removed Torn-page pick delivery, highlighting, scrolling, refreshes, and
-background capture. Version 0.9.0 requires one direct foreground press per
+background capture. Version 0.9.1 requires one direct foreground press per
 football game. A press opens at most one row, expands its markets, captures it,
 and stops. A separate later press is required before BMG may move to the next
 row. That design choice is not a claim of permission; disable the userscript entirely if Torn
