@@ -70,6 +70,18 @@ test('requires the upload secret before contacting GitHub', async () => {
     }
 });
 
+test('exposes only a minimal health route and rejects other paths', async () => {
+    const health = await worker.fetch(new Request(
+        'https://bmg-capture-inbox.example.workers.dev/health'
+    ), env);
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { ok: true, service: 'bmg-capture-inbox' });
+    const missing = await worker.fetch(new Request(
+        'https://bmg-capture-inbox.example.workers.dev/'
+    ), env);
+    assert.equal(missing.status, 404);
+});
+
 test('writes a validated export to the private GitHub inbox', async () => {
     const originalFetch = globalThis.fetch;
     const calls = [];

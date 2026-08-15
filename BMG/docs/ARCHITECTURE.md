@@ -31,9 +31,12 @@ Explicit user request -> visible in-app Flashscore league/match pages
         -> event_match_links -> Torn events, odds, and historical bets
 ```
 
-Version 0.9.1 makes no network request and never uploads or transmits Torn page
-data. Capture exports remain local and player initiated while the private Git
-inbox gateway described in `GIT-INGEST.md` is prepared. `config/current-picks.json` may
+Version 0.11.0 makes no scripted request to Torn. A separate direct **Upload
+pending** press may transmit only already-saved capture JSON to the disclosed
+private Git inbox through GitHub's API; capture actions never upload. The
+fine-grained token is limited to Contents read/write on that one private
+repository and remains only in the userscript sandbox's page memory. The local
+outbox and manual export remain available as fallbacks. `config/current-picks.json` may
 still be used as an offline planning artifact, but the Torn userscript neither
 loads nor renders it.
 
@@ -51,7 +54,9 @@ stake, operate from a hidden tab, or place a bet. Its only Torn control
 activation is the single-row foreground open/close handoff and finite additional-
 options expansion tied to that row's player click. A temporary observer waits for the event's markets
 and disconnects after settlement or an eight-second ceiling. IndexedDB stores
-the resulting local snapshot; **Export outbox** is another direct user action.
+the resulting local snapshot; **Export outbox** and **Upload pending** are
+separate direct user actions. Upload contacts only `api.github.com` for the
+private inbox and never initiates a Torn request.
 
 ## Stable identities
 

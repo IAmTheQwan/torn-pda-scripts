@@ -1,78 +1,77 @@
-# Private Git capture inbox design
+# Private Git capture inbox
 
 ## Goal
 
-Move player-initiated BMG capture sessions from Torn PDA into a private Git
-inbox so Codex can pull and import them after a new user prompt. Git remains a
-transport and audit trail; SQLite remains the queryable source of truth.
+Move player-initiated BMG capture sessions from Torn PDA into the private
+`IAmTheQwan/bmg-capture-inbox` repository so Codex can pull and import them only
+after a new user prompt. Git is the transport and audit trail; SQLite remains
+the queryable source of truth.
 
-## Security boundary
-
-- Do not commit captures to the public `torn-pda-scripts` repository.
-- Do not place a GitHub personal access token, API key, Torn token, or cookie in
-  the userscript, its source, localStorage, IndexedDB, or an export.
-- Keep the GitHub App/private-repository credential in a server-side secret.
-- Give the gateway permission only to create files in one private inbox repo.
-- Upload only after the player presses a clearly labeled **Upload session**
-  button. Capturing a game never uploads it.
-
-## Proposed path
+## Active transport
 
 ```text
-one press per Torn game -> local IndexedDB session
-                              |
-                              | separate Upload session press
-                              v
-authenticated write-only gateway -> private bmg-capture-inbox Git repo
-                                              |
-                                              | later user prompt
-                                              v
-                         Codex pulls -> validates -> idempotent SQLite import
+one direct press per Torn game -> local IndexedDB outbox
+                                      |
+                                      | separate Upload pending press
+                                      v
+api.github.com -> private bmg-capture-inbox Git repository
+                                      |
+                                      | later user prompt
+                                      v
+                 Codex pulls -> validates -> idempotent SQLite import
 ```
 
-The gateway can be a small Cloudflare Worker or equivalent service. It holds a
-GitHub App installation token or narrowly scoped repository token as a secret,
-validates `bmg.export.v1`, enforces a payload-size limit, generates the path,
-and writes through the GitHub Contents API. The phone receives only the inbox
-commit SHA. A short-lived or revocable upload credential may authorize the
-gateway, but it must not grant GitHub access.
+Version 0.11.0 uses `GM_xmlhttpRequest` from the userscript sandbox to avoid
+exposing the Authorization header to Torn page JavaScript and to make the
+external destination explicit in userscript metadata. The upload button makes
+only GitHub API requests for already-saved JSON. It never requests Torn,
+captures another game, advances the slate, scrolls, refreshes, retries on a
+timer, or places a bet.
 
-Suggested private-repository paths:
+## Credential boundary
+
+- Use a fine-grained GitHub token restricted to only
+  `IAmTheQwan/bmg-capture-inbox`.
+- Grant only repository **Contents: Read and write**. GitHub may add mandatory
+  read-only metadata access.
+- Enter the token only through **Bridge settings** or the first explicit upload
+  prompt.
+- The token stays in the userscript sandbox closure for the current page
+  session. It is never written to source, localStorage, IndexedDB, capture JSON,
+  an export, or the public repository.
+- Reloading the page clears the token. Revoke or rotate it in GitHub settings at
+  any time.
+
+## Upload behavior
+
+- One **Upload pending** press sends all currently pending saved captures in
+  bounded groups of at most 30.
+- Each group has deterministic JSON and a Git-blob content hash in its filename.
+  Repeating an interrupted upload checks that exact private path and treats an
+  identical file as already delivered.
+- A delivery receipt is recorded locally only after GitHub confirms identical
+  existing content or creates the file successfully.
+- The local outbox is preserved after delivery. **Prepare export** and **Copy
+  session** remain manual fallbacks.
+
+Private repository paths use this form:
 
 ```text
-incoming/2026/08/14/2026-08-14T13-17-16Z_4e7dc3f6.json
-processed/2026/08/14/2026-08-14T13-17-16Z_4e7dc3f6.json
+incoming/2026/08/14/2026-08-14T13-17-16-494Z_<git-blob-sha>.json
+processed/2026/08/14/2026-08-14T13-17-16-494Z_<git-blob-sha>.json
 rejected/2026/08/14/<filename>.json
 ```
 
 ## Pull and import contract
 
-After the player says to retrieve new captures, Codex will:
+After the player asks to retrieve new captures, Codex will:
 
 1. pull the private inbox;
 2. validate schema, capture IDs, timestamps, event counts, and secret scanning;
-3. import with `bmg.py import` (capture IDs make repeats harmless);
-4. verify capture/market/selection/odds counts;
-5. move accepted files to `processed/` and push that bookkeeping change only
-   after the user-authorized retrieval command.
+3. import idempotently with `src/capture_inbox.py` / `bmg.py`;
+4. verify capture, market, selection, and odds counts;
+5. move accepted files to `processed/` and push that bookkeeping change as part
+   of the prompted retrieval.
 
-## Implemented locally
-
-- `gateway/src/worker.mjs` validates authenticated uploads and writes
-  content-addressed files through the GitHub Contents API.
-- `gateway/test/worker.test.mjs` covers authorization, credential rejection,
-  Git creation, and idempotent retry behavior.
-- `src/capture_inbox.py` validates a prompted pull, imports it idempotently,
-  and moves accepted files from `incoming/` to `processed/`.
-
-## External setup still required
-
-1. Create or select a private inbox repository.
-2. Deploy and connect the write-only gateway.
-3. Add its URL and public disclosure text to BMG settings.
-4. Add the explicit **Upload session** button and test it with sanitized data.
-5. Connect the private inbox as a separate local checkout or approved GitHub
-   integration for prompted retrieval.
-
-Until those steps are complete, **Copy session** and **Export outbox** remain
-local-only and the userscript performs no network request.
+The Cloudflare Worker under `gateway/` remains a tested optional alternative,
+but it is not deployed or used by the active client.

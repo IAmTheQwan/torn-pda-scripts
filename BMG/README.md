@@ -167,9 +167,9 @@ python -m unittest discover -s .\BMG\tests -v
 The live SQLite database, exports, `.env`, and credentials are ignored. The
 database is the evidence store; Git is the reproducible blueprint.
 
-Raw phone captures will use a separate private inbox repository once the
-authenticated upload gateway in `docs/GIT-INGEST.md` is connected. They must
-not be committed to this public code repository.
+Raw phone captures use the separate private `bmg-capture-inbox` repository via
+the explicit manual bridge described in `docs/GIT-INGEST.md`. They must not be
+committed to this public code repository.
 
 ## Project map
 

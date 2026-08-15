@@ -47,10 +47,27 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertIn("Start game capture", script)
         self.assertIn("Capture visible", script)
         self.assertIn("Prepare export", script)
+        self.assertIn("Upload pending", script)
+        self.assertIn("Bridge settings", script)
         self.assertIn("Share export", script)
         self.assertIn("Copy session", script)
         self.assertIn("navigator.share(shareData)", script)
         self.assertIn("let preparedOutboxExport = null", script)
+        self.assertIn("async function uploadPendingCaptures", script)
+        self.assertIn("const chunks = captureChunks(pending)", script)
+        self.assertIn("await markCapturesDelivered(chunk, receipt)", script)
+        self.assertIn("It stays only in this userscript page memory and is not saved or exported.", script)
+        self.assertIn("@grant        GM_xmlhttpRequest", script)
+        self.assertIn("@connect      api.github.com", script)
+        self.assertIn("const GITHUB_REPO = 'bmg-capture-inbox'", script)
+        self.assertIn("async function uploadChunkToGithub", script)
+        self.assertIn("responseType: 'json'", script)
+        self.assertEqual(2, script.count("uploadPendingCaptures"))
+        self.assertEqual(0, script.count("fetch("))
+        self.assertEqual(1, script.count("GM_xmlhttpRequest({"))
+        self.assertNotIn("localStorage", script)
+        self.assertNotIn("DEFAULT_GATEWAY_URL", script)
+        self.assertNotIn("UPLOAD_SECRET", script)
         self.assertIn("expandAndCapture(panel, message => show(message))", script)
         self.assertIn("controls.forEach(control => control.click())", script)
         self.assertIn("async function captureNextBookieGame", script)
@@ -77,7 +94,6 @@ class BmgDatabaseTests(unittest.TestCase):
         self.assertNotIn("for (let index = 0; index < hrefs.length", script)
         for prohibited in (
             "PICKS_URL",
-            "fetch(",
             "highlightPicks",
             "scrollIntoView",
             "setInterval",

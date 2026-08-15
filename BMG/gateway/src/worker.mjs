@@ -187,6 +187,13 @@ async function storeExport(env, payloadText, validation) {
 
 export default {
     async fetch(request, env) {
+        const pathname = new URL(request.url).pathname.replace(/\/+$/, '') || '/';
+        if (request.method === 'GET' && pathname === '/health') {
+            return jsonResponse({ ok: true, service: 'bmg-capture-inbox' });
+        }
+        if (pathname !== '/upload') {
+            return jsonResponse({ ok: false, error: 'Not found.' }, 404);
+        }
         const origin = allowedOrigin(request, env);
         if (origin === null) return jsonResponse({ ok: false, error: 'Origin not allowed.' }, 403);
         if (request.method === 'OPTIONS') {

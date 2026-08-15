@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         BMG Manual Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.9.1
-// @description  Manually step through Torn football games one direct capture press at a time
+// @version      0.11.0
+// @description  Manually capture one Torn football game per press and explicitly upload saved sessions
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
 // @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
 // @match        https://www.torn.com/page.php*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      api.github.com
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -16,14 +17,21 @@
 
     const CAPTURE_SCHEMA = 'bmg.capture.v1';
     const DB_NAME = 'bmg_capture_outbox';
-    const DB_VERSION = 1;
+    const DB_VERSION = 2;
     const STORE_NAME = 'captures';
+    const DELIVERY_STORE_NAME = 'deliveries';
     const PANEL_ID = 'bmg-capture-panel';
     const FOOTBALL_ONLY = true;
     const MY_BETS_OPEN_TIMEOUT_MS = 12000;
     const BOOKIE_EVENT_OPEN_TIMEOUT_MS = 12000;
     const BOOKIE_EVENT_CLOSE_TIMEOUT_MS = 4000;
     const MAX_BOOKIE_BATCH_EVENTS = 30;
+    const MAX_UPLOAD_CAPTURES = 30;
+    const GITHUB_OWNER = 'IAmTheQwan';
+    const GITHUB_REPO = 'bmg-capture-inbox';
+    const GITHUB_BRANCH = 'main';
+    const GITHUB_API_ROOT = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}`;
+    let bridgeSettings = { githubToken: '' };
 
     function isBookiePage() {
         try {
@@ -76,6 +84,10 @@
                     const store = db.createObjectStore(STORE_NAME, { keyPath: 'capture_id' });
                     store.createIndex('observed_at', 'observed_at', { unique: false });
                 }
+                if (!db.objectStoreNames.contains(DELIVERY_STORE_NAME)) {
+                    const deliveries = db.createObjectStore(DELIVERY_STORE_NAME, { keyPath: 'capture_id' });
+                    deliveries.createIndex('uploaded_at', 'uploaded_at', { unique: false });
+                }
             };
             request.onsuccess = () => resolve(request.result);
             request.onerror = () => reject(request.error);
@@ -102,6 +114,42 @@
                 const request = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).getAll();
                 request.onsuccess = () => resolve(request.result.sort((a, b) => a.observed_at.localeCompare(b.observed_at)));
                 request.onerror = () => reject(request.error);
+            });
+        } finally {
+            db.close();
+        }
+    }
+
+    async function getDeliveredCaptureIds() {
+        const db = await openOutbox();
+        try {
+            return new Set(await new Promise((resolve, reject) => {
+                const request = db.transaction(DELIVERY_STORE_NAME, 'readonly')
+                    .objectStore(DELIVERY_STORE_NAME).getAllKeys();
+                request.onsuccess = () => resolve(request.result.map(String));
+                request.onerror = () => reject(request.error);
+            }));
+        } finally {
+            db.close();
+        }
+    }
+
+    async function markCapturesDelivered(captures, receipt) {
+        const db = await openOutbox();
+        try {
+            await new Promise((resolve, reject) => {
+                const transaction = db.transaction(DELIVERY_STORE_NAME, 'readwrite');
+                const store = transaction.objectStore(DELIVERY_STORE_NAME);
+                captures.forEach(capture => store.put({
+                    capture_id: capture.capture_id,
+                    uploaded_at: new Date().toISOString(),
+                    inbox_path: cleanText(receipt.path),
+                    content_sha: cleanText(receipt.content_sha),
+                    commit_sha: cleanText(receipt.commit_sha)
+                }));
+                transaction.oncomplete = resolve;
+                transaction.onerror = () => reject(transaction.error);
+                transaction.onabort = () => reject(transaction.error || new Error('Delivery receipt was not saved.'));
             });
         } finally {
             db.close();
@@ -906,6 +954,155 @@
         return { filename, payload, text, file, captureCount: captures.length };
     }
 
+    function configureBridge() {
+        const githubToken = window.prompt(
+            `Enter the fine-grained GitHub token limited to ${GITHUB_OWNER}/${GITHUB_REPO} Contents read/write. It stays only in this userscript page memory and is not saved or exported.`,
+            ''
+        );
+        if (githubToken === null) return false;
+        if (!cleanText(githubToken)) throw new Error('The private-inbox GitHub token cannot be empty.');
+        bridgeSettings = { githubToken: cleanText(githubToken) };
+        return true;
+    }
+
+    function bytesToBase64(bytes) {
+        let binary = '';
+        const blockSize = 0x8000;
+        for (let offset = 0; offset < bytes.length; offset += blockSize) {
+            binary += String.fromCharCode(...bytes.subarray(offset, offset + blockSize));
+        }
+        return btoa(binary);
+    }
+
+    async function gitBlobDetails(text) {
+        const contentBytes = new TextEncoder().encode(text);
+        const prefixBytes = new TextEncoder().encode(`blob ${contentBytes.length}\0`);
+        const blobBytes = new Uint8Array(prefixBytes.length + contentBytes.length);
+        blobBytes.set(prefixBytes);
+        blobBytes.set(contentBytes, prefixBytes.length);
+        const digest = new Uint8Array(await crypto.subtle.digest('SHA-1', blobBytes));
+        return {
+            base64: bytesToBase64(contentBytes),
+            sha: Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('')
+        };
+    }
+
+    function githubRequest(method, url, token, body = null) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method,
+                url,
+                headers: {
+                    Accept: 'application/vnd.github+json',
+                    Authorization: `Bearer ${token}`,
+                    'X-GitHub-Api-Version': '2022-11-28',
+                    ...(body ? { 'Content-Type': 'application/json' } : {})
+                },
+                data: body ? JSON.stringify(body) : undefined,
+                responseType: 'json',
+                timeout: 30000,
+                onload: response => {
+                    let value = response.response;
+                    if (!value && response.responseText) {
+                        try {
+                            value = JSON.parse(response.responseText);
+                        } catch {
+                            value = {};
+                        }
+                    }
+                    resolve({ status: response.status, value: value || {} });
+                },
+                onerror: () => reject(new Error('The private GitHub inbox request failed. Saved captures remain local.')),
+                ontimeout: () => reject(new Error('The private GitHub inbox request timed out. Saved captures remain local.'))
+            });
+        });
+    }
+
+    function stableExport(chunk) {
+        const generatedAt = chunk.reduce(
+            (latest, capture) => String(capture.observed_at || '') > latest
+                ? String(capture.observed_at)
+                : latest,
+            ''
+        ) || new Date(0).toISOString();
+        return {
+            schema_version: 'bmg.export.v1',
+            generated_at: generatedAt,
+            captures: chunk
+        };
+    }
+
+    async function uploadChunkToGithub(chunk, token) {
+        const payload = stableExport(chunk);
+        const text = JSON.stringify(payload, null, 2);
+        const blob = await gitBlobDetails(text);
+        const date = new Date(payload.generated_at);
+        if (Number.isNaN(date.valueOf())) throw new Error('A saved capture has an invalid observation time.');
+        const dayPath = date.toISOString().slice(0, 10).replaceAll('-', '/');
+        const stamp = date.toISOString().replace(/[:.]/g, '-');
+        const path = `incoming/${dayPath}/${stamp}_${blob.sha}.json`;
+        const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+        const endpoint = `${GITHUB_API_ROOT}/contents/${encodedPath}`;
+        const existing = await githubRequest(
+            'GET',
+            `${endpoint}?ref=${encodeURIComponent(GITHUB_BRANCH)}`,
+            token
+        );
+        if (existing.status === 200) {
+            if (cleanText(existing.value.sha) !== blob.sha) {
+                throw new Error('The private inbox path already exists with different content. Upload stopped safely.');
+            }
+            return { path, content_sha: blob.sha, commit_sha: '' };
+        }
+        if (existing.status !== 404) {
+            throw new Error(cleanText(existing.value.message) || `Private inbox check failed (${existing.status}).`);
+        }
+        const created = await githubRequest('PUT', endpoint, token, {
+            message: `BMG manual capture upload: ${chunk.length} capture(s)`,
+            content: blob.base64,
+            branch: GITHUB_BRANCH
+        });
+        if (created.status !== 201 || !created.value.content?.sha) {
+            throw new Error(cleanText(created.value.message) || `Private inbox upload failed (${created.status}).`);
+        }
+        return {
+            path,
+            content_sha: cleanText(created.value.content.sha),
+            commit_sha: cleanText(created.value.commit?.sha)
+        };
+    }
+
+    function captureChunks(captures) {
+        const chunks = [];
+        for (let index = 0; index < captures.length; index += MAX_UPLOAD_CAPTURES) {
+            chunks.push(captures.slice(index, index + MAX_UPLOAD_CAPTURES));
+        }
+        return chunks;
+    }
+
+    async function uploadPendingCaptures(progress = () => {}) {
+        if (document.visibilityState !== 'visible') {
+            throw new Error('Bring Torn Bookie to the foreground before uploading saved captures.');
+        }
+        if (!bridgeSettings.githubToken) {
+            if (!configureBridge()) return { cancelled: true, captures: 0, chunks: 0 };
+        }
+        const captures = await getCaptures();
+        const delivered = await getDeliveredCaptureIds();
+        const pending = captures.filter(capture => !delivered.has(String(capture.capture_id)));
+        if (!pending.length) return { cancelled: false, captures: 0, chunks: 0 };
+        const chunks = captureChunks(pending);
+        let uploaded = 0;
+        for (let index = 0; index < chunks.length; index += 1) {
+            const chunk = chunks[index];
+            progress(`Uploading saved batch ${index + 1}/${chunks.length} to the private BMG inbox…`);
+            const receipt = await uploadChunkToGithub(chunk, bridgeSettings.githubToken);
+            await markCapturesDelivered(chunk, receipt);
+            uploaded += chunk.length;
+        }
+        return { cancelled: false, captures: uploaded, chunks: chunks.length };
+    }
+
     async function copyText(value) {
         if (navigator.clipboard?.writeText) {
             await navigator.clipboard.writeText(value);
@@ -927,12 +1124,15 @@
         panel.id = PANEL_ID;
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:285px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:14px">BMG Manual Capture <span style="color:#888;font-size:9px">v0.9.1</span></div>
+            <div style="font-weight:800;font-size:14px">BMG Manual Capture <span style="color:#888;font-size:9px">v0.11.0</span></div>
             <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Football: each direct press opens and captures exactly one game, then stops. Press again for the next game. My Bets: tap the exact row first. No automatic slate loop, scrolling, refreshing, timers, or betting.</div>
+            <div style="color:#9fc7a7;font-size:9px;line-height:1.35;margin-top:5px">Upload is a separate manual action. It sends only saved capture JSON to IAmTheQwan/bmg-capture-inbox through api.github.com—never Torn cookies, credentials, API keys, or new Torn requests. The fine-grained GitHub token stays only in userscript page memory.</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px">
                 <button type="button" data-action="expand-capture">Start game capture</button>
                 <button type="button" data-action="end-session">End / close</button>
                 <button type="button" data-action="capture">Capture visible</button>
+                <button type="button" data-action="upload">Upload pending</button>
+                <button type="button" data-action="bridge">Bridge settings</button>
                 <button type="button" data-action="export">Prepare export</button>
                 <button type="button" data-action="copy">Copy session</button>
             </div>
@@ -943,6 +1143,7 @@
         });
         const status = panel.querySelector('[data-status]');
         const exportButton = panel.querySelector('[data-action="export"]');
+        const uploadButton = panel.querySelector('[data-action="upload"]');
         let preparedOutboxExport = null;
         const show = (message, error = false) => {
             status.textContent = message;
@@ -1019,6 +1220,33 @@
                 show(captureSummary(capture));
             } catch (error) {
                 show(error.message || String(error), true);
+            }
+        });
+
+        panel.querySelector('[data-action="bridge"]').addEventListener('click', () => {
+            try {
+                if (configureBridge()) show('Private GitHub inbox configured for this page session only.');
+                else show('Bridge setup cancelled.');
+            } catch (error) {
+                show(error.message || String(error), true);
+            }
+        });
+
+        uploadButton.addEventListener('click', async () => {
+            uploadButton.disabled = true;
+            try {
+                const result = await uploadPendingCaptures(message => show(message));
+                if (result.cancelled) {
+                    show('Upload cancelled. Saved captures remain in the local outbox.');
+                } else if (!result.captures) {
+                    show('Every saved capture already has a private-inbox delivery receipt.');
+                } else {
+                    show(`Uploaded ${result.captures} saved capture(s) in ${result.chunks} private-inbox batch(es). The local outbox was preserved.`);
+                }
+            } catch (error) {
+                show(`${error.message || String(error)} Saved captures remain local; press Upload pending to retry manually.`, true);
+            } finally {
+                uploadButton.disabled = false;
             }
         });
 
