@@ -31,11 +31,11 @@ Explicit user request -> visible in-app Flashscore league/match pages
         -> event_match_links -> Torn events, odds, and historical bets
 ```
 
-Version 0.11.0 makes no scripted request to Torn. A separate direct **Upload
+Version 0.12.0 makes no scripted request to Torn. A separate direct **Upload
 pending** press may transmit only already-saved capture JSON to the disclosed
 private Git inbox through GitHub's API; capture actions never upload. The
 fine-grained token is limited to Contents read/write on that one private
-repository and remains only in the userscript sandbox's page memory. The local
+repository and remains only in userscript-private device storage. The local
 outbox and manual export remain available as fallbacks. `config/current-picks.json` may
 still be used as an offline planning artifact, but the Torn userscript neither
 loads nor renders it.

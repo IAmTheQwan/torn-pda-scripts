@@ -1,13 +1,16 @@
 // ==UserScript==
 // @name         BMG Manual Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.11.0
+// @version      0.12.0
 // @description  Manually capture one Torn football game per press and explicitly upload saved sessions
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
 // @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
 // @match        https://www.torn.com/page.php*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
 // @connect      api.github.com
 // @run-at       document-idle
 // ==/UserScript==
@@ -31,6 +34,8 @@
     const GITHUB_REPO = 'bmg-capture-inbox';
     const GITHUB_BRANCH = 'main';
     const GITHUB_API_ROOT = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}`;
+    const GITHUB_TOKEN_STORAGE_KEY = 'bmg_private_inbox_token';
+    const PANEL_COLLAPSED_STORAGE_KEY = 'bmg_panel_collapsed';
     let bridgeSettings = { githubToken: '' };
 
     function isBookiePage() {
@@ -48,6 +53,22 @@
 
     function cleanText(value) {
         return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function privateSetting(key, fallback = '') {
+        try {
+            return typeof GM_getValue === 'function' ? GM_getValue(key, fallback) : fallback;
+        } catch {
+            return fallback;
+        }
+    }
+
+    function savePrivateSetting(key, value) {
+        if (typeof GM_setValue === 'function') GM_setValue(key, value);
+    }
+
+    function deletePrivateSetting(key) {
+        if (typeof GM_deleteValue === 'function') GM_deleteValue(key);
     }
 
     function canonical(value) {
@@ -230,7 +251,11 @@
     }
 
     function parseSelection(row, marketType) {
-        const rawName = cleanText(row.querySelector('.bet-cell.result')?.textContent);
+        // Torn may echo a typed stake (for example "$500k") inside the result
+        // cell. It is wager state, not part of the team/line identity.
+        const rawName = cleanText(row.querySelector('.bet-cell.result')?.textContent)
+            .replace(/\s*\$\s*[\d,.]+\s*[kmb]?\s*$/i, '')
+            .trim();
         const handicapMatch = rawName.match(/\(\s*([+-]?\d+(?:[.,]\d+)?)\s*\)\s*$/);
         const name = rawName.replace(/\s*\(\s*[+-]?\d+(?:[.,]\d+)?\s*\)\s*$/, '').trim();
         const lineMatch = /^(?:total|spread|asian_handicap)$/.test(marketType)
@@ -956,12 +981,18 @@
 
     function configureBridge() {
         const githubToken = window.prompt(
-            `Enter the fine-grained GitHub token limited to ${GITHUB_OWNER}/${GITHUB_REPO} Contents read/write. It stays only in this userscript page memory and is not saved or exported.`,
+            `Enter the fine-grained GitHub token limited to ${GITHUB_OWNER}/${GITHUB_REPO} Contents read/write. It is saved only in this userscript manager's private device storage—not Torn storage, capture JSON, or exports. Type CLEAR to remove it.`,
             ''
         );
         if (githubToken === null) return false;
+        if (/^clear$/i.test(cleanText(githubToken))) {
+            bridgeSettings = { githubToken: '' };
+            deletePrivateSetting(GITHUB_TOKEN_STORAGE_KEY);
+            return true;
+        }
         if (!cleanText(githubToken)) throw new Error('The private-inbox GitHub token cannot be empty.');
         bridgeSettings = { githubToken: cleanText(githubToken) };
+        savePrivateSetting(GITHUB_TOKEN_STORAGE_KEY, bridgeSettings.githubToken);
         return true;
     }
 
@@ -1120,30 +1151,59 @@
 
     function mountPanel() {
         if (document.getElementById(PANEL_ID) || !document.body) return;
+        bridgeSettings = { githubToken: cleanText(privateSetting(GITHUB_TOKEN_STORAGE_KEY, '')) };
         const panel = document.createElement('section');
         panel.id = PANEL_ID;
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:285px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
-            <div style="font-weight:800;font-size:14px">BMG Manual Capture <span style="color:#888;font-size:9px">v0.11.0</span></div>
-            <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Football: each direct press opens and captures exactly one game, then stops. Press again for the next game. My Bets: tap the exact row first. No automatic slate loop, scrolling, refreshing, timers, or betting.</div>
-            <div style="color:#9fc7a7;font-size:9px;line-height:1.35;margin-top:5px">Upload is a separate manual action. It sends only saved capture JSON to IAmTheQwan/bmg-capture-inbox through api.github.com—never Torn cookies, credentials, API keys, or new Torn requests. The fine-grained GitHub token stays only in userscript page memory.</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px">
-                <button type="button" data-action="expand-capture">Start game capture</button>
-                <button type="button" data-action="end-session">End / close</button>
-                <button type="button" data-action="capture">Capture visible</button>
-                <button type="button" data-action="upload">Upload pending</button>
-                <button type="button" data-action="bridge">Bridge settings</button>
-                <button type="button" data-action="export">Prepare export</button>
-                <button type="button" data-action="copy">Copy session</button>
+            <div data-panel-header style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+                <div data-panel-title style="font-weight:800;font-size:14px">BMG Manual Capture <span style="color:#888;font-size:9px">v0.12.0</span></div>
+                <button type="button" data-action="toggle-panel" aria-label="Minimize BMG capture panel">−</button>
             </div>
-            <div data-status style="margin-top:7px;color:#8ecbff;font-size:9px">Ready. One game per foreground press.</div>
+            <div data-panel-body>
+                <div style="color:#bbb;font-size:10px;line-height:1.4;margin-top:4px">Football: each direct press opens and captures exactly one game, then stops. Press again for the next game. My Bets: tap the exact row first. No automatic slate loop, scrolling, refreshing, timers, or betting.</div>
+                <div style="color:#9fc7a7;font-size:9px;line-height:1.35;margin-top:5px">Upload is a separate manual action. It sends only saved capture JSON to IAmTheQwan/bmg-capture-inbox through api.github.com—never Torn cookies, credentials, API keys, or new Torn requests. The fine-grained GitHub token is kept only in userscript-private device storage.</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px">
+                    <button type="button" data-action="expand-capture">Start game capture</button>
+                    <button type="button" data-action="end-session">End / close</button>
+                    <button type="button" data-action="capture">Capture visible</button>
+                    <button type="button" data-action="upload">Upload pending</button>
+                    <button type="button" data-action="bridge">Bridge settings</button>
+                    <button type="button" data-action="export">Prepare export</button>
+                    <button type="button" data-action="copy">Copy session</button>
+                </div>
+                <div data-status style="margin-top:7px;color:#8ecbff;font-size:9px">Ready. One game per foreground press.</div>
+            </div>
         `;
         panel.querySelectorAll('button').forEach(button => {
             button.style.cssText = 'background:#2d5d7b;color:#fff;border:1px solid #4a8eb8;border-radius:4px;padding:6px;cursor:pointer;font-size:10px';
         });
         const status = panel.querySelector('[data-status]');
+        const panelBody = panel.querySelector('[data-panel-body]');
+        const panelTitle = panel.querySelector('[data-panel-title]');
+        const togglePanelButton = panel.querySelector('[data-action="toggle-panel"]');
         const exportButton = panel.querySelector('[data-action="export"]');
         const uploadButton = panel.querySelector('[data-action="upload"]');
+        let panelCollapsed = privateSetting(PANEL_COLLAPSED_STORAGE_KEY, true) !== false;
+        const renderPanelSize = () => {
+            panelBody.hidden = panelCollapsed;
+            panelTitle.hidden = panelCollapsed;
+            panel.style.width = panelCollapsed ? '52px' : '285px';
+            panel.style.padding = panelCollapsed ? '5px' : '10px';
+            togglePanelButton.textContent = panelCollapsed ? 'BMG' : '−';
+            togglePanelButton.setAttribute('aria-label', panelCollapsed
+                ? 'Expand BMG capture panel'
+                : 'Minimize BMG capture panel');
+            togglePanelButton.style.cssText = panelCollapsed
+                ? 'width:52px;background:#2d5d7b;color:#fff;border:1px solid #4a8eb8;border-radius:5px;padding:6px 4px;cursor:pointer;font-size:10px;font-weight:800'
+                : 'width:30px;background:#2d5d7b;color:#fff;border:1px solid #4a8eb8;border-radius:4px;padding:3px;cursor:pointer;font-size:14px';
+        };
+        togglePanelButton.addEventListener('click', () => {
+            panelCollapsed = !panelCollapsed;
+            savePrivateSetting(PANEL_COLLAPSED_STORAGE_KEY, panelCollapsed);
+            renderPanelSize();
+        });
+        renderPanelSize();
         let preparedOutboxExport = null;
         const show = (message, error = false) => {
             status.textContent = message;
@@ -1225,7 +1285,9 @@
 
         panel.querySelector('[data-action="bridge"]').addEventListener('click', () => {
             try {
-                if (configureBridge()) show('Private GitHub inbox configured for this page session only.');
+                if (configureBridge()) show(bridgeSettings.githubToken
+                    ? 'Private GitHub inbox token saved in userscript-private device storage.'
+                    : 'Saved private-inbox token cleared.');
                 else show('Bridge setup cancelled.');
             } catch (error) {
                 show(error.message || String(error), true);

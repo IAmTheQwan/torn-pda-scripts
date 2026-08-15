@@ -21,7 +21,7 @@ api.github.com -> private bmg-capture-inbox Git repository
                  Codex pulls -> validates -> idempotent SQLite import
 ```
 
-Version 0.11.0 uses `GM_xmlhttpRequest` from the userscript sandbox to avoid
+Version 0.12.0 uses `GM_xmlhttpRequest` from the userscript sandbox to avoid
 exposing the Authorization header to Torn page JavaScript and to make the
 external destination explicit in userscript metadata. The upload button makes
 only GitHub API requests for already-saved JSON. It never requests Torn,
@@ -36,11 +36,11 @@ timer, or places a bet.
   read-only metadata access.
 - Enter the token only through **Bridge settings** or the first explicit upload
   prompt.
-- The token stays in the userscript sandbox closure for the current page
-  session. It is never written to source, localStorage, IndexedDB, capture JSON,
-  an export, or the public repository.
-- Reloading the page clears the token. Revoke or rotate it in GitHub settings at
-  any time.
+- The token is persisted only in the userscript manager's private device
+  storage. It is never written to Torn storage, source, localStorage, IndexedDB,
+  capture JSON, an export, or the public repository.
+- Type `CLEAR` in **Bridge settings** to remove the saved token. Revoke or rotate
+  it in GitHub settings at any time.
 
 ## Upload behavior
 

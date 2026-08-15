@@ -73,8 +73,8 @@ avoid cache-bypass parameters unless fresh data is genuinely required.
   a separate explicit button, sends only already-saved capture JSON to the
   disclosed `api.github.com` repository endpoint, and has no automatic retry or
   scheduling. Its fine-grained token is limited to Contents read/write on the
-  single private inbox, is held only in userscript sandbox page memory, and is
-  never added to IndexedDB, localStorage, captures, or exports.
+  single private inbox, is held only in userscript-private device storage, and
+  is never added to Torn storage, IndexedDB, localStorage, captures, or exports.
 - Saved observations are labeled with source and timestamp.
 - Analysis never claims certainty from incomplete market coverage.
 - Bet and exposure limits are enforced independently of model confidence.

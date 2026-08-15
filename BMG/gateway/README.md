@@ -1,6 +1,6 @@
 # BMG capture-inbox gateway
 
-> Optional fallback, not the active transport. Version 0.11.0 writes directly
+> Optional fallback, not the active transport. Version 0.12.0 writes directly
 > to the one private inbox with a runtime-only fine-grained token because the
 > standard Cloudflare Wrangler OAuth grant was broader than this deployment
 > required.
