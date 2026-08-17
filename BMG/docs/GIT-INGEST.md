@@ -53,6 +53,9 @@ timer, or places a bet.
   existing content or creates the file successfully.
 - The local outbox is preserved after delivery. **Prepare export** and **Copy
   session** remain manual fallbacks.
+- **Clear local data** permanently removes the device's saved captures, delivery
+  receipts, bridge token, and panel preference after an explicit confirmation.
+  It does not delete capture batches that were already uploaded to GitHub.
 
 Private repository paths use this form:
 

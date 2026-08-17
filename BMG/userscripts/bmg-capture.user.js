@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BMG Manual Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.12.0
+// @version      0.13.0
 // @description  Manually capture one Torn football game per press and explicitly upload saved sessions
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
@@ -171,6 +171,27 @@
                 transaction.oncomplete = resolve;
                 transaction.onerror = () => reject(transaction.error);
                 transaction.onabort = () => reject(transaction.error || new Error('Delivery receipt was not saved.'));
+            });
+        } finally {
+            db.close();
+        }
+    }
+
+    async function clearLocalOutbox() {
+        const db = await openOutbox();
+        try {
+            await new Promise((resolve, reject) => {
+                const transaction = db.transaction(
+                    [STORE_NAME, DELIVERY_STORE_NAME],
+                    'readwrite'
+                );
+                transaction.objectStore(STORE_NAME).clear();
+                transaction.objectStore(DELIVERY_STORE_NAME).clear();
+                transaction.oncomplete = resolve;
+                transaction.onerror = () => reject(transaction.error);
+                transaction.onabort = () => reject(
+                    transaction.error || new Error('Local BMG data could not be cleared.')
+                );
             });
         } finally {
             db.close();
@@ -1157,7 +1178,7 @@
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:285px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
             <div data-panel-header style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-                <div data-panel-title style="font-weight:800;font-size:14px">BMG Manual Capture <span style="color:#888;font-size:9px">v0.12.0</span></div>
+                <div data-panel-title style="font-weight:800;font-size:14px">BMG Manual Capture <span style="color:#888;font-size:9px">v0.13.0</span></div>
                 <button type="button" data-action="toggle-panel" aria-label="Minimize BMG capture panel">−</button>
             </div>
             <div data-panel-body>
@@ -1171,6 +1192,7 @@
                     <button type="button" data-action="bridge">Bridge settings</button>
                     <button type="button" data-action="export">Prepare export</button>
                     <button type="button" data-action="copy">Copy session</button>
+                    <button type="button" data-action="clear-local">Clear local data</button>
                 </div>
                 <div data-status style="margin-top:7px;color:#8ecbff;font-size:9px">Ready. One game per foreground press.</div>
             </div>
@@ -1291,6 +1313,34 @@
                 else show('Bridge setup cancelled.');
             } catch (error) {
                 show(error.message || String(error), true);
+            }
+        });
+
+        panel.querySelector('[data-action="clear-local"]').addEventListener('click', async event => {
+            const clearButton = event.currentTarget;
+            const confirmed = window.confirm(
+                'Permanently clear every saved BMG capture, upload receipt, bridge token, and panel preference on this device? Already uploaded GitHub files will not be deleted.'
+            );
+            if (!confirmed) {
+                show('Local-data clear cancelled.');
+                return;
+            }
+            clearButton.disabled = true;
+            try {
+                await clearLocalOutbox();
+                deletePrivateSetting(GITHUB_TOKEN_STORAGE_KEY);
+                deletePrivateSetting(PANEL_COLLAPSED_STORAGE_KEY);
+                bridgeSettings = { githubToken: '' };
+                preparedOutboxExport = null;
+                resetBookieCaptureSession();
+                delete panel.dataset.bmgLastCapture;
+                delete panel.dataset.bmgLastBatch;
+                updateSessionControls();
+                show('All local BMG captures, delivery receipts, settings, and the bridge token were cleared. GitHub uploads were not deleted.');
+            } catch (error) {
+                show(error.message || String(error), true);
+            } finally {
+                clearButton.disabled = false;
             }
         });
 
