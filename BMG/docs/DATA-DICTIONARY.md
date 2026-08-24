@@ -23,12 +23,6 @@ repeated handicap labels with opposite home/away orientations remain distinct. A
 selection contains name, optional handicap/line, decimal odds, availability, and
 suspension state.
 
-Each captured football event may also contain `market_math` using
-`bmg.market-math.v1`. It preserves captured-snapshot-only reciprocal sums,
-guaranteed-money candidates, and anomaly codes. It is an audit artifact, not a
-substitute for fresh availability, kickoff, settlement-rule, or stake-cap
-verification.
-
 ## SQLite entities
 
 - `capture_runs` — immutable import envelope and raw JSON.

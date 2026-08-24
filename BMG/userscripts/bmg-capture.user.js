@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BMG Manual Capture
 // @namespace    https://github.com/IAmTheQwan/torn-pda-scripts
-// @version      0.14.0
+// @version      0.13.0
 // @description  Manually capture one Torn football game per press and explicitly upload saved sessions
 // @author       TheQwan
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/bmg/BMG/userscripts/bmg-capture.user.js
@@ -36,10 +36,6 @@
     const GITHUB_API_ROOT = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}`;
     const GITHUB_TOKEN_STORAGE_KEY = 'bmg_private_inbox_token';
     const PANEL_COLLAPSED_STORAGE_KEY = 'bmg_panel_collapsed';
-    const EQUIVALENT_ODDS_GAP = 0.01;
-    const LOGIC_ODDS_GAP = 0.02;
-    const IDENTITY_PROBABILITY_GAP = 0.04;
-    const NEAR_ARBITRAGE_SUM = 1.01;
     let bridgeSettings = { githubToken: '' };
 
     function isBookiePage() {
@@ -325,363 +321,6 @@
         };
     }
 
-    function isOrdinaryTimeMarket(market) {
-        return ['ordinary time', 'full time', 'full match'].includes(canonical(market.period));
-    }
-
-    function activeOddsSelections(market) {
-        return (market.selections || []).filter(selection => {
-            return selection.available
-                && !selection.suspended
-                && Number(selection.odds_decimal) > 1;
-        });
-    }
-
-    function isHalfGoalLine(value) {
-        const number = Number(value);
-        if (!Number.isFinite(number)) return false;
-        const doubled = number * 2;
-        return Math.abs(doubled - Math.round(doubled)) < 1e-8
-            && Math.abs(Math.round(doubled)) % 2 === 1;
-    }
-
-    function eventSelectionRole(selection, event) {
-        const name = canonical(selection.name);
-        if (name === canonical(event.home_team)) return 'home';
-        if (name === canonical(event.away_team)) return 'away';
-        if (name === 'draw') return 'draw';
-        if (name === 'yes' || name === 'no' || name === 'odd' || name === 'even') return name;
-        if (name.startsWith('over ')) return 'over';
-        if (name.startsWith('under ')) return 'under';
-        return '';
-    }
-
-    function exhaustiveMarketSelections(market, event) {
-        if (!market.captured_as_complete || !isOrdinaryTimeMarket(market)) return [];
-        const selections = activeOddsSelections(market);
-        const roles = selections.map(selection => eventSelectionRole(selection, event));
-        if (market.market_type === 'three_way') {
-            return selections.length === 3 && ['home', 'draw', 'away'].every(role => roles.includes(role))
-                ? selections : [];
-        }
-        if (market.market_type === 'both_teams_to_score') {
-            return selections.length === 2 && roles.includes('yes') && roles.includes('no')
-                ? selections : [];
-        }
-        if (market.market_type === 'odd_even') {
-            return selections.length === 2 && roles.includes('odd') && roles.includes('even')
-                ? selections : [];
-        }
-        if (market.market_type === 'total') {
-            const lines = selections.map(selection => Number(selection.line));
-            return selections.length === 2
-                && roles.includes('over') && roles.includes('under')
-                && lines.every(Number.isFinite)
-                && Math.abs(lines[0] - lines[1]) < 1e-8
-                && isHalfGoalLine(lines[0])
-                ? selections : [];
-        }
-        if (market.market_type === 'asian_handicap') {
-            const handicaps = selections.map(selection => Number(selection.handicap));
-            return selections.length === 2
-                && roles.includes('home') && roles.includes('away')
-                && handicaps.every(Number.isFinite)
-                && handicaps.every(isHalfGoalLine)
-                && Math.abs(handicaps[0] + handicaps[1]) < 1e-8
-                ? selections : [];
-        }
-        return [];
-    }
-
-    function dutchCandidate(label, legs, source) {
-        if (legs.length < 2 || legs.some(leg => !(Number(leg.odds) > 1))) return null;
-        const reciprocalSum = legs.reduce((sum, leg) => sum + 1 / Number(leg.odds), 0);
-        if (reciprocalSum >= 1 - 1e-9) return null;
-        return {
-            source,
-            label,
-            reciprocal_sum: reciprocalSum,
-            minimum_return: 1 / reciprocalSum,
-            minimum_profit_rate: 1 / reciprocalSum - 1,
-            legs: legs.map(leg => ({
-                market: leg.market,
-                selection: leg.selection,
-                odds_decimal: Number(leg.odds),
-                stake_fraction: (1 / Number(leg.odds)) / reciprocalSum
-            }))
-        };
-    }
-
-    function equivalenceKey(market, selection, event) {
-        if (!isOrdinaryTimeMarket(market)) return '';
-        const role = eventSelectionRole(selection, event);
-        const type = market.market_type;
-        const handicap = Number(selection.handicap);
-        if (type === 'three_way' && ['home', 'draw', 'away'].includes(role)) {
-            return `result:${role}`;
-        }
-        if (type === 'asian_handicap' && Number.isFinite(handicap)) {
-            if (role === 'home' && Math.abs(handicap + 0.5) < 1e-8) return 'result:home';
-            if (role === 'away' && Math.abs(handicap - 0.5) < 1e-8) return 'result:not_home';
-            if (role === 'away' && Math.abs(handicap + 0.5) < 1e-8) return 'result:away';
-            if (role === 'home' && Math.abs(handicap - 0.5) < 1e-8) return 'result:not_away';
-            if (role === 'home' && Math.abs(handicap) < 1e-8) return 'result:home_dnb';
-            if (role === 'away' && Math.abs(handicap) < 1e-8) return 'result:away_dnb';
-        }
-        if (type === 'draw_no_bet') {
-            if (role === 'home') return 'result:home_dnb';
-            if (role === 'away') return 'result:away_dnb';
-        }
-        if (type === 'double_chance') {
-            const name = canonical(selection.name);
-            const hasHome = Boolean(event.home_team) && name.includes(canonical(event.home_team));
-            const hasAway = Boolean(event.away_team) && name.includes(canonical(event.away_team));
-            const hasDraw = /\bdraw\b/.test(name);
-            if (hasAway && hasDraw && !hasHome) return 'result:not_home';
-            if (hasHome && hasDraw && !hasAway) return 'result:not_away';
-            if (hasHome && hasAway && !hasDraw) return 'result:not_draw';
-        }
-        return '';
-    }
-
-    function totalSubject(market, event) {
-        if (market.market_type !== 'total' || !isOrdinaryTimeMarket(market)) return '';
-        const name = canonical(market.name);
-        const home = canonical(event.home_team);
-        const away = canonical(event.away_team);
-        if (home && name.includes(`${home} score`)) return 'home';
-        if (away && name.includes(`${away} score`)) return 'away';
-        return /^over under\b/.test(name) ? 'match' : '';
-    }
-
-    function totalSurface(market, event) {
-        const subject = totalSubject(market, event);
-        if (!subject) return null;
-        const selections = activeOddsSelections(market);
-        const over = selections.find(selection => eventSelectionRole(selection, event) === 'over');
-        const under = selections.find(selection => eventSelectionRole(selection, event) === 'under');
-        if (!over || !under || !Number.isFinite(Number(over.line))
-            || Math.abs(Number(over.line) - Number(under.line)) > 1e-8) return null;
-        const overImplied = 1 / Number(over.odds_decimal);
-        const underImplied = 1 / Number(under.odds_decimal);
-        const reciprocalSum = overImplied + underImplied;
-        return {
-            subject,
-            line: Number(over.line),
-            over_probability: overImplied / reciprocalSum,
-            under_probability: underImplied / reciprocalSum,
-            over_odds: Number(over.odds_decimal),
-            under_odds: Number(under.odds_decimal),
-            market: market.name
-        };
-    }
-
-    function analyzeEventMarketMath(event) {
-        const alerts = [];
-        const guaranteedCandidates = [];
-        const marketMetrics = [];
-        const quoteGroups = new Map();
-        const allQuotes = [];
-
-        (event.markets || []).forEach(market => {
-            activeOddsSelections(market).forEach(selection => {
-                const quote = {
-                    market: market.name,
-                    market_type: market.market_type,
-                    period: market.period,
-                    market_key: market.market_key,
-                    selection: selection.name,
-                    selection_key: selection.selection_key,
-                    odds: Number(selection.odds_decimal),
-                    handicap: selection.handicap,
-                    line: selection.line,
-                    role: eventSelectionRole(selection, event)
-                };
-                allQuotes.push(quote);
-                const key = equivalenceKey(market, selection, event);
-                if (!key) return;
-                if (!quoteGroups.has(key)) quoteGroups.set(key, []);
-                quoteGroups.get(key).push(quote);
-            });
-
-            const exhaustive = exhaustiveMarketSelections(market, event);
-            if (!exhaustive.length) return;
-            const reciprocalSum = exhaustive.reduce(
-                (sum, selection) => sum + 1 / Number(selection.odds_decimal),
-                0
-            );
-            marketMetrics.push({
-                market: market.name,
-                market_key: market.market_key,
-                reciprocal_sum: reciprocalSum,
-                overround: reciprocalSum - 1
-            });
-            const candidate = dutchCandidate(
-                market.name,
-                exhaustive.map(selection => ({
-                    market: market.name,
-                    selection: selection.name,
-                    odds: selection.odds_decimal
-                })),
-                'complete_market'
-            );
-            if (candidate) guaranteedCandidates.push(candidate);
-            else if (reciprocalSum < NEAR_ARBITRAGE_SUM) {
-                alerts.push({
-                    code: 'NEAR_ARB',
-                    severity: 'purple',
-                    message: `${market.name} reciprocal sum is ${reciprocalSum.toFixed(4)}.`
-                });
-            } else if (reciprocalSum > 1.18) {
-                alerts.push({
-                    code: 'MARGIN',
-                    severity: 'purple',
-                    message: `${market.name} carries an unusually high ${((reciprocalSum - 1) * 100).toFixed(1)}% raw margin.`
-                });
-            }
-        });
-
-        quoteGroups.forEach((quotes, key) => {
-            if (quotes.length < 2) return;
-            const ordered = [...quotes].sort((a, b) => b.odds - a.odds);
-            const gap = ordered[0].odds / ordered[ordered.length - 1].odds - 1;
-            if (gap >= EQUIVALENT_ODDS_GAP) {
-                alerts.push({
-                    code: 'EQUIV',
-                    severity: 'purple',
-                    message: `${key} is x${ordered[0].odds.toFixed(2)} in ${ordered[0].market} versus x${ordered[ordered.length - 1].odds.toFixed(2)} in ${ordered[ordered.length - 1].market} (${(gap * 100).toFixed(2)}% gap).`
-                });
-            }
-        });
-
-        const bestQuote = key => {
-            const quotes = quoteGroups.get(key) || [];
-            return quotes.reduce((best, quote) => !best || quote.odds > best.odds ? quote : best, null);
-        };
-        [
-            ['Home / not-home', 'result:home', 'result:not_home'],
-            ['Away / not-away', 'result:away', 'result:not_away'],
-            ['Draw / no-draw', 'result:draw', 'result:not_draw']
-        ].forEach(([label, firstKey, secondKey]) => {
-            const first = bestQuote(firstKey);
-            const second = bestQuote(secondKey);
-            if (!first || !second) return;
-            const candidate = dutchCandidate(label, [first, second], 'equivalent_complements');
-            if (candidate) guaranteedCandidates.push(candidate);
-        });
-
-        const surfaces = (event.markets || []).map(market => totalSurface(market, event)).filter(Boolean);
-        ['match', 'home', 'away'].forEach(subject => {
-            const ladder = surfaces.filter(surface => surface.subject === subject)
-                .sort((a, b) => a.line - b.line);
-            for (let index = 1; index < ladder.length; index += 1) {
-                const lower = ladder[index - 1];
-                const upper = ladder[index];
-                if (upper.over_probability > lower.over_probability + 0.015) {
-                    alerts.push({
-                        code: 'LADDER',
-                        severity: 'purple',
-                        message: `${subject} Over ${upper.line} is priced more likely than Over ${lower.line}.`
-                    });
-                }
-            }
-        });
-
-        const bestFrom = predicate => allQuotes.filter(predicate)
-            .reduce((best, quote) => !best || quote.odds > best.odds ? quote : best, null);
-        const mainOver = line => {
-            const surface = surfaces.find(item => item.subject === 'match' && Math.abs(item.line - line) < 1e-8);
-            return surface || null;
-        };
-        const teamOver = (subject, line) => {
-            return surfaces.find(item => item.subject === subject && Math.abs(item.line - line) < 1e-8) || null;
-        };
-        const bttsMarket = (event.markets || []).find(market => market.market_type === 'both_teams_to_score' && isOrdinaryTimeMarket(market));
-        const bttsSelections = bttsMarket ? activeOddsSelections(bttsMarket) : [];
-        const bttsYes = bttsSelections.find(selection => canonical(selection.name) === 'yes');
-        const bttsNo = bttsSelections.find(selection => canonical(selection.name) === 'no');
-        const matchOver15 = mainOver(1.5);
-        if (bttsYes && matchOver15
-            && Number(bttsYes.odds_decimal) < matchOver15.over_odds * (1 - LOGIC_ODDS_GAP)) {
-            alerts.push({
-                code: 'LOGIC',
-                severity: 'purple',
-                message: `BTTS Yes x${Number(bttsYes.odds_decimal).toFixed(2)} is shorter than its parent event, match Over 1.5 x${matchOver15.over_odds.toFixed(2)}.`
-            });
-        }
-        surfaces.filter(surface => surface.subject !== 'match').forEach(surface => {
-            const parent = mainOver(surface.line);
-            if (parent && surface.over_odds < parent.over_odds * (1 - LOGIC_ODDS_GAP)) {
-                alerts.push({
-                    code: 'LOGIC',
-                    severity: 'purple',
-                    message: `${surface.subject} team Over ${surface.line} x${surface.over_odds.toFixed(2)} is shorter than match Over ${surface.line} x${parent.over_odds.toFixed(2)}.`
-                });
-            }
-        });
-
-        const homeWin = bestQuote('result:home');
-        const awayWin = bestQuote('result:away');
-        [['home', homeWin], ['away', awayWin]].forEach(([role, parent]) => {
-            if (!parent) return;
-            const winToNil = bestFrom(quote => quote.market_type === 'win_to_nil'
-                && ['ordinary time', 'full time', 'full match'].includes(canonical(quote.period))
-                && quote.role === role);
-            if (winToNil && winToNil.odds < parent.odds * (1 - LOGIC_ODDS_GAP)) {
-                alerts.push({
-                    code: 'LOGIC',
-                    severity: 'purple',
-                    message: `${role} win-to-nil x${winToNil.odds.toFixed(2)} is shorter than ${role} win x${parent.odds.toFixed(2)}.`
-                });
-            }
-        });
-
-        const home05 = teamOver('home', 0.5);
-        const away05 = teamOver('away', 0.5);
-        const match05 = mainOver(0.5);
-        if (home05 && away05 && match05 && bttsYes && bttsNo) {
-            const bttsSum = 1 / Number(bttsYes.odds_decimal) + 1 / Number(bttsNo.odds_decimal);
-            const bttsProbability = (1 / Number(bttsYes.odds_decimal)) / bttsSum;
-            const identityProbability = home05.over_probability + away05.over_probability - match05.over_probability;
-            if (identityProbability < -IDENTITY_PROBABILITY_GAP
-                || identityProbability > 1 + IDENTITY_PROBABILITY_GAP
-                || Math.abs(identityProbability - bttsProbability) > IDENTITY_PROBABILITY_GAP) {
-                alerts.push({
-                    code: 'LOGIC',
-                    severity: 'purple',
-                    message: `Team-score and match-total prices imply BTTS ${(identityProbability * 100).toFixed(1)}%, versus the BTTS market's ${(bttsProbability * 100).toFixed(1)}%.`
-                });
-            }
-        }
-
-        if (!event.captured_as_complete) {
-            alerts.push({
-                code: 'DATA',
-                severity: 'red',
-                message: `${event.additional_markets_remaining || 'Some'} additional market(s) were not captured; guaranteed coverage is unproven.`
-            });
-        }
-        guaranteedCandidates.forEach(candidate => alerts.push({
-            code: 'ARB',
-            severity: 'purple',
-            message: `${candidate.label} locks ${(candidate.minimum_profit_rate * 100).toFixed(2)}% before caps and settlement verification.`
-        }));
-        guaranteedCandidates.sort((a, b) => b.minimum_profit_rate - a.minimum_profit_rate);
-        return {
-            schema_version: 'bmg.market-math.v1',
-            status: guaranteedCandidates.length ? 'guaranteed_candidate' : alerts.length ? 'anomaly' : 'clear',
-            guaranteed_money: guaranteedCandidates[0] || null,
-            guaranteed_candidates: guaranteedCandidates,
-            alerts,
-            metrics: {
-                markets_reviewed: (event.markets || []).length,
-                exhaustive_markets: marketMetrics.length,
-                market_metrics: marketMetrics
-            },
-            note: 'Local captured-odds arithmetic only; verify availability, kickoff, settlement, pushes, and option caps before treating a candidate as actionable.'
-        };
-    }
-
     function parseOutcome(card, stateText) {
         const scoreElement = card.querySelector('.score-wrap, .scores, .match-score, .result-score');
         const rawScore = cleanText(scoreElement?.textContent);
@@ -712,7 +351,7 @@
             .map(parseMarket)
             .filter(market => market.selections.length);
         const additionalMarkets = additionalMarketControls(card);
-        const event = {
+        return {
             source_event_id: route.source_event_id,
             sport: route.sport,
             title: fixture.title,
@@ -732,8 +371,6 @@
             outcome: parseOutcome(card, stateText),
             markets
         };
-        event.market_math = analyzeEventMarketMath(event);
-        return event;
     }
 
     function additionalMarketControls(card) {
@@ -1292,44 +929,8 @@
         return `Saved ${capture.events.length} event(s), ${capture.events.reduce((sum, event) => sum + event.markets.length, 0)} market(s), and ${capture.bets.length} bet row(s).${partialEvents ? ` Warning: ${partialEvents} event(s) still showed additional options.` : ''}`;
     }
 
-    function renderCaptureMath(panel, capture) {
-        const guaranteedLine = panel.querySelector('[data-guaranteed-status]');
-        const anomalyLine = panel.querySelector('[data-anomaly-status]');
-        if (!guaranteedLine || !anomalyLine) return;
-        const reviews = (capture.events || []).map(event => event.market_math).filter(Boolean);
-        if (!reviews.length) {
-            guaranteedLine.textContent = 'GUARANTEED-MONEY CHECK: not applicable to this My Bets capture.';
-            guaranteedLine.style.color = '#8ecbff';
-            anomalyLine.textContent = 'ANOMALIES: not applicable.';
-            anomalyLine.style.color = '#aaa';
-            return;
-        }
-        const guaranteed = reviews.map(review => review.guaranteed_money).filter(Boolean)
-            .sort((a, b) => b.minimum_profit_rate - a.minimum_profit_rate)[0];
-        if (guaranteed) {
-            const legs = guaranteed.legs.map(leg => `${leg.selection} x${leg.odds_decimal.toFixed(2)}`).join(' + ');
-            guaranteedLine.textContent = `GUARANTEED-MONEY CANDIDATE: +${(guaranteed.minimum_profit_rate * 100).toFixed(2)}% minimum — ${legs}. VERIFY availability, settlement, and caps.`;
-            guaranteedLine.style.color = '#6ef7ff';
-        } else {
-            guaranteedLine.textContent = 'GUARANTEED-MONEY CHECK: none found in the captured complete coverage.';
-            guaranteedLine.style.color = '#8fd6ae';
-        }
-        const alerts = reviews.flatMap(review => review.alerts || []).filter(alert => alert.code !== 'ARB');
-        if (!alerts.length) {
-            anomalyLine.textContent = 'ANOMALIES: none found by the instant captured-odds checks.';
-            anomalyLine.style.color = '#8fd6ae';
-            return;
-        }
-        const counts = new Map();
-        alerts.forEach(alert => counts.set(alert.code, Number(counts.get(alert.code) || 0) + 1));
-        const summary = [...counts.entries()].map(([code, count]) => `${code}${count > 1 ? `×${count}` : ''}`).join(', ');
-        anomalyLine.textContent = `ANOMALIES: ${summary}. ${alerts[0].message}`;
-        anomalyLine.style.color = alerts.some(alert => alert.severity === 'red') ? '#ff8b8b' : '#d99cff';
-    }
-
     async function saveCapture(capture, panel) {
         await putCapture(capture);
-        renderCaptureMath(panel, capture);
         if (location.hostname === '127.0.0.1'
             && document.documentElement.dataset.bmgTestFixture === 'true') {
             panel.dataset.bmgLastCapture = JSON.stringify(capture);
@@ -1577,7 +1178,7 @@
         panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:285px;z-index:999999;background:#171717;color:#eee;border:1px solid #555;border-radius:8px;padding:10px;font:12px Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.75)';
         panel.innerHTML = `
             <div data-panel-header style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-                <div data-panel-title style="font-weight:800;font-size:14px">BMG Manual Capture <span style="color:#888;font-size:9px">v0.14.0</span></div>
+                <div data-panel-title style="font-weight:800;font-size:14px">BMG Manual Capture <span style="color:#888;font-size:9px">v0.13.0</span></div>
                 <button type="button" data-action="toggle-panel" aria-label="Minimize BMG capture panel">−</button>
             </div>
             <div data-panel-body>
@@ -1593,8 +1194,6 @@
                     <button type="button" data-action="copy">Copy session</button>
                     <button type="button" data-action="clear-local">Clear local data</button>
                 </div>
-                <div data-guaranteed-status style="margin-top:7px;color:#8ecbff;font-size:9px;font-weight:700;line-height:1.35">GUARANTEED-MONEY CHECK: waiting for a game capture.</div>
-                <div data-anomaly-status style="margin-top:3px;color:#aaa;font-size:9px;font-weight:700;line-height:1.35">ANOMALIES: waiting for a game capture.</div>
                 <div data-status style="margin-top:7px;color:#8ecbff;font-size:9px">Ready. One game per foreground press.</div>
             </div>
         `;
@@ -1736,12 +1335,6 @@
                 resetBookieCaptureSession();
                 delete panel.dataset.bmgLastCapture;
                 delete panel.dataset.bmgLastBatch;
-                const guaranteedLine = panel.querySelector('[data-guaranteed-status]');
-                const anomalyLine = panel.querySelector('[data-anomaly-status]');
-                guaranteedLine.textContent = 'GUARANTEED-MONEY CHECK: waiting for a game capture.';
-                guaranteedLine.style.color = '#8ecbff';
-                anomalyLine.textContent = 'ANOMALIES: waiting for a game capture.';
-                anomalyLine.style.color = '#aaa';
                 updateSessionControls();
                 show('All local BMG captures, delivery receipts, settings, and the bridge token were cleared. GitHub uploads were not deleted.');
             } catch (error) {
@@ -1845,11 +1438,6 @@
         });
 
         document.body.appendChild(panel);
-    }
-
-    if (typeof globalThis !== 'undefined' && globalThis.__BMG_TEST_MODE__ === true) {
-        globalThis.__BMG_TEST_EXPORTS__ = { analyzeEventMarketMath };
-        return;
     }
 
     if (document.readyState === 'loading') {
