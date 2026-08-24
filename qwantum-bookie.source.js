@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.15.0
+// @version      1.15.1
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -57,7 +57,7 @@
     let indexedManualBetLinks = {};
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.15.0';
+    const SCRIPT_VERSION = '1.15.1';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -79,6 +79,7 @@
     const MAX_ODDS_HISTORY_GAMES = 100;
     const MAX_ODDS_OBSERVATIONS_PER_SELECTION = 20;
     const MAX_GUIDED_FOOTBALL_GAMES = 20;
+    const GUIDED_FOOTBALL_LOAD_TIMEOUT_MS = 12000;
     const MAX_FOOTBALL_FIXTURE_RECORDS = 200;
     const FOOTBALL_FIXTURE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
     const FOOTBALL_BET_LINK_WINDOW_MS = 10 * 60 * 1000;
@@ -113,6 +114,10 @@
         .tbp-header-title { display:flex; align-items:center; gap:8px; }
         .tbp-scan-btn { padding:4px 7px; font-size:10px; background:#705b00; color:#fff; border:1px solid #a98a00; }
         .tbp-guide-btn { padding:4px 7px; font-size:10px; background:#275a7a; color:#fff; border:1px solid #3b82a8; }
+        .tbp-guide-loading { display:none; align-items:center; gap:4px; color:#8ecbff; font-size:9px; font-weight:700; white-space:nowrap; }
+        .tbp-guide-loading.visible { display:inline-flex; }
+        .tbp-guide-loading::before { content:''; width:6px; height:6px; border-radius:50%; background:#6ef7ff; box-shadow:0 0 6px rgba(110,247,255,.9); animation:tbp-guide-pulse .8s ease-in-out infinite alternate; }
+        @keyframes tbp-guide-pulse { from { opacity:.35; transform:scale(.75); } to { opacity:1; transform:scale(1.15); } }
         .tbp-tabs { display:flex; background:#222; border-bottom:1px solid #333; }
         .tbp-tab { flex:1; padding:10px 3px; text-align:center; cursor:pointer; font-size:9px; text-transform:uppercase; color:#888; }
         .tbp-tab.active { background:#333; border-bottom:2px solid #007bff; color:#fff; font-weight:bold; }
@@ -3770,9 +3775,18 @@
         return { scanned, matched };
     }
 
-    let guidedFootballSession = { active: false, hrefs: [], index: -1, results: {} };
+    let guidedFootballSession = {
+        active: false,
+        hrefs: [],
+        index: -1,
+        results: {},
+        loading: false,
+        loadingHref: '',
+        loadingError: ''
+    };
     let guidedFootballHighlightObserver = null;
     let guidedFootballHighlightTimer = null;
+    let guidedFootballLoadTimer = null;
 
     function stopGuidedFootballHighlightKeeper() {
         guidedFootballHighlightObserver?.disconnect();
@@ -3783,7 +3797,43 @@
 
     function resetGuidedFootballSession() {
         stopGuidedFootballHighlightKeeper();
-        guidedFootballSession = { active: false, hrefs: [], index: -1, results: {} };
+        if (guidedFootballLoadTimer) clearTimeout(guidedFootballLoadTimer);
+        guidedFootballLoadTimer = null;
+        guidedFootballSession = {
+            active: false,
+            hrefs: [],
+            index: -1,
+            results: {},
+            loading: false,
+            loadingHref: '',
+            loadingError: ''
+        };
+    }
+
+    function startGuidedFootballLoading(href) {
+        if (guidedFootballLoadTimer) clearTimeout(guidedFootballLoadTimer);
+        guidedFootballSession.loading = true;
+        guidedFootballSession.loadingHref = href;
+        guidedFootballSession.loadingError = '';
+        guidedFootballLoadTimer = setTimeout(() => {
+            guidedFootballLoadTimer = null;
+            if (!guidedFootballSession.active
+                || !guidedFootballSession.loading
+                || guidedFootballSession.loadingHref !== href) return;
+            guidedFootballSession.loading = false;
+            guidedFootballSession.loadingHref = '';
+            guidedFootballSession.loadingError = 'The game review did not finish loading. Press Game Review to continue, or press End and restart to retry this game.';
+            updateGuidedFootballControls();
+        }, GUIDED_FOOTBALL_LOAD_TIMEOUT_MS);
+    }
+
+    function finishGuidedFootballLoading(href) {
+        if (!guidedFootballSession.loading || guidedFootballSession.loadingHref !== href) return;
+        if (guidedFootballLoadTimer) clearTimeout(guidedFootballLoadTimer);
+        guidedFootballLoadTimer = null;
+        guidedFootballSession.loading = false;
+        guidedFootballSession.loadingHref = '';
+        guidedFootballSession.loadingError = '';
     }
 
     function guidedFootballFoundCount() {
@@ -3804,16 +3854,31 @@
 
     function updateGuidedFootballControls() {
         const reviewBtn = document.getElementById('tbp-football-guide-btn');
+        const loadingIndicator = document.getElementById('tbp-football-guide-loading');
+        const loading = Boolean(guidedFootballSession.loading);
         if (reviewBtn) {
             reviewBtn.textContent = guidedFootballButtonText();
             const complete = guidedFootballSession.active
                 && guidedFootballSession.index >= guidedFootballSession.hrefs.length - 1;
-            reviewBtn.disabled = complete;
-            reviewBtn.title = complete
-                ? `Review complete: ${guidedFootballFoundCount()} found. Press End to clear the review.`
-                : guidedFootballSession.active
-                    ? `Press once to open the next game; ${guidedFootballFoundCount()} found so far.`
-                    : 'Start a review of up to 20 upcoming Football games.';
+            reviewBtn.disabled = loading || complete;
+            reviewBtn.title = loading
+                ? `Loading and calculating game ${guidedFootballSession.index + 1} of ${guidedFootballSession.hrefs.length}.`
+                : guidedFootballSession.loadingError
+                    ? guidedFootballSession.loadingError
+                    : complete
+                        ? `Review complete: ${guidedFootballFoundCount()} found. Press End to clear the review.`
+                        : guidedFootballSession.active
+                            ? `Press once to open the next game; ${guidedFootballFoundCount()} found so far.`
+                            : 'Start a review of up to 20 upcoming Football games.';
+        }
+        if (loadingIndicator) {
+            loadingIndicator.classList.toggle('visible', loading);
+            loadingIndicator.textContent = loading
+                ? `Loading ${guidedFootballSession.index + 1}/${guidedFootballSession.hrefs.length}`
+                : '';
+            loadingIndicator.title = loading
+                ? 'Expanding markets and running the odds checks for this game.'
+                : '';
         }
     }
 
@@ -3875,6 +3940,7 @@
             || Object.prototype.hasOwnProperty.call(guidedFootballSession.results, href)) return;
 
         guidedFootballSession.results[href] = result;
+        finishGuidedFootballLoading(href);
         restoreGuidedFootballHighlights();
         updateGuidedFootballControls();
     }
@@ -3911,6 +3977,9 @@
         if (!isFootballBookiePage() || document.visibilityState !== 'visible') {
             return { error: 'Open and actively view the Football section before starting guided review.' };
         }
+        if (guidedFootballSession.loading) {
+            return { loading: true };
+        }
 
         let started = false;
         if (!guidedFootballSession.active) {
@@ -3920,7 +3989,10 @@
                 active: true,
                 hrefs,
                 index: -1,
-                results: {}
+                results: {},
+                loading: false,
+                loadingHref: '',
+                loadingError: ''
             };
             startGuidedFootballHighlightKeeper();
             started = true;
@@ -3945,6 +4017,7 @@
         }
 
         guidedFootballSession.index = nextIndex;
+        startGuidedFootballLoading(href);
         link.click();
         return {
             complete: false,
@@ -3979,6 +4052,7 @@
                     <strong>Bookie Panel</strong><span class="tbp-muted" style="font-size:9px;">v${SCRIPT_VERSION}</span>
                     ${footballScanEnabled && !guidedFootballReviewEnabled ? '<button class="tbp-btn tbp-scan-btn" id="tbp-football-scan-btn">Scan Games</button>' : ''}
                     ${guidedFootballReviewEnabled ? `<button class="tbp-btn tbp-guide-btn" id="tbp-football-guide-btn">${guidedFootballButtonText()}</button>` : ''}
+                    ${guidedFootballReviewEnabled ? '<span class="tbp-guide-loading" id="tbp-football-guide-loading" aria-live="polite"></span>' : ''}
                     ${guidedFootballReviewEnabled && guidedFootballSession.active ? '<button class="tbp-btn tbp-btn-danger" id="tbp-football-end-guide-btn">End</button>' : ''}
                 </div>
                 <button class="tbp-btn" id="tbp-hide-btn" style="background:transparent; color:#888;">_</button>
@@ -4538,6 +4612,10 @@ ${safeJson(log.raw)}
                 const result = scanLoadedFootballGames();
                 if (result.error) {
                     alert(result.error);
+                    return;
+                }
+                if (result.loading) {
+                    updateGuidedFootballControls();
                     return;
                 }
 

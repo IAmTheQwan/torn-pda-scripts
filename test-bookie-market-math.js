@@ -5,6 +5,10 @@ const vm = require('vm');
 
 const scriptPath = path.resolve(__dirname, 'qwantum-bookie.source.js');
 const source = fs.readFileSync(scriptPath, 'utf8');
+assert(source.includes("const GUIDED_FOOTBALL_LOAD_TIMEOUT_MS = 12000;"));
+assert(source.includes("id=\"tbp-football-guide-loading\""));
+assert(source.includes('reviewBtn.disabled = loading || complete;'));
+assert(source.includes('finishGuidedFootballLoading(href);'));
 const start = source.indexOf('    function footballMathCleanText');
 const end = source.indexOf('    function analyzeFootballMarketMath(item', start);
 assert(start >= 0 && end > start, 'Could not locate the pure football market-math functions.');
