@@ -111,7 +111,12 @@ state. The first milestone is trustworthy data.
 
    Pick recommendations are returned outside Torn after an exported capture is
    imported and researched. The Torn userscript does not load or display a pick
-   feed.
+   feed. After each direct one-game capture, it may display two local arithmetic
+   summaries derived only from that saved snapshot: a separately labeled
+   **guaranteed-money candidate** line for proven complete-outcome dutching and
+   a purple anomaly line for equivalent-price, ladder, logic, margin, or data
+   inconsistencies. Neither line requests new Torn data, advances another game,
+   recommends a stake, or places a bet.
 
    `model-backtest` freezes a chronological holdout and persists its metrics.
    `score-review` evaluates all normalized ordinary-time football markets with

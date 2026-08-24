@@ -69,6 +69,10 @@ avoid cache-bypass parameters unless fresh data is genuinely required.
 - The Torn userscript makes no scripted request to Torn and performs no pick
   highlighting, scrolling, refresh, background capture, stake entry, or bet
   placement. Its only Torn navigation is the foreground open/close sequence.
+- Instant market-math checks run only on the one game snapshot produced by the
+  player's direct capture press. Their guaranteed-money-candidate and anomaly
+  lines do not fetch data, alter Torn odds or bet controls, recommend a stake,
+  or initiate another page action.
 - Local export occurs only after a direct user action. Private-inbox upload uses
   a separate explicit button, sends only already-saved capture JSON to the
   disclosed `api.github.com` repository endpoint, and has no automatic retry or
