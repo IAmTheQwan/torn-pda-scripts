@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.14.7
+// @version      1.15.0
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -57,7 +57,7 @@
     let indexedManualBetLinks = {};
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.14.7';
+    const SCRIPT_VERSION = '1.15.0';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -67,6 +67,10 @@
     const FOOTBALL_HOME_ODDS_MAX = 1.7;
     const FOOTBALL_AWAY_ODDS_MIN = 1.2;
     const FOOTBALL_AWAY_ODDS_MAX = 1.7;
+    const FOOTBALL_EQUIVALENT_ODDS_GAP = 0.01;
+    const FOOTBALL_LOGIC_ODDS_GAP = 0.02;
+    const FOOTBALL_IDENTITY_PROBABILITY_GAP = 0.04;
+    const FOOTBALL_NEAR_ARBITRAGE_SUM = 1.01;
     const FOOTBALL_ODDS_HISTORY_KEY = 'tbp_football_odds_history';
     const FOOTBALL_FIXTURE_RECORDS_KEY = 'tbp_football_fixture_records';
     const MANUAL_BET_LINKS_KEY = 'tbp_manual_bet_fixture_links';
@@ -157,6 +161,10 @@
         .tbp-football-badge { display:inline-block; margin-left:7px; padding:2px 5px; border-radius:3px; background:#28a745; color:#fff; font-size:10px; font-weight:bold; vertical-align:middle; }
         .tbp-football-badge-home-yellow { background:#d4ad00; color:#171300; }
         .tbp-football-badge-away-orange { background:#e87800; color:#fff; }
+        .tbp-football-market-math-line { display:block; width:fit-content; max-width:100%; margin-top:3px; padding:2px 5px; border-radius:3px; color:#fff; font-size:9px; font-weight:800; line-height:1.35; white-space:normal; }
+        .tbp-football-market-math-guaranteed { background:#087e8b; box-shadow:0 0 6px rgba(110,247,255,.7); }
+        .tbp-football-market-math-anomaly { background:#70439b; }
+        .tbp-football-market-math-danger { background:#a52b2b; }
         .tbp-odds-delta { display:inline-block; margin-left:5px; padding:1px 4px; border-radius:3px; color:#fff; font-size:10px; font-weight:bold; }
         .tbp-odds-delta-up { background:#28a745; }
         .tbp-odds-delta-down { background:#d9534f; }
@@ -1619,6 +1627,7 @@
             );
         });
         document.querySelectorAll('.tbp-football-badge').forEach(badge => badge.remove());
+        document.querySelectorAll('.tbp-football-market-math-line').forEach(line => line.remove());
     }
 
     function parseDecimalMultiplier(value) {
@@ -1772,6 +1781,498 @@
         return getHalfGoalHandicapRows(getHalfGoalAsianHandicapMarket(item)).find(entry => {
             return Math.abs(entry.handicap + 0.5) < 0.001 && normalizeScoreTeamName(entry.selection) === team;
         }) || null;
+    }
+
+    function footballMathCleanText(value) {
+        return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function footballMathCanonical(value) {
+        return footballMathCleanText(value)
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim();
+    }
+
+    function classifyFootballMathMarket(name) {
+        const value = footballMathCanonical(name);
+        if (/\b3 way\b/.test(value)) return 'three_way';
+        if (/draw no bet/.test(value)) return 'draw_no_bet';
+        if (/double chance/.test(value)) return 'double_chance';
+        if (/win to nil/.test(value)) return 'win_to_nil';
+        if (/odd even/.test(value)) return 'odd_even';
+        if (/asian handicap/.test(value)) return 'asian_handicap';
+        if (/handicap|spread/.test(value)) return 'spread';
+        if (/over under|total goals|total points|total games|total sets/.test(value)) return 'total';
+        if (/both teams.*score/.test(value)) return 'both_teams_to_score';
+        if (/correct score/.test(value)) return 'correct_score';
+        if (/moneyline|match winner|to win|winner/.test(value)) return 'moneyline';
+        return 'other';
+    }
+
+    function footballMathMarketPeriod(name) {
+        return footballMathCleanText(name).match(
+            /\b(ordinary time|full time|full match|first half|second half|first period|second period|third period|first set|second set|third set)\b/i
+        )?.[1] || '';
+    }
+
+    function parseFootballMathSelection(row, marketType) {
+        const rawName = footballMathCleanText(row.querySelector('.bet-cell.result')?.textContent)
+            .replace(/\s*\$\s*[\d,.]+\s*[kmb]?\s*$/i, '')
+            .trim();
+        const handicapMatch = rawName.match(/\(\s*([+-]?\d+(?:[.,]\d+)?)\s*\)\s*$/);
+        const name = rawName.replace(/\s*\(\s*[+-]?\d+(?:[.,]\d+)?\s*\)\s*$/, '').trim();
+        const lineMatch = /^(?:total|spread|asian_handicap)$/.test(marketType)
+            ? rawName.match(/(?:over|under|[+-])\s*([+-]?\d+(?:[.,]\d+)?)/i)
+            : null;
+        const amount = row.querySelector('input.amount');
+        const suspended = row.classList.contains('disabled')
+            || row.querySelector('.input-money-group')?.classList.contains('disabled')
+            || /suspended/i.test(String(amount?.value || ''));
+        const odds = parseDecimalMultiplier(row.querySelector('.bet-cell.odds.decimal')?.textContent);
+        const handicap = handicapMatch ? Number(handicapMatch[1].replace(',', '.')) : null;
+        const line = lineMatch ? Number(lineMatch[1].replace(',', '.')) : null;
+        return {
+            selectionKey: `${footballMathCanonical(name)}|h:${handicap ?? ''}|l:${line ?? ''}`,
+            name,
+            rawName,
+            handicap,
+            line,
+            oddsDecimal: odds || null,
+            suspended,
+            available: Boolean(odds) && !suspended
+        };
+    }
+
+    function parseFootballMathMarket(wrap, index) {
+        const name = footballMathCleanText(wrap.querySelector('.market-name-cell .bold')?.textContent)
+            || footballMathCleanText(wrap.querySelector('.market-name-cell')?.textContent)
+            || `Unknown market ${index + 1}`;
+        const marketType = classifyFootballMathMarket(name);
+        const rows = Array.from(wrap.querySelectorAll(':scope > li.bets')).filter(row => {
+            return row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal');
+        });
+        const selections = rows.map(row => parseFootballMathSelection(row, marketType))
+            .filter(selection => selection.name);
+        return {
+            marketKey: `${footballMathCanonical(name)}|${footballMathCanonical(footballMathMarketPeriod(name))}|s:${selections.map(selection => selection.selectionKey).sort().join('||')}`,
+            name,
+            marketType,
+            period: footballMathMarketPeriod(name),
+            capturedAsComplete: rows.length > 0,
+            selections
+        };
+    }
+
+    function isFootballMathOrdinaryTime(market) {
+        return ['ordinary time', 'full time', 'full match'].includes(footballMathCanonical(market.period));
+    }
+
+    function activeFootballMathSelections(market) {
+        return (market.selections || []).filter(selection => {
+            return selection.available && !selection.suspended && Number(selection.oddsDecimal) > 1;
+        });
+    }
+
+    function isHalfFootballGoalLine(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return false;
+        const doubled = number * 2;
+        return Math.abs(doubled - Math.round(doubled)) < 1e-8
+            && Math.abs(Math.round(doubled)) % 2 === 1;
+    }
+
+    function footballMathSelectionRole(selection, event) {
+        const name = footballMathCanonical(selection.name);
+        if (name === footballMathCanonical(event.homeTeam)) return 'home';
+        if (name === footballMathCanonical(event.awayTeam)) return 'away';
+        if (name === 'draw' || name === 'tie') return 'draw';
+        if (['yes', 'no', 'odd', 'even'].includes(name)) return name;
+        if (name.startsWith('over ')) return 'over';
+        if (name.startsWith('under ')) return 'under';
+        return '';
+    }
+
+    function exhaustiveFootballMathSelections(market, event) {
+        if (!market.capturedAsComplete || !isFootballMathOrdinaryTime(market)) return [];
+        const selections = activeFootballMathSelections(market);
+        const roles = selections.map(selection => footballMathSelectionRole(selection, event));
+        if (market.marketType === 'three_way') {
+            return selections.length === 3 && ['home', 'draw', 'away'].every(role => roles.includes(role))
+                ? selections : [];
+        }
+        if (market.marketType === 'both_teams_to_score') {
+            return selections.length === 2 && roles.includes('yes') && roles.includes('no')
+                ? selections : [];
+        }
+        if (market.marketType === 'odd_even') {
+            return selections.length === 2 && roles.includes('odd') && roles.includes('even')
+                ? selections : [];
+        }
+        if (market.marketType === 'total') {
+            const lines = selections.map(selection => Number(selection.line));
+            return selections.length === 2
+                && roles.includes('over') && roles.includes('under')
+                && lines.every(Number.isFinite)
+                && Math.abs(lines[0] - lines[1]) < 1e-8
+                && isHalfFootballGoalLine(lines[0])
+                ? selections : [];
+        }
+        if (market.marketType === 'asian_handicap') {
+            const handicaps = selections.map(selection => Number(selection.handicap));
+            return selections.length === 2
+                && roles.includes('home') && roles.includes('away')
+                && handicaps.every(Number.isFinite)
+                && handicaps.every(isHalfFootballGoalLine)
+                && Math.abs(handicaps[0] + handicaps[1]) < 1e-8
+                ? selections : [];
+        }
+        return [];
+    }
+
+    function footballDutchCandidate(label, legs, source) {
+        if (legs.length < 2 || legs.some(leg => !(Number(leg.odds) > 1))) return null;
+        const reciprocalSum = legs.reduce((sum, leg) => sum + 1 / Number(leg.odds), 0);
+        if (reciprocalSum >= 1 - 1e-9) return null;
+        return {
+            source,
+            label,
+            reciprocalSum,
+            minimumReturn: 1 / reciprocalSum,
+            minimumProfitRate: 1 / reciprocalSum - 1,
+            legs: legs.map(leg => ({
+                market: leg.market,
+                selection: leg.selection,
+                oddsDecimal: Number(leg.odds),
+                stakeFraction: (1 / Number(leg.odds)) / reciprocalSum
+            }))
+        };
+    }
+
+    function footballMathEquivalenceKey(market, selection, event) {
+        if (!isFootballMathOrdinaryTime(market)) return '';
+        const role = footballMathSelectionRole(selection, event);
+        const handicap = selection.handicap === null || selection.handicap === undefined
+            ? NaN
+            : Number(selection.handicap);
+        if (market.marketType === 'three_way' && ['home', 'draw', 'away'].includes(role)) {
+            return `result:${role}`;
+        }
+        if (market.marketType === 'asian_handicap' && Number.isFinite(handicap)) {
+            if (role === 'home' && Math.abs(handicap + 0.5) < 1e-8) return 'result:home';
+            if (role === 'away' && Math.abs(handicap - 0.5) < 1e-8) return 'result:not_home';
+            if (role === 'away' && Math.abs(handicap + 0.5) < 1e-8) return 'result:away';
+            if (role === 'home' && Math.abs(handicap - 0.5) < 1e-8) return 'result:not_away';
+            if (role === 'home' && Math.abs(handicap) < 1e-8) return 'result:home_dnb';
+            if (role === 'away' && Math.abs(handicap) < 1e-8) return 'result:away_dnb';
+        }
+        if (market.marketType === 'draw_no_bet') {
+            if (role === 'home') return 'result:home_dnb';
+            if (role === 'away') return 'result:away_dnb';
+        }
+        if (market.marketType === 'double_chance') {
+            const pieces = footballMathCleanText(selection.name).split(/\s+or\s+/i)
+                .map(footballMathCanonical)
+                .filter(Boolean);
+            const hasHome = Boolean(event.homeTeam) && pieces.includes(footballMathCanonical(event.homeTeam));
+            const hasAway = Boolean(event.awayTeam) && pieces.includes(footballMathCanonical(event.awayTeam));
+            const hasDraw = pieces.includes('draw') || pieces.includes('tie');
+            if (hasAway && hasDraw && !hasHome) return 'result:not_home';
+            if (hasHome && hasDraw && !hasAway) return 'result:not_away';
+            if (hasHome && hasAway && !hasDraw) return 'result:not_draw';
+        }
+        return '';
+    }
+
+    function footballMathTotalSubject(market, event) {
+        if (market.marketType !== 'total' || !isFootballMathOrdinaryTime(market)) return '';
+        const name = footballMathCanonical(market.name);
+        const home = footballMathCanonical(event.homeTeam);
+        const away = footballMathCanonical(event.awayTeam);
+        if (home && name.includes(`${home} score`)) return 'home';
+        if (away && name.includes(`${away} score`)) return 'away';
+        return /^over under\b/.test(name) ? 'match' : '';
+    }
+
+    function footballMathTotalSurface(market, event) {
+        const subject = footballMathTotalSubject(market, event);
+        if (!subject) return null;
+        const selections = activeFootballMathSelections(market);
+        const over = selections.find(selection => footballMathSelectionRole(selection, event) === 'over');
+        const under = selections.find(selection => footballMathSelectionRole(selection, event) === 'under');
+        if (!over || !under || !Number.isFinite(Number(over.line))
+            || Math.abs(Number(over.line) - Number(under.line)) > 1e-8) return null;
+        const overImplied = 1 / Number(over.oddsDecimal);
+        const underImplied = 1 / Number(under.oddsDecimal);
+        const reciprocalSum = overImplied + underImplied;
+        return {
+            subject,
+            line: Number(over.line),
+            overProbability: overImplied / reciprocalSum,
+            underProbability: underImplied / reciprocalSum,
+            overOdds: Number(over.oddsDecimal),
+            underOdds: Number(under.oddsDecimal),
+            market: market.name
+        };
+    }
+
+    function analyzeFootballMarketEvent(event) {
+        const alerts = [];
+        const guaranteedCandidates = [];
+        const marketMetrics = [];
+        const quoteGroups = new Map();
+        const allQuotes = [];
+
+        (event.markets || []).forEach(market => {
+            activeFootballMathSelections(market).forEach(selection => {
+                const quote = {
+                    market: market.name,
+                    marketType: market.marketType,
+                    period: market.period,
+                    marketKey: market.marketKey,
+                    selection: selection.name,
+                    selectionKey: selection.selectionKey,
+                    odds: Number(selection.oddsDecimal),
+                    handicap: selection.handicap,
+                    line: selection.line,
+                    role: footballMathSelectionRole(selection, event)
+                };
+                allQuotes.push(quote);
+                const key = footballMathEquivalenceKey(market, selection, event);
+                if (!key) return;
+                if (!quoteGroups.has(key)) quoteGroups.set(key, []);
+                quoteGroups.get(key).push(quote);
+            });
+
+            const exhaustive = exhaustiveFootballMathSelections(market, event);
+            if (!exhaustive.length) return;
+            const reciprocalSum = exhaustive.reduce(
+                (sum, selection) => sum + 1 / Number(selection.oddsDecimal),
+                0
+            );
+            marketMetrics.push({
+                market: market.name,
+                marketKey: market.marketKey,
+                reciprocalSum,
+                overround: reciprocalSum - 1
+            });
+            const candidate = footballDutchCandidate(
+                market.name,
+                exhaustive.map(selection => ({
+                    market: market.name,
+                    selection: selection.name,
+                    odds: selection.oddsDecimal
+                })),
+                'complete_market'
+            );
+            if (candidate) guaranteedCandidates.push(candidate);
+            else if (reciprocalSum < FOOTBALL_NEAR_ARBITRAGE_SUM) {
+                alerts.push({
+                    code: 'NEAR_ARB',
+                    severity: 'purple',
+                    message: `${market.name} reciprocal sum is ${reciprocalSum.toFixed(4)}.`
+                });
+            } else if (reciprocalSum > 1.18) {
+                alerts.push({
+                    code: 'MARGIN',
+                    severity: 'purple',
+                    message: `${market.name} carries an unusually high ${((reciprocalSum - 1) * 100).toFixed(1)}% raw margin.`
+                });
+            }
+        });
+
+        quoteGroups.forEach((quotes, key) => {
+            if (quotes.length < 2) return;
+            const ordered = [...quotes].sort((a, b) => b.odds - a.odds);
+            const gap = ordered[0].odds / ordered[ordered.length - 1].odds - 1;
+            if (gap >= FOOTBALL_EQUIVALENT_ODDS_GAP) {
+                alerts.push({
+                    code: 'EQUIV',
+                    severity: 'purple',
+                    message: `${key} is x${ordered[0].odds.toFixed(2)} in ${ordered[0].market} versus x${ordered[ordered.length - 1].odds.toFixed(2)} in ${ordered[ordered.length - 1].market} (${(gap * 100).toFixed(2)}% gap).`
+                });
+            }
+        });
+
+        const bestQuote = key => {
+            const quotes = quoteGroups.get(key) || [];
+            return quotes.reduce((best, quote) => !best || quote.odds > best.odds ? quote : best, null);
+        };
+        [
+            ['Home / not-home', 'result:home', 'result:not_home'],
+            ['Away / not-away', 'result:away', 'result:not_away'],
+            ['Draw / no-draw', 'result:draw', 'result:not_draw']
+        ].forEach(([label, firstKey, secondKey]) => {
+            const first = bestQuote(firstKey);
+            const second = bestQuote(secondKey);
+            if (!first || !second) return;
+            const candidate = footballDutchCandidate(label, [first, second], 'equivalent_complements');
+            if (candidate) guaranteedCandidates.push(candidate);
+        });
+
+        const surfaces = (event.markets || []).map(market => footballMathTotalSurface(market, event)).filter(Boolean);
+        ['match', 'home', 'away'].forEach(subject => {
+            const ladder = surfaces.filter(surface => surface.subject === subject)
+                .sort((a, b) => a.line - b.line);
+            for (let index = 1; index < ladder.length; index += 1) {
+                const lower = ladder[index - 1];
+                const upper = ladder[index];
+                if (upper.overProbability > lower.overProbability + 0.015) {
+                    alerts.push({
+                        code: 'LADDER',
+                        severity: 'purple',
+                        message: `${subject} Over ${upper.line} is priced more likely than Over ${lower.line}.`
+                    });
+                }
+            }
+        });
+
+        const bestFrom = predicate => allQuotes.filter(predicate)
+            .reduce((best, quote) => !best || quote.odds > best.odds ? quote : best, null);
+        const mainOver = line => surfaces.find(
+            item => item.subject === 'match' && Math.abs(item.line - line) < 1e-8
+        ) || null;
+        const teamOver = (subject, line) => surfaces.find(
+            item => item.subject === subject && Math.abs(item.line - line) < 1e-8
+        ) || null;
+        const bttsMarket = (event.markets || []).find(market => {
+            return market.marketType === 'both_teams_to_score' && isFootballMathOrdinaryTime(market);
+        });
+        const bttsSelections = bttsMarket ? activeFootballMathSelections(bttsMarket) : [];
+        const bttsYes = bttsSelections.find(selection => footballMathCanonical(selection.name) === 'yes');
+        const bttsNo = bttsSelections.find(selection => footballMathCanonical(selection.name) === 'no');
+        const matchOver15 = mainOver(1.5);
+        if (bttsYes && matchOver15
+            && Number(bttsYes.oddsDecimal) < matchOver15.overOdds * (1 - FOOTBALL_LOGIC_ODDS_GAP)) {
+            alerts.push({
+                code: 'LOGIC',
+                severity: 'purple',
+                message: `BTTS Yes x${Number(bttsYes.oddsDecimal).toFixed(2)} is shorter than its parent event, match Over 1.5 x${matchOver15.overOdds.toFixed(2)}.`
+            });
+        }
+        surfaces.filter(surface => surface.subject !== 'match').forEach(surface => {
+            const parent = mainOver(surface.line);
+            if (parent && surface.overOdds < parent.overOdds * (1 - FOOTBALL_LOGIC_ODDS_GAP)) {
+                alerts.push({
+                    code: 'LOGIC',
+                    severity: 'purple',
+                    message: `${surface.subject} team Over ${surface.line} x${surface.overOdds.toFixed(2)} is shorter than match Over ${surface.line} x${parent.overOdds.toFixed(2)}.`
+                });
+            }
+        });
+
+        const homeWin = bestQuote('result:home');
+        const awayWin = bestQuote('result:away');
+        [['home', homeWin], ['away', awayWin]].forEach(([role, parent]) => {
+            if (!parent) return;
+            const winToNil = bestFrom(quote => quote.marketType === 'win_to_nil'
+                && ['ordinary time', 'full time', 'full match'].includes(footballMathCanonical(quote.period))
+                && quote.role === role);
+            if (winToNil && winToNil.odds < parent.odds * (1 - FOOTBALL_LOGIC_ODDS_GAP)) {
+                alerts.push({
+                    code: 'LOGIC',
+                    severity: 'purple',
+                    message: `${role} win-to-nil x${winToNil.odds.toFixed(2)} is shorter than ${role} win x${parent.odds.toFixed(2)}.`
+                });
+            }
+        });
+
+        const home05 = teamOver('home', 0.5);
+        const away05 = teamOver('away', 0.5);
+        const match05 = mainOver(0.5);
+        if (home05 && away05 && match05 && bttsYes && bttsNo) {
+            const bttsSum = 1 / Number(bttsYes.oddsDecimal) + 1 / Number(bttsNo.oddsDecimal);
+            const bttsProbability = (1 / Number(bttsYes.oddsDecimal)) / bttsSum;
+            const identityProbability = home05.overProbability + away05.overProbability - match05.overProbability;
+            if (identityProbability < -FOOTBALL_IDENTITY_PROBABILITY_GAP
+                || identityProbability > 1 + FOOTBALL_IDENTITY_PROBABILITY_GAP
+                || Math.abs(identityProbability - bttsProbability) > FOOTBALL_IDENTITY_PROBABILITY_GAP) {
+                alerts.push({
+                    code: 'LOGIC',
+                    severity: 'purple',
+                    message: `Team-score and match-total prices imply BTTS ${(identityProbability * 100).toFixed(1)}%, versus the BTTS market's ${(bttsProbability * 100).toFixed(1)}%.`
+                });
+            }
+        }
+
+        if (!event.capturedAsComplete) {
+            alerts.push({
+                code: 'DATA',
+                severity: 'red',
+                message: `${event.additionalMarketsRemaining || 'Some'} additional market(s) were not available to review; guaranteed coverage is unproven.`
+            });
+        }
+        guaranteedCandidates.forEach(candidate => alerts.push({
+            code: 'ARB',
+            severity: 'purple',
+            message: `${candidate.label} locks ${(candidate.minimumProfitRate * 100).toFixed(2)}% before caps and settlement verification.`
+        }));
+        guaranteedCandidates.sort((a, b) => b.minimumProfitRate - a.minimumProfitRate);
+        return {
+            schemaVersion: 'tbp.football-market-math.v1',
+            status: guaranteedCandidates.length ? 'guaranteed_candidate' : alerts.length ? 'anomaly' : 'clear',
+            guaranteedMoney: guaranteedCandidates[0] || null,
+            guaranteedCandidates,
+            alerts,
+            metrics: {
+                marketsReviewed: (event.markets || []).length,
+                exhaustiveMarkets: marketMetrics.length,
+                marketMetrics
+            },
+            note: 'Visible captured-odds arithmetic only; verify availability, kickoff, settlement, pushes, rounding, bankroll, and option caps before acting.'
+        };
+    }
+
+    function analyzeFootballMarketMath(item, fixtureDetails) {
+        const controls = Array.from(item.querySelectorAll('a, button')).filter(control => {
+            const text = footballMathCleanText(control.textContent);
+            const disabled = control.disabled
+                || control.getAttribute('aria-disabled') === 'true'
+                || control.classList.contains('disabled');
+            return !disabled && /show(?:\s+\d+)?\s+additional betting options/i.test(text);
+        });
+        const event = {
+            homeTeam: fixtureDetails.homeTeam,
+            awayTeam: fixtureDetails.awayTeam,
+            capturedAsComplete: controls.length === 0,
+            additionalMarketsRemaining: controls.reduce((sum, control) => {
+                const count = footballMathCleanText(control.textContent)
+                    .match(/show\s+(\d+)\s+additional betting options/i)?.[1];
+                return sum + Number(count || 0);
+            }, 0),
+            markets: Array.from(item.querySelectorAll('.info-wrap ul.bets-wrap'))
+                .map(parseFootballMathMarket)
+                .filter(market => market.selections.length)
+        };
+        return analyzeFootballMarketEvent(event);
+    }
+
+    function renderFootballMarketMathBadges(matchElement, marketMath) {
+        matchElement.querySelectorAll('.tbp-football-market-math-line').forEach(line => line.remove());
+        const guaranteed = marketMath?.guaranteedMoney;
+        if (guaranteed) {
+            const line = document.createElement('span');
+            const legs = guaranteed.legs.map(leg => `${leg.selection} x${leg.oddsDecimal.toFixed(2)}`).join(' + ');
+            line.className = 'tbp-football-market-math-line tbp-football-market-math-guaranteed';
+            line.textContent = `LOCK CANDIDATE +${(guaranteed.minimumProfitRate * 100).toFixed(2)}% · ${legs}`;
+            line.title = `${guaranteed.label}: ${guaranteed.legs.map(leg => `${leg.selection} x${leg.oddsDecimal.toFixed(2)} in ${leg.market}`).join(' + ')}. Verify kickoff, availability, settlement, rounding, bankroll, and the $1B-per-option cap.`;
+            matchElement.appendChild(line);
+        }
+
+        const anomalyAlerts = (marketMath?.alerts || []).filter(alert => alert.code !== 'ARB');
+        if (!anomalyAlerts.length) return;
+        const counts = new Map();
+        anomalyAlerts.forEach(alert => counts.set(alert.code, Number(counts.get(alert.code) || 0) + 1));
+        const codes = [...counts.entries()].map(([code, count]) => `${code}${count > 1 ? `×${count}` : ''}`).join(' · ');
+        const line = document.createElement('span');
+        line.className = `tbp-football-market-math-line ${anomalyAlerts.some(alert => alert.severity === 'red')
+            ? 'tbp-football-market-math-danger'
+            : 'tbp-football-market-math-anomaly'}`;
+        line.textContent = `ODDS CHECK ${codes} · ${anomalyAlerts[0].message}`;
+        line.title = anomalyAlerts.map(alert => `${alert.code}: ${alert.message}`).join('\n');
+        matchElement.appendChild(line);
     }
 
     function escapeHtml(value) {
@@ -3096,9 +3597,7 @@
                 setTimeout(scheduleRecord, 1100);
                 return false;
             }
-            if (additionalMarketsRequestedAt
-                && !getHalfGoalAsianHandicapMarket(item)
-                && Date.now() - additionalMarketsRequestedAt < 900) return false;
+            if (additionalMarketsRequestedAt && Date.now() - additionalMarketsRequestedAt < 1000) return false;
             if (footballOddsHistoryEnabled) recordFootballOddsForItem(item, href);
             if (footballScanEnabled || guidedFootballSession.active) {
                 const scanResult = scanFootballItem(item, href);
@@ -3149,6 +3648,7 @@
         const market = getThreeWayMarket(item);
         if (!market) return { scanned: 0, matched: 0 };
         if (!market.querySelector('[data-tbp-observed-at]')) recordFootballOddsForItem(item, href);
+        const marketMath = analyzeFootballMarketMath(item, fixtureDetails);
 
         const rows = Array.from(market.querySelectorAll(':scope > li.bets')).filter(row => {
             return row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal');
@@ -3192,7 +3692,11 @@
         const awayUsesMinusHalf = awayMinusHalfAvailable && Number(awayMinusHalf.odds) > Number(awayThreeWayAvailable ? awayOdds : 0);
         const homeAvailable = Boolean(homeBestOdds);
         const awayAvailable = Boolean(awayBestOdds);
-        if (!homeAvailable && !awayAvailable) return { scanned: 0, matched: 0, matchType: null };
+        if (!homeAvailable && !awayAvailable) {
+            captureReviewedFootballFixture(item, href, market, null);
+            renderFootballMarketMathBadges(matchElement, marketMath);
+            return { scanned: 1, matched: 0, matchType: null, marketMath };
+        }
 
         item.classList.remove(
             'tbp-football-match',
@@ -3200,7 +3704,7 @@
             'tbp-football-home-yellow',
             'tbp-football-away-orange'
         );
-        matchElement.querySelector('.tbp-football-badge')?.remove();
+        matchElement.querySelectorAll('.tbp-football-badge').forEach(badge => badge.remove());
 
         let matchType = null;
         let badgeText = '';
@@ -3226,7 +3730,10 @@
         }
 
         captureReviewedFootballFixture(item, href, market, matchType);
-        if (!matchType) return { scanned: 1, matched: 0, matchType: null };
+        if (!matchType) {
+            renderFootballMarketMathBadges(matchElement, marketMath);
+            return { scanned: 1, matched: 0, matchType: null, marketMath };
+        }
 
         item.classList.add('tbp-football-match', `tbp-football-${matchType}`);
         const badge = document.createElement('span');
@@ -3234,7 +3741,8 @@
         badge.textContent = badgeText;
         badge.title = badgeTitle;
         matchElement.appendChild(badge);
-        return { scanned: 1, matched: 1, matchType };
+        renderFootballMarketMathBadges(matchElement, marketMath);
+        return { scanned: 1, matched: 1, matchType, marketMath };
     }
 
     function scanLoadedFootballGames() {
@@ -3279,7 +3787,9 @@
     }
 
     function guidedFootballFoundCount() {
-        return Object.values(guidedFootballSession.results).filter(Boolean).length;
+        return Object.values(guidedFootballSession.results).filter(result => {
+            return typeof result === 'string' ? Boolean(result) : Boolean(result?.matchType);
+        }).length;
     }
 
     function guidedFootballButtonText() {
@@ -3314,15 +3824,26 @@
             'tbp-football-home-yellow',
             'tbp-football-away-orange'
         ];
-        Object.entries(guidedFootballSession.results).forEach(([href, matchType]) => {
-            if (!matchType) return;
+        Object.entries(guidedFootballSession.results).forEach(([href, storedResult]) => {
+            const result = typeof storedResult === 'string'
+                ? { matchType: storedResult, marketMath: null }
+                : storedResult || { matchType: null, marketMath: null };
             const item = findFootballItemForHref(href);
             if (!item) return;
-            const desiredClass = `tbp-football-${matchType}`;
-            const hasWrongColor = colorClasses.some(className => className !== desiredClass && item.classList.contains(className));
-            if (item.classList.contains('tbp-football-match') && item.classList.contains(desiredClass) && !hasWrongColor) return;
-            item.classList.remove('tbp-football-match', ...colorClasses);
-            item.classList.add('tbp-football-match', desiredClass);
+            if (result.matchType) {
+                const desiredClass = `tbp-football-${result.matchType}`;
+                const hasWrongColor = colorClasses.some(className => className !== desiredClass && item.classList.contains(className));
+                if (!item.classList.contains('tbp-football-match') || !item.classList.contains(desiredClass) || hasWrongColor) {
+                    item.classList.remove('tbp-football-match', ...colorClasses);
+                    item.classList.add('tbp-football-match', desiredClass);
+                }
+            }
+            const matchElement = item.querySelector('.matchName p, .pop-game .name p');
+            const shouldHaveMathLine = Boolean(result.marketMath?.guaranteedMoney)
+                || Boolean((result.marketMath?.alerts || []).some(alert => alert.code !== 'ARB'));
+            if (matchElement && shouldHaveMathLine && !matchElement.querySelector('.tbp-football-market-math-line')) {
+                renderFootballMarketMathBadges(matchElement, result.marketMath);
+            }
         });
     }
 
@@ -3353,7 +3874,7 @@
             || !guidedFootballSession.hrefs.includes(href)
             || Object.prototype.hasOwnProperty.call(guidedFootballSession.results, href)) return;
 
-        guidedFootballSession.results[href] = result.matchType || false;
+        guidedFootballSession.results[href] = result;
         restoreGuidedFootballHighlights();
         updateGuidedFootballControls();
     }
@@ -3807,7 +4328,7 @@ ${safeJson(log.raw)}
                     <input type="checkbox" id="tbp-guided-football-review-enabled" ${guidedFootballReviewEnabled ? 'checked' : ''}>
                 </div>
                 <div class="tbp-muted" style="margin-top:7px;">
-                    Game Review opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. It counts qualifying straight-win odds, keeps each matching fixture bar color until End, and captures club details when you manually press a 3-Way BET button so they can appear in Open after an API refresh.
+                    Game Review opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. Each opened game checks the standard green/yellow/orange win lines, complete-market guaranteed-money candidates, equivalent prices, total ladders, market logic, and unusual margins. Cyan lock-candidate and purple/red odds-check lines stay on the fixture until End. It also captures club details when you manually press a 3-Way BET button so they can appear in Open after an API refresh.
                 </div>
             </div>
 
