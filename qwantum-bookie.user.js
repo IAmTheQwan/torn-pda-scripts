@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.15.2
+// @version      1.16.0
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -49,8 +49,9 @@ let todaySummary = { bets: 0, wins: 0, losses: 0, refunds: 0, won: 0, lost: 0, n
 let overallBookieNet = 0;
 let lastLoadStatus = 'Not loaded yet.';
 let indexedManualBetLinks = {};
+let indexedLoanLedger = { version: 1, payments: [] };
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.15.2';
+const SCRIPT_VERSION = '1.16.0';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -94,6 +95,10 @@ const SPORTSDB_REQUEST_TIMES_KEY = 'tbp_sportsdb_request_times';
 const SPORTSDB_MIN_REQUEST_GAP_MS = 2100;
 const SPORTSDB_MINUTE_LIMIT = 30;
 const BET_STATS_LINKS_KEY = 'tbp_bet_stats_links';
+const LOAN_ORIGINAL_BALANCE = 1500000000;
+const LOAN_RECIPIENT_ID = '3995562';
+const LOAN_FIRST_PERIOD_START = '2026-09-02';
+const LOAN_FIRST_PERIOD_END = '2026-09-05';
 let footballAutoScoreTimer = null;
 let footballAutoScoreRunning = false;
 let footballAutoScoreNextAt = 0;
@@ -245,7 +250,7 @@ const request = db
 .index('owner')
 .getAll(owner);
 request.onsuccess = () => resolve(request.result
-.filter(item => item.recordType !== 'manual-bet-links')
+.filter(item => !item.recordType)
 .map(({ cacheId, owner: ignored, ...log }) => log));
 request.onerror = () => reject(request.error);
 });
@@ -359,6 +364,50 @@ cacheId: `${owner}:manual-bet-links`,
 owner,
 recordType: 'manual-bet-links',
 links,
+updatedAt: Date.now()
+});
+transaction.oncomplete = () => resolve();
+transaction.onerror = () => reject(transaction.error);
+transaction.onabort = () => reject(transaction.error);
+});
+} finally {
+db.close();
+}
+}
+async function loadIndexedLoanLedger() {
+const owner = await getCacheOwner();
+if (!owner) return { version: 1, payments: [] };
+const db = await openCacheDb();
+try {
+return await new Promise((resolve, reject) => {
+const request = db
+.transaction(CACHE_STORE_NAME, 'readonly')
+.objectStore(CACHE_STORE_NAME)
+.get(`${owner}:loan-ledger`);
+request.onsuccess = () => {
+const ledger = request.result?.ledger;
+resolve(ledger && Array.isArray(ledger.payments)
+? ledger
+: { version: 1, payments: [] });
+};
+request.onerror = () => reject(request.error);
+});
+} finally {
+db.close();
+}
+}
+async function storeIndexedLoanLedger(ledger) {
+const owner = await getCacheOwner();
+if (!owner) throw new Error('A Torn API key is required to save the loan ledger.');
+const db = await openCacheDb();
+try {
+await new Promise((resolve, reject) => {
+const transaction = db.transaction(CACHE_STORE_NAME, 'readwrite');
+transaction.objectStore(CACHE_STORE_NAME).put({
+cacheId: `${owner}:loan-ledger`,
+owner,
+recordType: 'loan-ledger',
+ledger,
 updatedAt: Date.now()
 });
 transaction.oncomplete = () => resolve();
@@ -1408,7 +1457,10 @@ return;
 lastLoadStatus = 'Loading locally cached history...';
 render();
 try {
-indexedManualBetLinks = await loadIndexedManualBetLinks();
+[indexedManualBetLinks, indexedLoanLedger] = await Promise.all([
+loadIndexedManualBetLinks(),
+loadIndexedLoanLedger()
+]);
 rawLogs = (await loadCachedLogs()).sort((a, b) => b.timestamp - a.timestamp);
 buildBookieData();
 if (rawLogs.length) {
@@ -4034,6 +4086,107 @@ ${footballAutoScoreEnabled && footballScoreProvider === 'api-football' ? `<div c
 <button class="tbp-btn tbp-btn-success" id="tbp-save-settings" style="width:100%;">Save Settings</button>
 `;
 }
+function addDaysToDateKey(dateKey, days) {
+const date = new Date(`${dateKey}T12:00:00`);
+date.setDate(date.getDate() + days);
+return localDateKey(date);
+}
+function displayDateKey(dateKey) {
+return new Date(`${dateKey}T12:00:00`).toLocaleDateString(undefined, {
+month: 'numeric',
+day: 'numeric',
+year: 'numeric'
+});
+}
+function bookieNetForDateRange(startDate, endDate) {
+const from = dateToUnixStart(startDate);
+const to = dateToUnixStart(addDaysToDateKey(endDate, 1));
+return rawLogs.reduce((net, log) => {
+const timestamp = Number(log.timestamp || 0);
+if (timestamp < from || timestamp >= to) return net;
+const type = classifyLog(log);
+const bet = getBetAmount(log);
+if (type === 'win') return net + ((getWinnings(log) || bet) - bet);
+if (type === 'loss') return net - bet;
+return net;
+}, 0);
+}
+function getLoanPeriods() {
+const today = localDateKey(new Date());
+const periods = [{
+startDate: LOAN_FIRST_PERIOD_START,
+endDate: LOAN_FIRST_PERIOD_END,
+dueDate: addDaysToDateKey(LOAN_FIRST_PERIOD_END, 1)
+}];
+let startDate = addDaysToDateKey(LOAN_FIRST_PERIOD_END, 1);
+while (startDate <= today) {
+const endDate = addDaysToDateKey(startDate, 6);
+periods.push({ startDate, endDate, dueDate: addDaysToDateKey(endDate, 1) });
+startDate = addDaysToDateKey(startDate, 7);
+}
+return periods.map(period => {
+const weeklyNet = bookieNetForDateRange(period.startDate, period.endDate);
+return {
+...period,
+weeklyNet,
+calculatedPayment: Math.floor(Math.max(0, weeklyNet) * 0.5),
+closed: today >= period.dueDate
+};
+});
+}
+function getLoanRepaymentState() {
+const payments = Array.isArray(indexedLoanLedger?.payments) ? indexedLoanLedger.payments : [];
+const totalPaid = payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+const remainingBalance = Math.max(0, LOAN_ORIGINAL_BALANCE - totalPaid);
+const paidPeriods = new Set(payments.map(payment => `${payment.startDate}|${payment.endDate}`));
+const periods = getLoanPeriods();
+const duePeriod = periods.find(period =>
+period.closed
+&& period.calculatedPayment > 0
+&& !paidPeriods.has(`${period.startDate}|${period.endDate}`)
+) || null;
+const currentPeriod = [...periods].reverse().find(period => !period.closed) || null;
+return { payments, totalPaid, remainingBalance, periods, duePeriod, currentPeriod };
+}
+function renderLoanRepaymentCard() {
+const state = getLoanRepaymentState();
+const period = state.duePeriod || state.currentPeriod;
+const payment = period ? Math.min(period.calculatedPayment, state.remainingBalance) : 0;
+const isDue = Boolean(state.duePeriod && state.remainingBalance > 0);
+const status = state.remainingBalance <= 0
+? 'Loan paid in full'
+: isDue
+? `Payment due ${displayDateKey(period.dueDate)}`
+: period
+? `Current period · due ${displayDateKey(period.dueDate)}`
+: 'No payment period available';
+const recentPayments = [...state.payments]
+.sort((a, b) => Number(b.paidAt || 0) - Number(a.paidAt || 0))
+.slice(0, 4);
+return `
+<div class="tbp-card" style="border:1px solid #3b82a8; border-left:6px solid #4da3ff; margin-bottom:12px;">
+<div style="font-weight:bold; font-size:14px; margin-bottom:2px;">Weekly Loan Repayment</div>
+<div class="tbp-muted" style="margin-bottom:8px;">Send 50% of positive weekly Bookie net to Torn ID ${LOAN_RECIPIENT_ID}. Losing or $0-net weeks owe $0.</div>
+<div class="tbp-summary-grid" style="margin-bottom:8px;">
+<div class="tbp-summary-box"><div class="tbp-summary-label">Original Loan</div><div class="tbp-summary-value" style="font-size:13px;">${money(LOAN_ORIGINAL_BALANCE)}</div></div>
+<div class="tbp-summary-box"><div class="tbp-summary-label">Remaining</div><div class="tbp-summary-value ${state.remainingBalance ? 'tbp-loss' : 'tbp-win'}" style="font-size:13px;">${money(state.remainingBalance)}</div></div>
+<div class="tbp-summary-box"><div class="tbp-summary-label">Total Paid</div><div class="tbp-summary-value tbp-win" style="font-size:13px;">${money(state.totalPaid)}</div></div>
+<div class="tbp-summary-box"><div class="tbp-summary-label">${isDue ? 'Payment Due' : 'Estimated Payment'}</div><div class="tbp-summary-value ${isDue ? 'tbp-loss' : 'tbp-blue'}" style="font-size:13px;">${money(payment)}</div></div>
+</div>
+<div style="font-weight:bold; margin-bottom:4px;">${escapeHtml(status)}</div>
+${period ? `
+<div class="tbp-row"><span>Period</span><span>${displayDateKey(period.startDate)}–${displayDateKey(period.endDate)}</span></div>
+<div class="tbp-row"><span>Weekly net</span><span class="${period.weeklyNet >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(period.weeklyNet)}</span></div>
+<div class="tbp-row"><span>50% of positive net</span><span>${money(payment)}</span></div>
+` : ''}
+${isDue ? `<button class="tbp-btn tbp-btn-success" id="tbp-mark-loan-paid" style="width:100%; margin-top:9px;">Mark ${money(payment)} Paid</button>` : ''}
+${recentPayments.length ? `
+<div style="font-weight:bold; margin-top:10px; margin-bottom:4px;">Recent Payments</div>
+${recentPayments.map(item => `<div class="tbp-row"><span>${displayDateKey(item.startDate)}–${displayDateKey(item.endDate)}</span><span class="tbp-win">${money(item.amount)}</span></div>`).join('')}
+` : '<div class="tbp-muted" style="margin-top:9px;">No payments recorded yet.</div>'}
+</div>
+`;
+}
 function renderStats(body) {
 const stats = getColorBetStats();
 const total = stats.total;
@@ -4045,6 +4198,7 @@ other: 'border-left:6px solid #777;',
 non3way: 'border-left:6px solid #4da3ff;'
 };
 body.innerHTML = `
+${renderLoanRepaymentCard()}
 <div class="tbp-muted" style="margin-bottom:8px;">${lastLoadStatus}</div>
 <div class="tbp-muted" style="margin-bottom:8px;">Stats group all cached Bookie outcomes logged from ${escapeHtml(stats.fromDate)} through today, matching Daily's date rule. Captured 3-Way Football bets use the colored rules; every other or still-unclassified result appears in the fifth box.</div>
 <button class="tbp-btn tbp-btn-primary" id="tbp-measure-stats-btn" style="width:100%; margin-bottom:8px;">Refresh Outcome Audit</button>
@@ -4170,6 +4324,45 @@ measureStatsBtn.onclick = async () => {
 measureStatsBtn.disabled = true;
 measureStatsBtn.textContent = 'Auditing...';
 await measureTrackedStatsDatabase();
+render();
+};
+}
+const markLoanPaidBtn = document.getElementById('tbp-mark-loan-paid');
+if (markLoanPaidBtn) {
+markLoanPaidBtn.onclick = async () => {
+const state = getLoanRepaymentState();
+const period = state.duePeriod;
+if (!period) {
+alert('There is no unpaid weekly payment due.');
+render();
+return;
+}
+const amount = Math.min(period.calculatedPayment, state.remainingBalance);
+if (!amount) return;
+if (!confirm(`Mark ${money(amount)} paid to Torn ID ${LOAN_RECIPIENT_ID} for ${displayDateKey(period.startDate)}–${displayDateKey(period.endDate)}?`)) return;
+markLoanPaidBtn.disabled = true;
+markLoanPaidBtn.textContent = 'Saving payment...';
+const payments = Array.isArray(indexedLoanLedger?.payments)
+? [...indexedLoanLedger.payments]
+: [];
+payments.push({
+startDate: period.startDate,
+endDate: period.endDate,
+dueDate: period.dueDate,
+weeklyNet: period.weeklyNet,
+amount,
+recipientId: LOAN_RECIPIENT_ID,
+paidAt: Date.now()
+});
+indexedLoanLedger = { version: 1, payments };
+try {
+await storeIndexedLoanLedger(indexedLoanLedger);
+lastLoadStatus = `Recorded ${money(amount)} paid to Torn ID ${LOAN_RECIPIENT_ID}.`;
+} catch (error) {
+payments.pop();
+indexedLoanLedger = { version: 1, payments };
+alert(`Could not save the payment record: ${String(error?.message || error)}`);
+}
 render();
 };
 }
