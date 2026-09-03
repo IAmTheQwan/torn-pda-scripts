@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.15.1
+// @version      1.15.2
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -50,7 +50,7 @@ let overallBookieNet = 0;
 let lastLoadStatus = 'Not loaded yet.';
 let indexedManualBetLinks = {};
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.15.1';
+const SCRIPT_VERSION = '1.15.2';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -1147,7 +1147,12 @@ const todayStart = getTodayStartUnix();
 const overallFromTimestamp = getScanFromUnix();
 todaySummary = { bets: 0, wins: 0, losses: 0, refunds: 0, won: 0, lost: 0, net: 0 };
 overallBookieNet = 0;
-const logs = [...rawLogs].sort((a, b) => b.timestamp - a.timestamp);
+// Keep the complete cache so later date changes do not require another
+// API scan, but only build the visible summaries and bet lists from the
+// range selected in Settings.
+const logs = rawLogs
+.filter(log => !overallFromTimestamp || Number(log.timestamp || 0) >= overallFromTimestamp)
+.sort((a, b) => b.timestamp - a.timestamp);
 logs.forEach(log => {
 const type = classifyLog(log);
 if (type === 'other' || type === 'withdraw' || type === 'deposit') return;
@@ -1174,7 +1179,7 @@ todaySummary.net += net;
 if (type === 'refund') todaySummary.refunds++;
 }
 });
-buildDailyTotals();
+buildDailyTotals(logs);
 const unsettledResultCounts = new Map();
 const seenOpenIds = new Set();
 const foundOpen = [];
@@ -1231,9 +1236,9 @@ openBets = myBetsSnapshot
 ? buildOpenBetsFromMyBetsSnapshot(myBetsSnapshot, fallbackOpen)
 : fallbackOpen;
 }
-function buildDailyTotals() {
+function buildDailyTotals(logs = rawLogs) {
 const map = new Map();
-rawLogs.forEach(log => {
+logs.forEach(log => {
 const type = classifyLog(log);
 if (type === 'other' || type === 'deposit' || type === 'withdraw') return;
 const dateKey = unixToDateKey(log.timestamp);
