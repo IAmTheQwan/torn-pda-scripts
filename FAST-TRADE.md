@@ -46,3 +46,9 @@ learned automatically after that player's trade is visibly verified.
 
 Torn's public rules remain authoritative and can change. See
 <https://www.torn.com/rules.php>.
+
+## Updates
+
+- **1.0.1:** Store settings synchronously in Torn's local page storage first so
+  Torn PDA cannot return an asynchronous `GM_getValue` result in place of the
+  saved target. Compatible userscript storage is still mirrored as a fallback.

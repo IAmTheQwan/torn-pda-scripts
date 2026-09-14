@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan Fast Trade
 // @namespace    theqwan.torn.fast-trade
-// @version      1.0.0
+// @version      1.0.1
 // @description  PDA-friendly, manual-tap quick access, cash deposit, and trade acceptance
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -62,31 +62,42 @@
 
   function getStored(key, fallback = "") {
     try {
-      if (typeof GM_getValue === "function") return GM_getValue(key, fallback);
+      const value = localStorage.getItem(key);
+      if (value !== null) return value;
     } catch (error) {
-      console.warn(`[${SCRIPT}] Could not read userscript storage.`, error);
+      console.warn(`[${SCRIPT}] Could not read local storage.`, error);
     }
     try {
-      const value = localStorage.getItem(key);
-      return value === null ? fallback : value;
-    } catch {
-      return fallback;
+      if (typeof GM_getValue === "function") {
+        const value = GM_getValue(key, fallback);
+        // Torn PDA may implement GM storage asynchronously. The state machine is
+        // intentionally synchronous, so a Promise cannot be treated as a value.
+        if (!value || typeof value.then !== "function") return value;
+      }
+    } catch (error) {
+      console.warn(`[${SCRIPT}] Could not read userscript storage fallback.`, error);
     }
+    return fallback;
   }
 
   function setStored(key, value) {
+    let localSaved = false;
+    try {
+      localStorage.setItem(key, String(value));
+      localSaved = true;
+    } catch (error) {
+      console.warn(`[${SCRIPT}] Could not write local storage.`, error);
+    }
     try {
       if (typeof GM_setValue === "function") {
-        GM_setValue(key, value);
+        const pending = GM_setValue(key, value);
+        if (pending && typeof pending.catch === "function") {
+          pending.catch((error) => console.warn(`[${SCRIPT}] Could not mirror userscript storage.`, error));
+        }
         return;
       }
     } catch (error) {
-      console.warn(`[${SCRIPT}] Could not write userscript storage.`, error);
-    }
-    try {
-      localStorage.setItem(key, String(value));
-    } catch {
-      // The button remains usable for this page even if storage is unavailable.
+      if (!localSaved) console.warn(`[${SCRIPT}] Could not write userscript storage fallback.`, error);
     }
   }
 
