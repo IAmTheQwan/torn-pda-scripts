@@ -49,6 +49,9 @@ Torn's public rules remain authoritative and can change. See
 
 ## Updates
 
+- **1.0.2:** Fill the configured player ID and trade description into Torn's
+  visible New Trade form. The normal "no current trades" notice is no longer
+  mistaken for an expired remembered trade.
 - **1.0.1:** Store settings synchronously in Torn's local page storage first so
   Torn PDA cannot return an asynchronous `GM_getValue` result in place of the
   saved target. Compatible userscript storage is still mirrored as a fallback.

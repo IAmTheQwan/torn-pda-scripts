@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan Fast Trade
 // @namespace    theqwan.torn.fast-trade
-// @version      1.0.1
+// @version      1.0.2
 // @description  PDA-friendly, manual-tap quick access, cash deposit, and trade acceptance
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -306,7 +306,13 @@
   }
 
   function controlText(element) {
-    return String(element?.value || element?.textContent || element?.getAttribute("aria-label") || "")
+    return String(
+      element?.value ||
+      element?.textContent ||
+      element?.getAttribute("aria-label") ||
+      element?.getAttribute("title") ||
+      ""
+    )
       .replace(/\s+/g, " ")
       .trim();
   }
@@ -386,7 +392,10 @@
 
   function setNativeInputValue(input, value) {
     if (!input) return;
-    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+    const prototype = typeof HTMLTextAreaElement !== "undefined" && input instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
     if (descriptor?.set) descriptor.set.call(input, value);
     else input.value = value;
     input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -487,18 +496,65 @@
     ]);
   }
 
+  function newTradeUserField(root) {
+    if (!root) return null;
+    const inputs = Array.from(root.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"])'))
+      .filter((input) => !input.closest(`#${MODAL_ID}`));
+    if (!inputs.length) return null;
+
+    const scored = inputs.map((input, index) => {
+      const identity = `${input.name} ${input.id} ${input.className} ${input.placeholder} ${input.getAttribute("aria-label") || ""}`;
+      const surrounding = String(input.closest("li, .row, .input-wrap, .cont")?.textContent || "");
+      let score = 0;
+      if (/user.?id|player|recipient|person|user.?search/i.test(identity)) score += 20;
+      if (/user\s*id\s*:/i.test(surrounding)) score += 12;
+      if (input.type === "search") score += 8;
+      if (/desc|message|reason/i.test(identity)) score -= 30;
+      score -= index;
+      return { input, score };
+    });
+    scored.sort((a, b) => b.score - a.score);
+    return scored[0].score >= 0 ? scored[0].input : null;
+  }
+
+  function newTradeDescriptionField(root, userField) {
+    if (!root) return null;
+    const candidates = Array.from(root.querySelectorAll('textarea, input[type="text"]'))
+      .filter((input) => input !== userField && !input.closest(`#${MODAL_ID}`));
+    return candidates.find((input) => {
+      const identity = `${input.name} ${input.id} ${input.className} ${input.placeholder} ${input.getAttribute("aria-label") || ""}`;
+      const surrounding = String(input.closest("li, .row, .input-wrap, .cont")?.textContent || "");
+      return /desc|message|reason/i.test(identity) || /description\s*:/i.test(surrounding);
+    }) || candidates[0] || null;
+  }
+
+  function newTradeSearchControl(root, userField) {
+    if (!root || !userField) return null;
+    let scope = userField.parentElement;
+    for (let depth = 0; scope && depth < 4; depth += 1, scope = scope.parentElement) {
+      const candidates = Array.from(scope.querySelectorAll(
+        'button, input[type="button"], a, [role="button"], [class*="search"], [class*="magnif"]'
+      ));
+      const control = candidates.find((element) => {
+        if (element === userField || element.closest(`#${ROOT_ID}, #${MODAL_ID}`) || !visible(element)) return false;
+        const identity = `${controlText(element)} ${element.className || ""}`;
+        return /search|find|magnif/i.test(identity);
+      });
+      if (control) {
+        return control.closest('button, a, [role="button"], .btn') || control;
+      }
+    }
+    return null;
+  }
+
   function prepareStartForm(config) {
     const root = document.querySelector(".init-trade") || tradeRoot();
     if (!root) return;
-    const idInput = Array.from(root.querySelectorAll("input")).find((input) =>
-      /user.?id/i.test(`${input.name} ${input.id} ${input.className}`)
-    );
+    const idInput = newTradeUserField(root);
     if (idInput && parseMoney(idInput.value) !== Number(config.targetId)) {
       setNativeInputValue(idInput, config.targetId);
     }
-    const description = Array.from(root.querySelectorAll("textarea, input[type='text']")).find((input) =>
-      /desc|message/i.test(`${input.name} ${input.id} ${input.placeholder}`)
-    );
+    const description = newTradeDescriptionField(root, idInput);
     if (description && !String(description.value || "").trim()) {
       setNativeInputValue(description, config.description);
     }
@@ -554,7 +610,7 @@
     const verified = targetVerified(refreshedConfig, currentRoute);
     const message = pageMessage();
 
-    if (/expired|does not exist|no longer exists|no current trade|invalid trade/i.test(message)) {
+    if (currentRoute.tradeId && /expired|does not exist|no longer exists|no current trade|invalid trade/i.test(message)) {
       return state("stale", "NEW", "trade expired", "error", "restart");
     }
 
@@ -608,6 +664,20 @@
     }
 
     if (!currentRoute.step) {
+      const root = document.querySelector(".init-trade") || tradeRoot();
+      prepareStartForm(refreshedConfig);
+      const initiate = startButton();
+      if (initiate && !nativeDisabled(initiate)) {
+        return state("home-start-ready", "START", "trade", "start", "start", initiate);
+      }
+      const userField = newTradeUserField(root);
+      const search = newTradeSearchControl(root, userField);
+      if (userField && search) {
+        return state("home-search-ready", "FIND", refreshedConfig.targetName || `ID ${refreshedConfig.targetId}`, "start", "search", search);
+      }
+      if (userField) {
+        return state("home-filled", "READY", "target filled", "wait");
+      }
       return state("trade-home", "GO", refreshedConfig.targetName || `ID ${refreshedConfig.targetId}`, "go", "go");
     }
 
@@ -709,6 +779,11 @@
         prepareStartForm(config);
         pendingTargetId = config.targetId;
         setBusy(fresh, "starting trade");
+        if (!clickNative(fresh.control)) clearBusy();
+        return;
+      case "search":
+        prepareStartForm(config);
+        setBusy(fresh, "finding user");
         if (!clickNative(fresh.control)) clearBusy();
         return;
       case "money":
