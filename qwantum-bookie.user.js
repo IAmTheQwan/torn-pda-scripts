@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.16.3
+// @version      1.16.4
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -51,7 +51,7 @@ let lastLoadStatus = 'Not loaded yet.';
 let indexedManualBetLinks = {};
 let indexedLoanLedger = { version: 1, payments: [] };
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.16.3';
+const SCRIPT_VERSION = '1.16.4';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -64,6 +64,7 @@ const FOOTBALL_HOME_GREEN_MIN = 1.4;
 const FOOTBALL_HOME_GREEN_MAX = 1.59;
 const FOOTBALL_HOME_OLIVE_MIN = 1.6;
 const FOOTBALL_HOME_OLIVE_MAX = 1.75;
+const FOOTBALL_HOME_MINUS_ONE_ML_MAX = 1.35;
 const FOOTBALL_AWAY_ODDS_MIN = 1.2;
 const FOOTBALL_AWAY_ODDS_MAX = 1.7;
 const FOOTBALL_EQUIVALENT_ODDS_GAP = 0.01;
@@ -167,6 +168,11 @@ background:linear-gradient(90deg, rgba(138,143,34,.58), rgba(196,116,24,.22))!im
 outline:2px solid #a99a2c;
 box-shadow:inset 7px 0 0 #8a8f22, 0 0 9px rgba(169,154,44,.72)!important;
 }
+li.tbp-football-home-minus-one > a > ul.pop-game {
+background:linear-gradient(90deg, rgba(96,125,139,.58), rgba(69,90,100,.22))!important;
+outline:2px solid #78909c;
+box-shadow:inset 7px 0 0 #546e7a, 0 0 9px rgba(120,144,156,.72)!important;
+}
 li.tbp-football-away-orange > a > ul.pop-game {
 background:linear-gradient(90deg, rgba(255,140,0,.58), rgba(255,140,0,.22))!important;
 outline:2px solid #ff9800;
@@ -178,6 +184,7 @@ li.tbp-football-match > a > ul.pop-game .team-names { font-weight:700!important;
 .tbp-football-badge-home-yellow { background:#d4ad00; color:#171300; }
 .tbp-football-badge-home-lime { background:#7fb52c; color:#101500; }
 .tbp-football-badge-home-olive { background:#8a8f22; color:#fff; }
+.tbp-football-badge-home-minus-one { background:#546e7a; color:#fff; }
 .tbp-football-badge-away-orange { background:#e87800; color:#fff; }
 .tbp-football-market-math-line { display:block; width:fit-content; max-width:100%; margin-top:3px; padding:2px 5px; border-radius:3px; color:#fff; font-size:9px; font-weight:800; line-height:1.35; white-space:normal; }
 .tbp-football-market-math-guaranteed { background:#087e8b; box-shadow:0 0 6px rgba(110,247,255,.7); }
@@ -1164,17 +1171,24 @@ if (!fixture) return '';
 const market = String(fixture.market || '').replace(/\s+/g, ' ').trim();
 const isThreeWay = !market || /^3-Way Ordinary time$/i.test(market);
 const isHalfGoalHandicap = /^Asian Handicap 0(?:[.,]5) Ordinary time(?:\s+due to start.*)?$/i.test(market);
-if (!isThreeWay && !isHalfGoalHandicap) return 'non3way';
+const isOneGoalHandicap = /^Asian Handicap 1(?:[.,]0)? Ordinary time(?:\s+due to start.*)?$/i.test(market);
+if (!isThreeWay && !isHalfGoalHandicap && !isOneGoalHandicap) return 'non3way';
 const rawSelection = String(fixture.placedSelection || fixture.recommendedSelection || '').trim();
 const selectionHandicapMatch = rawSelection.match(/\(\s*([+-]?\d+(?:[.,]\d+)?)\s*\)\s*$/);
 const placedHandicap = fixture.placedHandicap !== null && fixture.placedHandicap !== undefined && Number.isFinite(Number(fixture.placedHandicap))
 ? Number(fixture.placedHandicap)
 : selectionHandicapMatch ? Number(selectionHandicapMatch[1].replace(',', '.')) : NaN;
 if (isHalfGoalHandicap && (!Number.isFinite(placedHandicap) || Math.abs(placedHandicap + 0.5) > 0.001)) return 'non3way';
+if (isOneGoalHandicap && (!Number.isFinite(placedHandicap) || Math.abs(placedHandicap + 1) > 0.001)) return 'non3way';
 const selection = normalizeScoreTeamName(rawSelection.replace(/\s*\([^)]*\)\s*$/, ''));
 const home = normalizeScoreTeamName(fixture.homeTeam);
 const away = normalizeScoreTeamName(fixture.awayTeam);
 const odds = Number(betOdds || fixture.myBetsOdds || fixture.odds || 0);
+const hasMinusOneSignal = Number(fixture.homeOdds || 0) > 1
+&& Number(fixture.homeOdds) < FOOTBALL_HOME_MINUS_ONE_ML_MAX
+&& Number(fixture.homeMinusOneOdds || 0) > 1;
+if (selection && selection === home && (hasMinusOneSignal || fixture.matchType === 'home-minus-one')) return 'slate';
+if (isOneGoalHandicap) return 'non3way';
 if (selection && selection === home) {
 if (odds >= FOOTBALL_HOME_YELLOW_MIN && odds <= FOOTBALL_HOME_YELLOW_MAX) return 'yellow';
 if (odds >= FOOTBALL_HOME_LIME_MIN && odds <= FOOTBALL_HOME_LIME_MAX) return 'lime';
@@ -1529,6 +1543,7 @@ item.classList.remove(
 'tbp-football-home-yellow',
 'tbp-football-home-lime',
 'tbp-football-home-olive',
+'tbp-football-home-minus-one',
 'tbp-football-away-orange'
 );
 });
@@ -1669,6 +1684,25 @@ const team = normalizeScoreTeamName(teamName);
 return getHalfGoalHandicapRows(getHalfGoalAsianHandicapMarket(item)).find(entry => {
 return Math.abs(entry.handicap + 0.5) < 0.001 && normalizeScoreTeamName(entry.selection) === team;
 }) || null;
+}
+function getAsianHandicapOdds(item, teamName, targetHandicap) {
+const team = normalizeScoreTeamName(teamName);
+const markets = Array.from(item?.querySelectorAll('.info-wrap ul.bets-wrap') || []).filter(market => {
+return /^Asian Handicap\b.*\bOrdinary time\b/i.test(getMarketName(market));
+});
+for (const market of markets) {
+const match = getHalfGoalHandicapRows(market).find(entry => {
+return Math.abs(entry.handicap - targetHandicap) < 0.001
+&& normalizeScoreTeamName(entry.selection) === team;
+});
+if (match) return match;
+}
+return null;
+}
+function footballBetRowIsSuspended(row) {
+return row?.classList.contains('disabled')
+|| row?.querySelector('.input-money-group')?.classList.contains('disabled')
+|| /suspended/i.test(String(row?.querySelector('input.amount')?.value || ''));
 }
 function footballMathCleanText(value) {
 return String(value || '').replace(/\s+/g, ' ').trim();
@@ -2180,6 +2214,7 @@ competition: (competitionIndex >= 0 ? remainder.slice(competitionIndex + 3) : ''
 }
 function createColorStatCategories() {
 return {
+slate: { key: 'slate', label: 'Slate Home −1', rule: `Home ML below ${FOOTBALL_HOME_MINUS_ONE_ML_MAX.toFixed(2)} with an active Asian Handicap -1 line`, wins: 0, losses: 0, net: 0 },
 yellow: { key: 'yellow', label: 'Yellow Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}-${FOOTBALL_HOME_YELLOW_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
 lime: { key: 'lime', label: 'Lime Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_LIME_MIN.toFixed(2)}-${FOOTBALL_HOME_LIME_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
 green: { key: 'green', label: 'Green Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}-${FOOTBALL_HOME_GREEN_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
@@ -2608,6 +2643,7 @@ const away = rows.find(entry => entry.selection.toLowerCase() === details.awayTe
 const draw = rows.find(entry => /^(draw|tie)$/i.test(entry.selection));
 const homeMinusHalf = getMinusHalfOdds(item, details.homeTeam);
 const awayMinusHalf = getMinusHalfOdds(item, details.awayTeam);
+const homeMinusOne = getAsianHandicapOdds(item, details.homeTeam, -1);
 const homeBestOdds = Math.max(Number(home?.odds || 0), Number(homeMinusHalf?.odds || 0));
 const awayBestOdds = Math.max(Number(away?.odds || 0), Number(awayMinusHalf?.odds || 0));
 const recommendedSelection = matchType?.startsWith('home-')
@@ -2629,6 +2665,9 @@ drawOdds: Number(draw?.odds || 0),
 awayOdds: Number(away?.odds || 0),
 homeMinusHalfOdds: Number(homeMinusHalf?.odds || 0),
 awayMinusHalfOdds: Number(awayMinusHalf?.odds || 0),
+homeMinusOneOdds: homeMinusOne && !footballBetRowIsSuspended(homeMinusOne.row)
+? Number(homeMinusOne.odds || 0)
+: 0,
 reviewedAt: Date.now()
 };
 if (matchType) {
@@ -3429,10 +3468,12 @@ const homeOdds = parseDecimalMultiplier(homeRow.querySelector('.bet-cell.odds.de
 const awayOdds = parseDecimalMultiplier(awayRow.querySelector('.bet-cell.odds.decimal')?.textContent);
 const homeMinusHalf = getMinusHalfOdds(item, homeName);
 const awayMinusHalf = getMinusHalfOdds(item, awayName);
+const homeMinusOne = getAsianHandicapOdds(item, homeName, -1);
 const homeThreeWayAvailable = Boolean(homeOdds) && !rowIsSuspended(homeRow);
 const awayThreeWayAvailable = Boolean(awayOdds) && !rowIsSuspended(awayRow);
 const homeMinusHalfAvailable = Boolean(homeMinusHalf?.odds) && !rowIsSuspended(homeMinusHalf.row);
 const awayMinusHalfAvailable = Boolean(awayMinusHalf?.odds) && !rowIsSuspended(awayMinusHalf.row);
+const homeMinusOneAvailable = Boolean(homeMinusOne?.odds) && !footballBetRowIsSuspended(homeMinusOne.row);
 const homeBestOdds = Math.max(homeThreeWayAvailable ? homeOdds : 0, homeMinusHalfAvailable ? homeMinusHalf.odds : 0);
 const awayBestOdds = Math.max(awayThreeWayAvailable ? awayOdds : 0, awayMinusHalfAvailable ? awayMinusHalf.odds : 0);
 const homeUsesMinusHalf = homeMinusHalfAvailable && Number(homeMinusHalf.odds) > Number(homeThreeWayAvailable ? homeOdds : 0);
@@ -3450,13 +3491,18 @@ item.classList.remove(
 'tbp-football-home-yellow',
 'tbp-football-home-lime',
 'tbp-football-home-olive',
+'tbp-football-home-minus-one',
 'tbp-football-away-orange'
 );
 matchElement.querySelectorAll('.tbp-football-badge').forEach(badge => badge.remove());
 let matchType = null;
 let badgeText = '';
 let badgeTitle = '';
-if (homeAvailable && homeBestOdds >= FOOTBALL_HOME_YELLOW_MIN && homeBestOdds <= FOOTBALL_HOME_YELLOW_MAX) {
+if (homeThreeWayAvailable && homeOdds < FOOTBALL_HOME_MINUS_ONE_ML_MAX && homeMinusOneAvailable) {
+matchType = 'home-minus-one';
+badgeText = `HOME ML x${homeOdds.toFixed(2)} · -1`;
+badgeTitle = `${homeName} moneyline x${homeOdds.toFixed(2)} with active Asian Handicap -1 at x${Number(homeMinusOne.odds).toFixed(2)}`;
+} else if (homeAvailable && homeBestOdds >= FOOTBALL_HOME_YELLOW_MIN && homeBestOdds <= FOOTBALL_HOME_YELLOW_MAX) {
 matchType = 'home-yellow';
 badgeText = `HOME ${homeUsesMinusHalf ? '-0.5 ' : ''}x${homeBestOdds.toFixed(2)}`;
 badgeTitle = homeUsesMinusHalf
@@ -3627,6 +3673,7 @@ const colorClasses = [
 'tbp-football-home-yellow',
 'tbp-football-home-lime',
 'tbp-football-home-olive',
+'tbp-football-home-minus-one',
 'tbp-football-away-orange'
 ];
 Object.entries(guidedFootballSession.results).forEach(([href, storedResult]) => {
@@ -4072,7 +4119,7 @@ Page Limit Only ignores the configured scan date. Full Rescan always requires a 
 <input type="checkbox" id="tbp-football-scan-enabled" ${footballScanEnabled ? 'checked' : ''}>
 </div>
 <div class="tbp-muted" style="margin-top:7px;">
-Compares each 3-Way straight win with the same team's full-match Asian Handicap -0.5 when Torn offers it, then highlights the better equivalent payout: yellow for home x${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}–x${FOOTBALL_HOME_YELLOW_MAX.toFixed(2)}, lime for home x${FOOTBALL_HOME_LIME_MIN.toFixed(2)}–x${FOOTBALL_HOME_LIME_MAX.toFixed(2)}, green for home x${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}–x${FOOTBALL_HOME_GREEN_MAX.toFixed(2)}, olive for home x${FOOTBALL_HOME_OLIVE_MIN.toFixed(2)}–x${FOOTBALL_HOME_OLIVE_MAX.toFixed(2)}, and orange for away x${FOOTBALL_AWAY_ODDS_MIN.toFixed(2)}–x${FOOTBALL_AWAY_ODDS_MAX.toFixed(2)}. +0.5 is never treated as equivalent.
+Compares each 3-Way straight win with the same team's full-match Asian Handicap -0.5 when Torn offers it, then highlights the better equivalent payout: yellow for home x${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}–x${FOOTBALL_HOME_YELLOW_MAX.toFixed(2)}, lime for home x${FOOTBALL_HOME_LIME_MIN.toFixed(2)}–x${FOOTBALL_HOME_LIME_MAX.toFixed(2)}, green for home x${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}–x${FOOTBALL_HOME_GREEN_MAX.toFixed(2)}, olive for home x${FOOTBALL_HOME_OLIVE_MIN.toFixed(2)}–x${FOOTBALL_HOME_OLIVE_MAX.toFixed(2)}, and orange for away x${FOOTBALL_AWAY_ODDS_MIN.toFixed(2)}–x${FOOTBALL_AWAY_ODDS_MAX.toFixed(2)}. Slate overrides yellow or lime when the home moneyline is below x${FOOTBALL_HOME_MINUS_ONE_ML_MAX.toFixed(2)} and an active home Asian Handicap -1 line is visible. +0.5 is never treated as equivalent.
 </div>
 </div>
 <div class="tbp-card">
@@ -4090,7 +4137,7 @@ Records home, draw, and away multipliers locally when you manually open a Footba
 <input type="checkbox" id="tbp-guided-football-review-enabled" ${guidedFootballReviewEnabled ? 'checked' : ''}>
 </div>
 <div class="tbp-muted" style="margin-top:7px;">
-Game Review opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. Each opened game checks the standard yellow/lime/green/olive/orange win lines, complete-market guaranteed-money candidates, equivalent prices, total ladders, market logic, and unusual margins. Cyan lock-candidate and purple/red odds-check lines stay on the fixture until End. It also captures club details when you manually press a 3-Way BET button so they can appear in Open after an API refresh.
+Game Review opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. Each opened game checks the slate -1 override and the standard yellow/lime/green/olive/orange win lines, complete-market guaranteed-money candidates, equivalent prices, total ladders, market logic, and unusual margins. Cyan lock-candidate and purple/red odds-check lines stay on the fixture until End. It also captures club details when you manually press a 3-Way BET button so they can appear in Open after an API refresh.
 </div>
 </div>
 <div class="tbp-card">
@@ -4245,6 +4292,7 @@ function renderStats(body) {
 const stats = getColorBetStats();
 const total = stats.total;
 const colorStyles = {
+slate: 'border-left:6px solid #546e7a;',
 green: 'border-left:6px solid #28a745;',
 yellow: 'border-left:6px solid #d4ad00;',
 lime: 'border-left:6px solid #7fb52c;',
