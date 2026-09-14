@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.16.0
+// @version      1.16.1
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -51,14 +51,17 @@ let lastLoadStatus = 'Not loaded yet.';
 let indexedManualBetLinks = {};
 let indexedLoanLedger = { version: 1, payments: [] };
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.16.0';
+const SCRIPT_VERSION = '1.16.1';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
 const API_PAGE_DELAY_MS = 1100;
 const FOOTBALL_HOME_YELLOW_MIN = 1.2;
-const FOOTBALL_HOME_GREEN_MIN = 1.3;
-const FOOTBALL_HOME_ODDS_MAX = 1.7;
+const FOOTBALL_HOME_YELLOW_MAX = 1.39;
+const FOOTBALL_HOME_GREEN_MIN = 1.4;
+const FOOTBALL_HOME_GREEN_MAX = 1.59;
+const FOOTBALL_HOME_LIME_MIN = 1.6;
+const FOOTBALL_HOME_LIME_MAX = 1.75;
 const FOOTBALL_AWAY_ODDS_MIN = 1.2;
 const FOOTBALL_AWAY_ODDS_MAX = 1.7;
 const FOOTBALL_EQUIVALENT_ODDS_GAP = 0.01;
@@ -152,6 +155,11 @@ background:linear-gradient(90deg, rgba(255,215,0,.56), rgba(255,215,0,.22))!impo
 outline:2px solid #ffd700;
 box-shadow:inset 7px 0 0 #d4ad00, 0 0 9px rgba(255,215,0,.72)!important;
 }
+li.tbp-football-home-lime > a > ul.pop-game {
+background:linear-gradient(90deg, rgba(143,174,45,.56), rgba(143,174,45,.22))!important;
+outline:2px solid #a8cf45;
+box-shadow:inset 7px 0 0 #8fae2d, 0 0 9px rgba(168,207,69,.72)!important;
+}
 li.tbp-football-away-orange > a > ul.pop-game {
 background:linear-gradient(90deg, rgba(255,140,0,.58), rgba(255,140,0,.22))!important;
 outline:2px solid #ff9800;
@@ -161,6 +169,7 @@ li.tbp-football-match > a > ul.pop-game .matchName,
 li.tbp-football-match > a > ul.pop-game .team-names { font-weight:700!important; }
 .tbp-football-badge { display:inline-block; margin-left:7px; padding:2px 5px; border-radius:3px; background:#28a745; color:#fff; font-size:10px; font-weight:bold; vertical-align:middle; }
 .tbp-football-badge-home-yellow { background:#d4ad00; color:#171300; }
+.tbp-football-badge-home-lime { background:#8fae2d; color:#101500; }
 .tbp-football-badge-away-orange { background:#e87800; color:#fff; }
 .tbp-football-market-math-line { display:block; width:fit-content; max-width:100%; margin-top:3px; padding:2px 5px; border-radius:3px; color:#fff; font-size:9px; font-weight:800; line-height:1.35; white-space:normal; }
 .tbp-football-market-math-guaranteed { background:#087e8b; box-shadow:0 0 6px rgba(110,247,255,.7); }
@@ -1150,15 +1159,19 @@ if (isHalfGoalHandicap && (!Number.isFinite(placedHandicap) || Math.abs(placedHa
 const selection = normalizeScoreTeamName(rawSelection.replace(/\s*\([^)]*\)\s*$/, ''));
 const home = normalizeScoreTeamName(fixture.homeTeam);
 const away = normalizeScoreTeamName(fixture.awayTeam);
-if (fixture.matchType === 'home-green' && selection && selection === home) return 'green';
-if (fixture.matchType === 'home-yellow' && selection && selection === home) return 'yellow';
-if (fixture.matchType === 'away-orange' && selection && selection === away) return 'orange';
 const odds = Number(betOdds || fixture.myBetsOdds || fixture.odds || 0);
 if (selection && selection === home) {
-if (odds >= FOOTBALL_HOME_GREEN_MIN && odds <= FOOTBALL_HOME_ODDS_MAX) return 'green';
-if (odds >= FOOTBALL_HOME_YELLOW_MIN && odds < FOOTBALL_HOME_GREEN_MIN) return 'yellow';
+if (odds >= FOOTBALL_HOME_YELLOW_MIN && odds <= FOOTBALL_HOME_YELLOW_MAX) return 'yellow';
+if (odds >= FOOTBALL_HOME_GREEN_MIN && odds <= FOOTBALL_HOME_GREEN_MAX) return 'green';
+if (odds >= FOOTBALL_HOME_LIME_MIN && odds <= FOOTBALL_HOME_LIME_MAX) return 'lime';
 }
 if (selection && selection === away && odds >= FOOTBALL_AWAY_ODDS_MIN && odds <= FOOTBALL_AWAY_ODDS_MAX) return 'orange';
+if (!odds) {
+if (fixture.matchType === 'home-yellow' && selection && selection === home) return 'yellow';
+if (fixture.matchType === 'home-green' && selection && selection === home) return 'green';
+if (fixture.matchType === 'home-lime' && selection && selection === home) return 'lime';
+if (fixture.matchType === 'away-orange' && selection && selection === away) return 'orange';
+}
 return 'other';
 }
 function saveBetStatsLink(betId, fixture, placedAt = 0, betData = {}) {
@@ -1497,6 +1510,7 @@ item.classList.remove(
 'tbp-football-match',
 'tbp-football-home-green',
 'tbp-football-home-yellow',
+'tbp-football-home-lime',
 'tbp-football-away-orange'
 );
 });
@@ -2148,8 +2162,9 @@ competition: (competitionIndex >= 0 ? remainder.slice(competitionIndex + 3) : ''
 }
 function createColorStatCategories() {
 return {
-green: { key: 'green', label: 'Green Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}-${FOOTBALL_HOME_ODDS_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
-yellow: { key: 'yellow', label: 'Yellow Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}-${(FOOTBALL_HOME_GREEN_MIN - 0.01).toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+yellow: { key: 'yellow', label: 'Yellow Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}-${FOOTBALL_HOME_YELLOW_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+green: { key: 'green', label: 'Green Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}-${FOOTBALL_HOME_GREEN_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+lime: { key: 'lime', label: 'Lime Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_LIME_MIN.toFixed(2)}-${FOOTBALL_HOME_LIME_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
 orange: { key: 'orange', label: 'Orange Away', rule: `Best Away Win / -0.5 Odds: ${FOOTBALL_AWAY_ODDS_MIN.toFixed(2)}-${FOOTBALL_AWAY_ODDS_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
 other: { key: 'other', label: 'All Other Win Bets', rule: 'Captured 3-Way or equivalent -0.5 bets outside the colored ranges', wins: 0, losses: 0, net: 0 },
 non3way: { key: 'non3way', label: 'Other / Non-Equivalent Bets', rule: 'Other markets, sports, +0.5 handicaps, or bets without captured details', wins: 0, losses: 0, net: 0 }
@@ -3414,20 +3429,27 @@ item.classList.remove(
 'tbp-football-match',
 'tbp-football-home-green',
 'tbp-football-home-yellow',
+'tbp-football-home-lime',
 'tbp-football-away-orange'
 );
 matchElement.querySelectorAll('.tbp-football-badge').forEach(badge => badge.remove());
 let matchType = null;
 let badgeText = '';
 let badgeTitle = '';
-if (homeAvailable && homeBestOdds >= FOOTBALL_HOME_GREEN_MIN && homeBestOdds <= FOOTBALL_HOME_ODDS_MAX) {
+if (homeAvailable && homeBestOdds >= FOOTBALL_HOME_YELLOW_MIN && homeBestOdds <= FOOTBALL_HOME_YELLOW_MAX) {
+matchType = 'home-yellow';
+badgeText = `HOME ${homeUsesMinusHalf ? '-0.5 ' : ''}x${homeBestOdds.toFixed(2)}`;
+badgeTitle = homeUsesMinusHalf
+? `${homeName} -0.5 — +${(homeBestOdds - Number(homeOdds || 0)).toFixed(2)} versus 3-Way`
+: `${homeName} — 3-Way Ordinary time`;
+} else if (homeAvailable && homeBestOdds >= FOOTBALL_HOME_GREEN_MIN && homeBestOdds <= FOOTBALL_HOME_GREEN_MAX) {
 matchType = 'home-green';
 badgeText = `HOME ${homeUsesMinusHalf ? '-0.5 ' : ''}x${homeBestOdds.toFixed(2)}`;
 badgeTitle = homeUsesMinusHalf
 ? `${homeName} -0.5 — +${(homeBestOdds - Number(homeOdds || 0)).toFixed(2)} versus 3-Way`
 : `${homeName} — 3-Way Ordinary time`;
-} else if (homeAvailable && homeBestOdds >= FOOTBALL_HOME_YELLOW_MIN && homeBestOdds < FOOTBALL_HOME_GREEN_MIN) {
-matchType = 'home-yellow';
+} else if (homeAvailable && homeBestOdds >= FOOTBALL_HOME_LIME_MIN && homeBestOdds <= FOOTBALL_HOME_LIME_MAX) {
+matchType = 'home-lime';
 badgeText = `HOME ${homeUsesMinusHalf ? '-0.5 ' : ''}x${homeBestOdds.toFixed(2)}`;
 badgeTitle = homeUsesMinusHalf
 ? `${homeName} -0.5 — +${(homeBestOdds - Number(homeOdds || 0)).toFixed(2)} versus 3-Way`
@@ -3577,6 +3599,7 @@ if (!guidedFootballSession.active || document.visibilityState !== 'visible' || !
 const colorClasses = [
 'tbp-football-home-green',
 'tbp-football-home-yellow',
+'tbp-football-home-lime',
 'tbp-football-away-orange'
 ];
 Object.entries(guidedFootballSession.results).forEach(([href, storedResult]) => {
@@ -4018,7 +4041,7 @@ Page Limit Only ignores the configured scan date. Full Rescan always requires a 
 <input type="checkbox" id="tbp-football-scan-enabled" ${footballScanEnabled ? 'checked' : ''}>
 </div>
 <div class="tbp-muted" style="margin-top:7px;">
-Compares each 3-Way straight win with the same team's full-match Asian Handicap -0.5 when Torn offers it, then highlights the better equivalent payout: yellow for home x${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}–x${(FOOTBALL_HOME_GREEN_MIN - 0.01).toFixed(2)}, green for home x${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}–x${FOOTBALL_HOME_ODDS_MAX.toFixed(2)}, and orange for away x${FOOTBALL_AWAY_ODDS_MIN.toFixed(2)}–x${FOOTBALL_AWAY_ODDS_MAX.toFixed(2)}. +0.5 is never treated as equivalent.
+Compares each 3-Way straight win with the same team's full-match Asian Handicap -0.5 when Torn offers it, then highlights the better equivalent payout: yellow for home x${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}–x${FOOTBALL_HOME_YELLOW_MAX.toFixed(2)}, green for home x${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}–x${FOOTBALL_HOME_GREEN_MAX.toFixed(2)}, lime for home x${FOOTBALL_HOME_LIME_MIN.toFixed(2)}–x${FOOTBALL_HOME_LIME_MAX.toFixed(2)}, and orange for away x${FOOTBALL_AWAY_ODDS_MIN.toFixed(2)}–x${FOOTBALL_AWAY_ODDS_MAX.toFixed(2)}. +0.5 is never treated as equivalent.
 </div>
 </div>
 <div class="tbp-card">
@@ -4036,7 +4059,7 @@ Records home, draw, and away multipliers locally when you manually open a Footba
 <input type="checkbox" id="tbp-guided-football-review-enabled" ${guidedFootballReviewEnabled ? 'checked' : ''}>
 </div>
 <div class="tbp-muted" style="margin-top:7px;">
-Game Review opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. Each opened game checks the standard green/yellow/orange win lines, complete-market guaranteed-money candidates, equivalent prices, total ladders, market logic, and unusual margins. Cyan lock-candidate and purple/red odds-check lines stay on the fixture until End. It also captures club details when you manually press a 3-Way BET button so they can appear in Open after an API refresh.
+Game Review opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. Each opened game checks the standard yellow/green/lime/orange win lines, complete-market guaranteed-money candidates, equivalent prices, total ladders, market logic, and unusual margins. Cyan lock-candidate and purple/red odds-check lines stay on the fixture until End. It also captures club details when you manually press a 3-Way BET button so they can appear in Open after an API refresh.
 </div>
 </div>
 <div class="tbp-card">
@@ -4193,6 +4216,7 @@ const total = stats.total;
 const colorStyles = {
 green: 'border-left:6px solid #28a745;',
 yellow: 'border-left:6px solid #d4ad00;',
+lime: 'border-left:6px solid #8fae2d;',
 orange: 'border-left:6px solid #e87800;',
 other: 'border-left:6px solid #777;',
 non3way: 'border-left:6px solid #4da3ff;'
@@ -4200,14 +4224,14 @@ non3way: 'border-left:6px solid #4da3ff;'
 body.innerHTML = `
 ${renderLoanRepaymentCard()}
 <div class="tbp-muted" style="margin-bottom:8px;">${lastLoadStatus}</div>
-<div class="tbp-muted" style="margin-bottom:8px;">Stats group all cached Bookie outcomes logged from ${escapeHtml(stats.fromDate)} through today, matching Daily's date rule. Captured 3-Way Football bets use the colored rules; every other or still-unclassified result appears in the fifth box.</div>
+<div class="tbp-muted" style="margin-bottom:8px;">Stats group all cached Bookie outcomes logged from ${escapeHtml(stats.fromDate)} through today, matching Daily's date rule. Captured 3-Way Football bets use the colored rules; other straight-win and non-equivalent results remain in their separate boxes.</div>
 <button class="tbp-btn tbp-btn-primary" id="tbp-measure-stats-btn" style="width:100%; margin-bottom:8px;">Refresh Outcome Audit</button>
 <div class="tbp-row" style="margin:0 2px 4px;"><span>Captured with market details</span><span>${stats.trackedPlaced}</span></div>
 <div class="tbp-row" style="margin:0 2px 4px;"><span>Settled / Open / Refunded</span><span>${stats.total.settled} / ${stats.total.open} / ${stats.total.refunds}</span></div>
 <div class="tbp-row" style="margin:0 2px 9px;"><span>Other/unclassified Bookie bets</span><span>${stats.excludedUntracked}</span></div>
-${stats.unmatchedResults ? `<div class="tbp-row" style="margin:0 2px 9px;"><span>Torn results without placement match</span><span>${stats.unmatchedResults} · included in fifth box</span></div>` : ''}
+${stats.unmatchedResults ? `<div class="tbp-row" style="margin:0 2px 9px;"><span>Torn results without placement match</span><span>${stats.unmatchedResults} · included as non-equivalent</span></div>` : ''}
 ${Math.abs(stats.reconciliationDelta) >= 1 ? `<div class="tbp-row" style="margin:0 2px 9px;"><span>Provisional provider difference vs Daily</span><span class="${stats.reconciliationDelta >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(stats.reconciliationDelta)}</span></div>` : ''}
-${stats.excludedUntracked ? '<div class="tbp-muted" style="margin-bottom:9px;">Other/unclassified can include other sports, other markets, and older bets without captured fixture details. Their Torn outcomes are included in the fifth box so they are no longer dropped from the Stats record or net.</div>' : ''}
+${stats.excludedUntracked ? '<div class="tbp-muted" style="margin-bottom:9px;">Other/unclassified can include other sports, other markets, and older bets without captured fixture details. Their Torn outcomes are included under Other / Non-Equivalent so they are no longer dropped from the Stats record or net.</div>' : ''}
 <div class="tbp-summary-grid">
 <div class="tbp-summary-box"><div class="tbp-summary-label">Total Record</div><div class="tbp-summary-value">${total.wins}-${total.losses}</div></div>
 <div class="tbp-summary-box"><div class="tbp-summary-label">Win / Loss</div><div class="tbp-summary-value" style="font-size:13px;">${total.winPct.toFixed(1)}% / ${total.lossPct.toFixed(1)}%</div></div>
