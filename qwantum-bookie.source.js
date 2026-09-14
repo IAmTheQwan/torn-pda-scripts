@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.16.2
+// @version      1.16.3
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -58,7 +58,7 @@
     let indexedLoanLedger = { version: 1, payments: [] };
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.16.2';
+    const SCRIPT_VERSION = '1.16.3';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -1163,6 +1163,14 @@
         const m = String(date.getMonth() + 1).padStart(2, '0');
         const d = String(date.getDate()).padStart(2, '0');
         return `${y}-${m}-${d}`;
+    }
+
+    function inclusiveCalendarDayCount(startDateKey, endDate = new Date()) {
+        const parts = String(startDateKey || '').split('-').map(Number);
+        if (parts.length !== 3 || parts.some(part => !Number.isFinite(part))) return 0;
+        const startUtc = Date.UTC(parts[0], parts[1] - 1, parts[2]);
+        const endUtc = Date.UTC(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+        return Math.max(0, Math.floor((endUtc - startUtc) / 86400000) + 1);
     }
 
     function dateToUnixStart(dateString) {
@@ -4322,9 +4330,13 @@
     }
 
     function renderDaily(body) {
+        const filteredDays = scanMode === 'pages'
+            ? new Set(dailyTotals.map(day => day.dateKey)).size
+            : inclusiveCalendarDayCount(scanStartDate);
         body.innerHTML = `
             <div class="tbp-muted" style="margin-bottom:8px;">${lastLoadStatus}</div>
-            <div class="tbp-summary-grid">
+            <div class="tbp-summary-grid" style="grid-template-columns:58px 118px minmax(0,1fr);">
+                <div class="tbp-summary-box" style="padding-left:4px; padding-right:4px;"><div class="tbp-summary-label">Days</div><div class="tbp-summary-value" style="font-size:13px;">${filteredDays}</div></div>
                 <div class="tbp-summary-box"><div class="tbp-summary-label">From</div><div class="tbp-summary-value" style="font-size:13px;">${scanMode === 'pages' ? 'Page Limit' : scanStartDate}</div></div>
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Overall Net</div><div class="tbp-summary-value ${overallBookieNet >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(overallBookieNet)}</div></div>
             </div>
