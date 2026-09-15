@@ -12,10 +12,10 @@ Use this raw URL in Torn PDA:
 `https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/fast-trade/theqwan-fast-trade.user.js`
 
 No player details are embedded in the published source. On first use, tap
-**SET** and enter the trusted player's numeric Torn ID. The ID is used for the
-New Trade field, links, and identity verification. A username can be stored as
-an optional friendly button label. The optional remembered trade ID is learned
-automatically after that player's trade is visibly verified.
+**SET** and enter the trusted player's exact current Torn username. The username
+is entered into Torn's New Trade field and used to verify the recipient. The
+optional remembered trade ID is learned automatically after that player's trade
+is visibly verified.
 
 ## Button states
 
@@ -41,8 +41,8 @@ automatically after that player's trade is visibly verified.
 - Every server-side trade action requires a separate deliberate tap.
 - Route changes, field filling, button coloring, and DOM observation do not
   submit a server action by themselves.
-- The target must match the configured numeric player ID or an already verified
-  and remembered trade ID before cash or acceptance controls are enabled.
+- The target must match the configured username or an already verified and
+  remembered trade ID before cash or acceptance controls are enabled.
 - Target, reserve, description, and remembered trade ID stay in local
   userscript storage. The script uses no API key and no third-party service.
 
@@ -51,6 +51,11 @@ Torn's public rules remain authoritative and can change. See
 
 ## Updates
 
+- **1.1.0:** Remove the player-ID setting and use the exact Torn username for
+  New Trade entry and recipient verification. New trades now open from Torn's
+  plain Trade page so an ID cannot prefill the field. The update clears the old
+  remembered trade once to prevent a stale trade from leaving the control in a
+  locked state.
 - **1.0.4:** Enter the configured numeric player ID in Torn's New Trade field.
   The optional username is now used only as a friendly button label.
 - **1.0.3:** Use the configured target username—not the numeric player ID—in

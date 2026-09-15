@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan Fast Trade
 // @namespace    theqwan.torn.fast-trade
-// @version      1.0.4
+// @version      1.1.0
 // @description  PDA-friendly, manual-tap quick access, cash deposit, and trade acceptance
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -27,11 +27,11 @@
   const BUSY_FAILSAFE_MS = 12000;
 
   const KEYS = {
-    targetId: `${STORAGE_PREFIX}targetId`,
     targetName: `${STORAGE_PREFIX}targetName`,
     description: `${STORAGE_PREFIX}description`,
     reserve: `${STORAGE_PREFIX}reserve`,
     tradeId: `${STORAGE_PREFIX}tradeId`,
+    schemaVersion: `${STORAGE_PREFIX}schemaVersion`,
   };
 
   const COLORS = {
@@ -58,7 +58,8 @@
   let observer = null;
   let busy = null;
   let busyFailsafe = null;
-  let pendingTargetId = "";
+  let pendingTargetName = "";
+  const preparedUserFields = new WeakSet();
 
   function getStored(key, fallback = "") {
     try {
@@ -103,12 +104,21 @@
 
   function settings() {
     return {
-      targetId: String(getStored(KEYS.targetId, "")).replace(/\D/g, ""),
       targetName: String(getStored(KEYS.targetName, "")).trim(),
       description: String(getStored(KEYS.description, "Storage")).trim() || "Storage",
       reserve: Math.max(0, parseMoney(getStored(KEYS.reserve, "0"))),
       tradeId: String(getStored(KEYS.tradeId, "")).replace(/\D/g, ""),
     };
+  }
+
+  function migrateStoredSettings() {
+    if (String(getStored(KEYS.schemaVersion, "")) === "username-v1") return;
+    // A trade remembered by the former numeric-ID workflow is not a valid
+    // trust anchor for the new username-only target. Start that relationship
+    // cleanly, and retire the old local ID value.
+    setStored(KEYS.tradeId, "");
+    setStored(`${STORAGE_PREFIX}targetId`, "");
+    setStored(KEYS.schemaVersion, "username-v1");
   }
 
   function addStyles(css) {
@@ -290,7 +300,6 @@
       isTrade: location.pathname.toLowerCase() === "/trade.php",
       step: String(params.get("step") || "").toLowerCase(),
       tradeId: String(params.get("ID") || params.get("id") || "").replace(/\D/g, ""),
-      targetId: String(params.get("userID") || params.get("userid") || "").replace(/\D/g, ""),
     };
   }
 
@@ -344,32 +353,34 @@
     return document.querySelector("#trade-container") || document.querySelector(".trade-cont") || null;
   }
 
-  function exactProfileLink(root, targetId) {
-    if (!root || !targetId) return null;
+  function normalizeUsername(value) {
+    return String(value || "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+  }
+
+  function exactProfileName(root, targetName) {
+    const wanted = normalizeUsername(targetName);
+    if (!root || !wanted) return null;
     return Array.from(root.querySelectorAll('a[href*="profiles.php"]')).find((anchor) => {
-      try {
-        const url = new URL(anchor.href, location.origin);
-        return String(url.searchParams.get("XID") || "") === String(targetId);
-      } catch {
-        return false;
-      }
+      const values = [anchor.textContent, anchor.getAttribute("title"), anchor.getAttribute("aria-label")]
+        .map(normalizeUsername)
+        .filter(Boolean);
+      return values.some((value) => value === wanted || value.startsWith(`${wanted} [`));
     }) || null;
   }
 
   function targetVerified(config, currentRoute) {
-    if (!config.targetId) return false;
-    if (currentRoute.step === "start") return currentRoute.targetId === config.targetId;
+    if (!config.targetName) return false;
     if (currentRoute.tradeId && config.tradeId === currentRoute.tradeId) return true;
-    return Boolean(exactProfileLink(tradeRoot(), config.targetId));
+    return Boolean(exactProfileName(tradeRoot(), config.targetName));
   }
 
   function rememberVisibleTrade(config, currentRoute) {
     if (!currentRoute.tradeId || config.tradeId === currentRoute.tradeId) return;
-    const verifiedByProfile = Boolean(exactProfileLink(tradeRoot(), config.targetId));
-    const verifiedFromStart = pendingTargetId === config.targetId;
+    const verifiedByProfile = Boolean(exactProfileName(tradeRoot(), config.targetName));
+    const verifiedFromStart = normalizeUsername(pendingTargetName) === normalizeUsername(config.targetName);
     if (!verifiedByProfile && !verifiedFromStart) return;
     setStored(KEYS.tradeId, currentRoute.tradeId);
-    pendingTargetId = "";
+    pendingTargetName = "";
   }
 
   function formRoot() {
@@ -551,8 +562,9 @@
     const root = document.querySelector(".init-trade") || tradeRoot();
     if (!root) return;
     const userInput = newTradeUserField(root);
-    if (userInput && String(userInput.value || "").trim() !== config.targetId) {
-      setNativeInputValue(userInput, config.targetId);
+    if (userInput && !preparedUserFields.has(userInput) && String(userInput.value || "").trim() !== config.targetName) {
+      preparedUserFields.add(userInput);
+      setNativeInputValue(userInput, config.targetName);
     }
     const description = newTradeDescriptionField(root, userInput);
     if (description && !String(description.value || "").trim()) {
@@ -597,12 +609,12 @@
     const config = settings();
     const currentRoute = route();
 
-    if (!config.targetId) {
+    if (!config.targetName) {
       return state("setup", "SET", "hold 3s", "setup", "settings");
     }
 
     if (!currentRoute.isTrade) {
-      return state("go", "GO", config.targetName || `ID ${config.targetId}`, "go", "go");
+      return state("go", "GO", config.targetName, "go", "go");
     }
 
     rememberVisibleTrade(config, currentRoute);
@@ -615,9 +627,6 @@
     }
 
     if (currentRoute.step === "start") {
-      if (currentRoute.targetId !== refreshedConfig.targetId) {
-        return state("wrong-start", "WRONG", "hold to fix", "error", "settings");
-      }
       prepareStartForm(refreshedConfig);
       const control = startButton();
       if (!control) return state("start-loading", "WAIT", "start page", "wait");
@@ -673,12 +682,12 @@
       const userField = newTradeUserField(root);
       const search = newTradeSearchControl(root, userField);
       if (userField && search) {
-        return state("home-search-ready", "FIND", refreshedConfig.targetName || `ID ${refreshedConfig.targetId}`, "start", "search", search);
+        return state("home-search-ready", "FIND", refreshedConfig.targetName, "start", "search", search);
       }
       if (userField) {
         return state("home-filled", "READY", "target filled", "wait");
       }
-      return state("trade-home", "GO", refreshedConfig.targetName || `ID ${refreshedConfig.targetId}`, "go", "go");
+      return state("trade-home", "GO", refreshedConfig.targetName, "go", "go");
     }
 
     return state("unverified", "BLOCK", "wrong trade", "error", "settings");
@@ -744,7 +753,7 @@
 
   function goUrl(config) {
     if (config.tradeId) return `https://www.torn.com/trade.php#step=addmoney&ID=${encodeURIComponent(config.tradeId)}`;
-    return `https://www.torn.com/trade.php#step=start&userID=${encodeURIComponent(config.targetId)}`;
+    return "https://www.torn.com/trade.php";
   }
 
   function clickNative(control) {
@@ -765,19 +774,17 @@
         openSettings();
         return;
       case "go":
-        pendingTargetId = config.targetId;
         setBusy(fresh, "opening trade");
         location.assign(goUrl(config));
         return;
       case "restart":
         setStored(KEYS.tradeId, "");
-        pendingTargetId = config.targetId;
         setBusy(fresh, "opening new trade");
-        location.assign(`https://www.torn.com/trade.php#step=start&userID=${encodeURIComponent(config.targetId)}`);
+        location.assign("https://www.torn.com/trade.php");
         return;
       case "start":
         prepareStartForm(config);
-        pendingTargetId = config.targetId;
+        pendingTargetName = config.targetName;
         setBusy(fresh, "starting trade");
         if (!clickNative(fresh.control)) clearBusy();
         return;
@@ -913,12 +920,9 @@
     card.innerHTML = `
       <h2 id="tqft-settings-title">Fast Trade</h2>
       <p>Every colored tap performs at most one Torn request. Your target and settings stay only in this userscript's local storage.</p>
-      <label for="tqft-target-id">Target player ID</label>
-      <input id="tqft-target-id" name="targetId" inputmode="numeric" pattern="[0-9]+" autocomplete="off" required>
-      <div class="tqft-help">The numeric ID from the player's profile link.</div>
-      <label for="tqft-target-name">Target username (optional)</label>
-      <input id="tqft-target-name" name="targetName" maxlength="24" autocomplete="off">
-      <div class="tqft-help">Used only as a friendly label on the Fast Trade button. Torn's New Trade field receives the numeric player ID above.</div>
+      <label for="tqft-target-name">Target username</label>
+      <input id="tqft-target-name" name="targetName" maxlength="24" autocomplete="off" required>
+      <div class="tqft-help">The player's exact current Torn username. This is entered into Torn's New Trade field and used to verify the recipient.</div>
       <label for="tqft-description">New-trade description</label>
       <input id="tqft-description" name="description" maxlength="64" autocomplete="off">
       <label for="tqft-reserve">Keep in wallet</label>
@@ -948,21 +952,19 @@
     });
     card.addEventListener("submit", (event) => {
       event.preventDefault();
-      const targetId = String(card.elements.targetId.value || "").replace(/\D/g, "");
       const targetName = String(card.elements.targetName.value || "").trim();
       const tradeId = String(card.elements.tradeId.value || "").replace(/\D/g, "");
       const reserveText = String(card.elements.reserve.value || "0").trim();
       const reserve = parseMoney(reserveText);
       const error = card.querySelector(".tqft-error");
-      if (!targetId) {
-        error.textContent = "Enter the target player's numeric Torn ID.";
+      if (!targetName) {
+        error.textContent = "Enter the target player's exact Torn username.";
         return;
       }
       if (reserveText && reserve === 0 && !/^\$?0+(?:\.0+)?$/i.test(reserveText.replace(/,/g, ""))) {
         error.textContent = "The wallet reserve is not a valid amount.";
         return;
       }
-      setStored(KEYS.targetId, targetId);
       setStored(KEYS.targetName, targetName);
       setStored(KEYS.description, String(card.elements.description.value || "").trim() || "Storage");
       setStored(KEYS.reserve, String(reserve));
@@ -976,14 +978,13 @@
     clearBusy();
     const config = settings();
     const form = modal.querySelector("form");
-    form.elements.targetId.value = config.targetId;
     form.elements.targetName.value = config.targetName;
     form.elements.description.value = config.description;
     form.elements.reserve.value = config.reserve ? String(config.reserve) : "0";
     form.elements.tradeId.value = config.tradeId;
     form.querySelector(".tqft-error").textContent = "";
     modal.classList.add("tqft-open");
-    form.elements.targetId.focus();
+    form.elements.targetName.focus();
   }
 
   function closeSettings() {
@@ -1013,6 +1014,7 @@
 
   function mount() {
     if (!document.body) return;
+    migrateStoredSettings();
     injectStyles();
     buildLauncher();
     buildSettings();
