@@ -1,5 +1,14 @@
 # torn-pda-scripts
 
+## Blackjack Cycle
+
+`theqwan-blackjack-cycle.user.js` provides a blackjack-page-only betting-cycle
+tracker with an editable ladder, surrender-aware bet flexing, local records,
+automatic visible-result detection, and manual corrections. Its two-tap LOAD /
+PLAY control fills the visible bet box first and requires a separate deliberate
+tap for Torn's native Start Game action. See
+[BLACKJACK-CYCLE.md](BLACKJACK-CYCLE.md) for installation and behavior.
+
 ## Fast Trade
 
 `theqwan-fast-trade.user.js` provides a PDA-friendly colored trade control. A
