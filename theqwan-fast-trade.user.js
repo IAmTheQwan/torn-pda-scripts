@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan Fast Trade
 // @namespace    theqwan.torn.fast-trade
-// @version      1.0.3
+// @version      1.0.4
 // @description  PDA-friendly, manual-tap quick access, cash deposit, and trade acceptance
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -551,8 +551,8 @@
     const root = document.querySelector(".init-trade") || tradeRoot();
     if (!root) return;
     const userInput = newTradeUserField(root);
-    if (userInput && String(userInput.value || "").trim() !== config.targetName) {
-      setNativeInputValue(userInput, config.targetName);
+    if (userInput && String(userInput.value || "").trim() !== config.targetId) {
+      setNativeInputValue(userInput, config.targetId);
     }
     const description = newTradeDescriptionField(root, userInput);
     if (description && !String(description.value || "").trim()) {
@@ -599,10 +599,6 @@
 
     if (!config.targetId) {
       return state("setup", "SET", "hold 3s", "setup", "settings");
-    }
-
-    if (!config.targetName) {
-      return state("username-setup", "NAME", "set username", "error", "settings");
     }
 
     if (!currentRoute.isTrade) {
@@ -920,9 +916,9 @@
       <label for="tqft-target-id">Target player ID</label>
       <input id="tqft-target-id" name="targetId" inputmode="numeric" pattern="[0-9]+" autocomplete="off" required>
       <div class="tqft-help">The numeric ID from the player's profile link.</div>
-      <label for="tqft-target-name">Target username</label>
-      <input id="tqft-target-name" name="targetName" maxlength="24" autocomplete="off" required>
-      <div class="tqft-help">The player's exact current Torn username; this is entered into Torn's New Trade search bar.</div>
+      <label for="tqft-target-name">Target username (optional)</label>
+      <input id="tqft-target-name" name="targetName" maxlength="24" autocomplete="off">
+      <div class="tqft-help">Used only as a friendly label on the Fast Trade button. Torn's New Trade field receives the numeric player ID above.</div>
       <label for="tqft-description">New-trade description</label>
       <input id="tqft-description" name="description" maxlength="64" autocomplete="off">
       <label for="tqft-reserve">Keep in wallet</label>
@@ -960,10 +956,6 @@
       const error = card.querySelector(".tqft-error");
       if (!targetId) {
         error.textContent = "Enter the target player's numeric Torn ID.";
-        return;
-      }
-      if (!targetName) {
-        error.textContent = "Enter the target player's exact Torn username.";
         return;
       }
       if (reserveText && reserve === 0 && !/^\$?0+(?:\.0+)?$/i.test(reserveText.replace(/,/g, ""))) {

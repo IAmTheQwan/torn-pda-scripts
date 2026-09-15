@@ -12,10 +12,10 @@ Use this raw URL in Torn PDA:
 `https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/fast-trade/theqwan-fast-trade.user.js`
 
 No player details are embedded in the published source. On first use, tap
-**SET** and enter both the trusted player's numeric Torn ID and exact current
-username. The ID is used for links and identity verification; the username is
-entered into Torn's visible New Trade search bar. The optional remembered trade
-ID is learned automatically after that player's trade is visibly verified.
+**SET** and enter the trusted player's numeric Torn ID. The ID is used for the
+New Trade field, links, and identity verification. A username can be stored as
+an optional friendly button label. The optional remembered trade ID is learned
+automatically after that player's trade is visibly verified.
 
 ## Button states
 
@@ -51,6 +51,8 @@ Torn's public rules remain authoritative and can change. See
 
 ## Updates
 
+- **1.0.4:** Enter the configured numeric player ID in Torn's New Trade field.
+  The optional username is now used only as a friendly button label.
 - **1.0.3:** Use the configured target username—not the numeric player ID—in
   Torn's New Trade search field. The numeric ID remains required for direct
   links and recipient verification.
