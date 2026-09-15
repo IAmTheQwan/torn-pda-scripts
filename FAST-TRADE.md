@@ -21,6 +21,10 @@ is visibly verified.
 
 - **GO** (green): open the configured player's trade. Once a verified trade ID
   is remembered, GO opens its Add Money page directly.
+- **FIND** (yellow): submit the configured username through Torn's visible
+  player search control.
+- **DESC** (yellow): explicitly re-enter and commit the configured description
+  after Torn processes the username.
 - **START** (yellow): manually initiate a new trade if Torn presents that form.
 - **MONEY** (yellow): open the visible trade's native Add Money page.
 - **ADD** (orange): fill the visible money form with wallet cash minus the
@@ -51,6 +55,8 @@ Torn's public rules remain authoritative and can change. See
 
 ## Updates
 
+- **1.1.2:** Split new-trade setup into explicit FIND, DESC, and START taps so
+  Torn receives the description change after it processes the username.
 - **1.1.1:** Separate synchronous settings from Torn PDA's `GMV2_`-encoded
   fallback storage and automatically unwrap values corrupted by earlier builds.
   The one-time repair preserves the username and description while resetting

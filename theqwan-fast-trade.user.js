@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan Fast Trade
 // @namespace    theqwan.torn.fast-trade
-// @version      1.1.1
+// @version      1.1.2
 // @description  PDA-friendly, manual-tap quick access, cash deposit, and trade acceptance
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -59,6 +59,8 @@
   let busy = null;
   let busyFailsafe = null;
   let pendingTargetName = "";
+  let targetSearchSubmitted = false;
+  let descriptionCommitted = false;
   const preparedUserFields = new WeakSet();
 
   function localStorageKey(key) {
@@ -532,12 +534,22 @@
     return 0;
   }
 
-  function startButton() {
+  function startButtonCandidate() {
     const root = document.querySelector(".init-trade") || tradeRoot();
-    return findControl(root, /(?:initiate|start|create)\s+(?:the\s+)?trade/i, [
-      'input[type="submit"].torn-btn',
-      'button[type="submit"].torn-btn',
-    ]);
+    if (!root) return null;
+    const selectors = ['input[type="submit"].torn-btn', 'button[type="submit"].torn-btn'];
+    for (const selector of selectors) {
+      const candidate = root.querySelector(selector);
+      if (candidate) return candidate;
+    }
+    return controlsWithin(root).find((element) =>
+      /(?:initiate|start|create)\s+(?:the\s+)?trade/i.test(controlText(element))
+    ) || null;
+  }
+
+  function startButton() {
+    const candidate = startButtonCandidate();
+    return visible(candidate) ? candidate : null;
   }
 
   function newTradeUserField(root) {
@@ -591,18 +603,53 @@
     return null;
   }
 
-  function prepareStartForm(config) {
+  function prepareTradeUsername(config) {
     const root = document.querySelector(".init-trade") || tradeRoot();
-    if (!root) return;
+    if (!root) return null;
     const userInput = newTradeUserField(root);
     if (userInput && !preparedUserFields.has(userInput) && String(userInput.value || "").trim() !== config.targetName) {
       preparedUserFields.add(userInput);
       setNativeInputValue(userInput, config.targetName);
     }
+    return userInput;
+  }
+
+  function commitTradeDescription(config) {
+    const root = document.querySelector(".init-trade") || tradeRoot();
+    if (!root) return false;
+    const userInput = newTradeUserField(root);
     const description = newTradeDescriptionField(root, userInput);
-    if (description && !String(description.value || "").trim()) {
-      setNativeInputValue(description, config.description);
+    if (!description) return false;
+    description.focus();
+    setNativeInputValue(description, "");
+    setNativeInputValue(description, config.description);
+    description.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Unidentified" }));
+    description.blur();
+    descriptionCommitted = true;
+    return true;
+  }
+
+  function newTradeState(config, prefix = "home") {
+    const root = document.querySelector(".init-trade") || tradeRoot();
+    const userField = prepareTradeUsername(config);
+    const search = newTradeSearchControl(root, userField);
+    const description = newTradeDescriptionField(root, userField);
+    const initiate = startButton();
+
+    if (userField && search && !targetSearchSubmitted) {
+      return state(`${prefix}-search-ready`, "FIND", config.targetName, "start", "search", search);
     }
+    if (description && !descriptionCommitted && (targetSearchSubmitted || !search)) {
+      return state(`${prefix}-description-ready`, "DESC", "enter description", "start", "description", description);
+    }
+    if (initiate && !nativeDisabled(initiate)) {
+      return state(`${prefix}-start-ready`, "START", "trade", "start", "start", initiate);
+    }
+    if (userField && search) {
+      return state(`${prefix}-search-again`, "FIND", "select username", "start", "search", search);
+    }
+    if (userField) return state(`${prefix}-form-wait`, "WAIT", "Torn form", "wait");
+    return state(`${prefix}-loading`, "WAIT", "new trade", "wait");
   }
 
   function viewAcceptButton() {
@@ -660,10 +707,7 @@
     }
 
     if (currentRoute.step === "start") {
-      prepareStartForm(refreshedConfig);
-      const control = startButton();
-      if (!control) return state("start-loading", "WAIT", "start page", "wait");
-      return state("start-ready", "START", "trade", "start", "start", control);
+      return newTradeState(refreshedConfig, "start");
     }
 
     if (currentRoute.step === "addmoney") {
@@ -707,19 +751,7 @@
 
     if (!currentRoute.step) {
       const root = document.querySelector(".init-trade") || tradeRoot();
-      prepareStartForm(refreshedConfig);
-      const initiate = startButton();
-      if (initiate && !nativeDisabled(initiate)) {
-        return state("home-start-ready", "START", "trade", "start", "start", initiate);
-      }
-      const userField = newTradeUserField(root);
-      const search = newTradeSearchControl(root, userField);
-      if (userField && search) {
-        return state("home-search-ready", "FIND", refreshedConfig.targetName, "start", "search", search);
-      }
-      if (userField) {
-        return state("home-filled", "READY", "target filled", "wait");
-      }
+      if (root) return newTradeState(refreshedConfig, "home");
       return state("trade-home", "GO", refreshedConfig.targetName, "go", "go");
     }
 
@@ -807,24 +839,38 @@
         openSettings();
         return;
       case "go":
+        targetSearchSubmitted = false;
+        descriptionCommitted = false;
         setBusy(fresh, "opening trade");
         location.assign(goUrl(config));
         return;
       case "restart":
         setStored(KEYS.tradeId, "");
+        targetSearchSubmitted = false;
+        descriptionCommitted = false;
         setBusy(fresh, "opening new trade");
         location.assign("https://www.torn.com/trade.php");
         return;
       case "start":
-        prepareStartForm(config);
+        prepareTradeUsername(config);
         pendingTargetName = config.targetName;
         setBusy(fresh, "starting trade");
         if (!clickNative(fresh.control)) clearBusy();
         return;
       case "search":
-        prepareStartForm(config);
+        prepareTradeUsername(config);
+        targetSearchSubmitted = true;
+        descriptionCommitted = false;
         setBusy(fresh, "finding user");
         if (!clickNative(fresh.control)) clearBusy();
+        scheduleEvaluate();
+        return;
+      case "description":
+        if (!commitTradeDescription(config)) {
+          scheduleEvaluate();
+          return;
+        }
+        scheduleEvaluate();
         return;
       case "money":
         if (!currentRoute.tradeId) return;
