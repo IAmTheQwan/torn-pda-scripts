@@ -51,6 +51,10 @@ Torn's public rules remain authoritative and can change. See
 
 ## Updates
 
+- **1.1.1:** Separate synchronous settings from Torn PDA's `GMV2_`-encoded
+  fallback storage and automatically unwrap values corrupted by earlier builds.
+  The one-time repair preserves the username and description while resetting
+  the false `$2` reserve and trade ID that caused Torn to open locked trade 2.
 - **1.1.0:** Remove the player-ID setting and use the exact Torn username for
   New Trade entry and recipient verification. New trades now open from Torn's
   plain Trade page so an ID cannot prefill the field. The update clears the old

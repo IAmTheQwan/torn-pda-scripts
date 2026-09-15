@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan Fast Trade
 // @namespace    theqwan.torn.fast-trade
-// @version      1.1.0
+// @version      1.1.1
 // @description  PDA-friendly, manual-tap quick access, cash deposit, and trade acceptance
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -61,10 +61,38 @@
   let pendingTargetName = "";
   const preparedUserFields = new WeakSet();
 
+  function localStorageKey(key) {
+    return `${key}local`;
+  }
+
+  function decodeStoredValue(value) {
+    let decoded = value;
+    // Torn PDA's GM storage can expose its local serialization wrapper. Older
+    // builds then saved that wrapper again, so unwrap more than one layer.
+    for (let depth = 0; depth < 8 && typeof decoded === "string" && decoded.startsWith("GMV2_"); depth += 1) {
+      const payload = decoded.slice(5);
+      try {
+        decoded = JSON.parse(payload);
+      } catch {
+        decoded = payload;
+        break;
+      }
+    }
+    return decoded;
+  }
+
   function getStored(key, fallback = "") {
     try {
-      const value = localStorage.getItem(key);
-      if (value !== null) return value;
+      const primaryKey = localStorageKey(key);
+      const primary = localStorage.getItem(primaryKey);
+      if (primary !== null) return decodeStoredValue(primary);
+
+      const legacy = localStorage.getItem(key);
+      if (legacy !== null) {
+        const decoded = decodeStoredValue(legacy);
+        localStorage.setItem(primaryKey, String(decoded ?? ""));
+        return decoded;
+      }
     } catch (error) {
       console.warn(`[${SCRIPT}] Could not read local storage.`, error);
     }
@@ -73,7 +101,7 @@
         const value = GM_getValue(key, fallback);
         // Torn PDA may implement GM storage asynchronously. The state machine is
         // intentionally synchronous, so a Promise cannot be treated as a value.
-        if (!value || typeof value.then !== "function") return value;
+        if (!value || typeof value.then !== "function") return decodeStoredValue(value);
       }
     } catch (error) {
       console.warn(`[${SCRIPT}] Could not read userscript storage fallback.`, error);
@@ -84,7 +112,7 @@
   function setStored(key, value) {
     let localSaved = false;
     try {
-      localStorage.setItem(key, String(value));
+      localStorage.setItem(localStorageKey(key), String(value));
       localSaved = true;
     } catch (error) {
       console.warn(`[${SCRIPT}] Could not write local storage.`, error);
@@ -112,13 +140,18 @@
   }
 
   function migrateStoredSettings() {
-    if (String(getStored(KEYS.schemaVersion, "")) === "username-v1") return;
+    if (String(getStored(KEYS.schemaVersion, "")) === "username-v2") return;
+    const recoveredName = String(getStored(KEYS.targetName, "")).trim();
+    const recoveredDescription = String(getStored(KEYS.description, "Storage")).trim() || "Storage";
     // A trade remembered by the former numeric-ID workflow is not a valid
-    // trust anchor for the new username-only target. Start that relationship
-    // cleanly, and retire the old local ID value.
+    // trust anchor for the new username-only target. Torn PDA also serialized
+    // blank numeric fields as GMV2_ text, which the older parser read as 2.
+    setStored(KEYS.targetName, recoveredName);
+    setStored(KEYS.description, recoveredDescription);
+    setStored(KEYS.reserve, "0");
     setStored(KEYS.tradeId, "");
     setStored(`${STORAGE_PREFIX}targetId`, "");
-    setStored(KEYS.schemaVersion, "username-v1");
+    setStored(KEYS.schemaVersion, "username-v2");
   }
 
   function addStyles(css) {
