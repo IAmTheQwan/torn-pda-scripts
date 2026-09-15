@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.16.5
+// @version      1.16.6
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -51,7 +51,7 @@ let lastLoadStatus = 'Not loaded yet.';
 let indexedManualBetLinks = {};
 let indexedLoanLedger = { version: 1, payments: [] };
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.16.5';
+const SCRIPT_VERSION = '1.16.6';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -189,7 +189,7 @@ li.tbp-football-bookmarked > a > ul.pop-game { outline:3px solid #ffd54f!importa
 .tbp-football-badge-home-olive { background:#8a8f22; color:#fff; }
 .tbp-football-badge-home-minus-one { background:#546e7a; color:#fff; }
 .tbp-football-badge-away-orange { background:#e87800; color:#fff; }
-.tbp-football-bookmark-toggle { display:inline-block; margin-left:6px; padding:2px 6px; border:1px solid #c49a00; border-radius:3px; background:#332b0d; color:#ffd54f; font-size:9px; font-weight:900; line-height:1.3; vertical-align:middle; cursor:pointer; touch-action:manipulation; }
+.tbp-football-bookmark-toggle { position:absolute; top:50%; right:62px; z-index:8; transform:translateY(-50%); display:flex; align-items:center; justify-content:center; min-width:46px; min-height:28px; padding:3px 6px; border:1px solid #c49a00; border-radius:5px; background:#332b0d; color:#ffd54f; font-size:10px; font-weight:900; line-height:1.1; cursor:pointer; touch-action:manipulation; box-sizing:border-box; }
 .tbp-football-bookmark-toggle.saved { background:#ffd54f; color:#241d00; border-color:#ffe082; box-shadow:0 0 7px rgba(255,213,79,.85); }
 .tbp-football-bookmark-count { padding:2px 5px; border:1px solid #8c7200; border-radius:3px; background:#332b0d; color:#ffd54f; font-size:9px; font-weight:900; white-space:nowrap; }
 .tbp-football-market-math-line { display:block; width:fit-content; max-width:100%; margin-top:3px; padding:2px 5px; border-radius:3px; color:#fff; font-size:9px; font-weight:800; line-height:1.35; white-space:normal; }
@@ -1562,6 +1562,12 @@ toggle.remove();
 });
 }, Math.min(futureStarts[0] - now + 1000, 2147483647));
 }
+function updateFootballBookmarkCount(count) {
+const countElement = document.getElementById('tbp-football-bookmark-count');
+if (!countElement) return;
+countElement.textContent = `★ ${count}`;
+countElement.style.display = count ? '' : 'none';
+}
 function loadFootballBookmarks() {
 let bookmarks = { version: 1, games: {} };
 try {
@@ -1579,6 +1585,7 @@ changed = true;
 });
 if (changed) saveFootballBookmarks(bookmarks);
 else scheduleFootballBookmarkExpiry(bookmarks);
+updateFootballBookmarkCount(Object.keys(bookmarks.games || {}).length);
 return bookmarks;
 }
 function saveFootballBookmarks(bookmarks) {
@@ -1602,13 +1609,16 @@ toggle.setAttribute('aria-pressed', saved ? 'true' : 'false');
 }
 function renderFootballBookmarkToggle(matchElement, fixture) {
 if (!matchElement || !fixture?.gameId || !fixture?.matchType) return;
-let toggle = matchElement.querySelector('.tbp-football-bookmark-toggle');
+const gameBar = matchElement.closest('ul.pop-game')
+|| matchElement.closest('li.c-pointer')?.querySelector('ul.pop-game');
+if (!gameBar) return;
+let toggle = gameBar.querySelector('.tbp-football-bookmark-toggle');
 if (!toggle) {
 toggle = document.createElement('span');
 toggle.className = 'tbp-football-bookmark-toggle';
 toggle.setAttribute('role', 'button');
 toggle.setAttribute('tabindex', '0');
-matchElement.appendChild(toggle);
+gameBar.appendChild(toggle);
 }
 toggle.dataset.gameId = String(fixture.gameId);
 toggle.dataset.href = String(fixture.href || `#/football/${fixture.gameId}`);
@@ -1644,12 +1654,7 @@ saveFootballBookmarks(bookmarks);
 const saved = !wasSaved;
 toggle.closest('li.c-pointer')?.classList.toggle('tbp-football-bookmarked', saved);
 setFootballBookmarkToggleState(toggle, saved);
-const count = Object.keys(bookmarks.games || {}).length;
-const countElement = document.getElementById('tbp-football-bookmark-count');
-if (countElement) {
-countElement.textContent = `★ ${count}`;
-countElement.style.display = count ? '' : 'none';
-}
+updateFootballBookmarkCount(Object.keys(bookmarks.games || {}).length);
 }
 function restoreFootballBookmarks() {
 if (document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
@@ -3652,7 +3657,7 @@ item.classList.remove(
 'tbp-football-away-orange'
 );
 matchElement.querySelectorAll('.tbp-football-badge').forEach(badge => badge.remove());
-matchElement.querySelectorAll('.tbp-football-bookmark-toggle').forEach(toggle => toggle.remove());
+item.querySelectorAll('.tbp-football-bookmark-toggle').forEach(toggle => toggle.remove());
 let matchType = null;
 let badgeText = '';
 let badgeTitle = '';
