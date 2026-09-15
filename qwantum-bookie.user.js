@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.16.4
+// @version      1.16.5
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -51,7 +51,7 @@ let lastLoadStatus = 'Not loaded yet.';
 let indexedManualBetLinks = {};
 let indexedLoanLedger = { version: 1, payments: [] };
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.16.4';
+const SCRIPT_VERSION = '1.16.5';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -73,6 +73,7 @@ const FOOTBALL_IDENTITY_PROBABILITY_GAP = 0.04;
 const FOOTBALL_NEAR_ARBITRAGE_SUM = 1.01;
 const FOOTBALL_ODDS_HISTORY_KEY = 'tbp_football_odds_history';
 const FOOTBALL_FIXTURE_RECORDS_KEY = 'tbp_football_fixture_records';
+const FOOTBALL_BOOKMARKS_KEY = 'tbp_football_bookmarks';
 const MANUAL_BET_LINKS_KEY = 'tbp_manual_bet_fixture_links';
 const PENDING_MANUAL_CAPTURE_KEY = 'tbp_pending_manual_bet_capture';
 const MY_BETS_SNAPSHOT_KEY = 'tbp_my_bets_open_snapshot';
@@ -81,6 +82,7 @@ const MAX_ODDS_OBSERVATIONS_PER_SELECTION = 20;
 const MAX_GUIDED_FOOTBALL_GAMES = 20;
 const GUIDED_FOOTBALL_LOAD_TIMEOUT_MS = 12000;
 const MAX_FOOTBALL_FIXTURE_RECORDS = 200;
+const MAX_FOOTBALL_BOOKMARKS = 100;
 const FOOTBALL_FIXTURE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const FOOTBALL_BET_LINK_WINDOW_MS = 10 * 60 * 1000;
 const FOOTBALL_PENDING_BET_VISIBLE_MS = 30 * 60 * 1000;
@@ -180,12 +182,16 @@ box-shadow:inset 7px 0 0 #e87800, 0 0 9px rgba(255,152,0,.72)!important;
 }
 li.tbp-football-match > a > ul.pop-game .matchName,
 li.tbp-football-match > a > ul.pop-game .team-names { font-weight:700!important; }
+li.tbp-football-bookmarked > a > ul.pop-game { outline:3px solid #ffd54f!important; outline-offset:-3px!important; }
 .tbp-football-badge { display:inline-block; margin-left:7px; padding:2px 5px; border-radius:3px; background:#28a745; color:#fff; font-size:10px; font-weight:bold; vertical-align:middle; }
 .tbp-football-badge-home-yellow { background:#d4ad00; color:#171300; }
 .tbp-football-badge-home-lime { background:#7fb52c; color:#101500; }
 .tbp-football-badge-home-olive { background:#8a8f22; color:#fff; }
 .tbp-football-badge-home-minus-one { background:#546e7a; color:#fff; }
 .tbp-football-badge-away-orange { background:#e87800; color:#fff; }
+.tbp-football-bookmark-toggle { display:inline-block; margin-left:6px; padding:2px 6px; border:1px solid #c49a00; border-radius:3px; background:#332b0d; color:#ffd54f; font-size:9px; font-weight:900; line-height:1.3; vertical-align:middle; cursor:pointer; touch-action:manipulation; }
+.tbp-football-bookmark-toggle.saved { background:#ffd54f; color:#241d00; border-color:#ffe082; box-shadow:0 0 7px rgba(255,213,79,.85); }
+.tbp-football-bookmark-count { padding:2px 5px; border:1px solid #8c7200; border-radius:3px; background:#332b0d; color:#ffd54f; font-size:9px; font-weight:900; white-space:nowrap; }
 .tbp-football-market-math-line { display:block; width:fit-content; max-width:100%; margin-top:3px; padding:2px 5px; border-radius:3px; color:#fff; font-size:9px; font-weight:800; line-height:1.35; white-space:normal; }
 .tbp-football-market-math-guaranteed { background:#087e8b; box-shadow:0 0 6px rgba(110,247,255,.7); }
 .tbp-football-market-math-anomaly { background:#70439b; }
@@ -1535,6 +1541,154 @@ return location.pathname === '/page.php'
 return false;
 }
 }
+let footballBookmarkExpiryTimer = null;
+function scheduleFootballBookmarkExpiry(bookmarks) {
+if (footballBookmarkExpiryTimer) clearTimeout(footballBookmarkExpiryTimer);
+footballBookmarkExpiryTimer = null;
+const now = Date.now();
+const futureStarts = Object.values(bookmarks?.games || {})
+.map(bookmark => Number(bookmark?.startTimestamp || 0))
+.filter(timestamp => timestamp > now)
+.sort((a, b) => a - b);
+if (!futureStarts.length) return;
+footballBookmarkExpiryTimer = setTimeout(() => {
+footballBookmarkExpiryTimer = null;
+const current = loadFootballBookmarks();
+document.querySelectorAll('li.tbp-football-bookmarked').forEach(item => {
+const toggle = item.querySelector('.tbp-football-bookmark-toggle');
+if (!toggle || current.games[String(toggle.dataset.gameId || '')]) return;
+item.classList.remove('tbp-football-bookmarked');
+toggle.remove();
+});
+}, Math.min(futureStarts[0] - now + 1000, 2147483647));
+}
+function loadFootballBookmarks() {
+let bookmarks = { version: 1, games: {} };
+try {
+const parsed = JSON.parse(localStorage.getItem(FOOTBALL_BOOKMARKS_KEY) || '{}');
+if (parsed && typeof parsed === 'object' && parsed.games) bookmarks = parsed;
+} catch {}
+const now = Date.now();
+let changed = false;
+Object.entries(bookmarks.games || {}).forEach(([gameId, bookmark]) => {
+const startsAt = Number(bookmark?.startTimestamp || 0);
+if (startsAt && startsAt <= now) {
+delete bookmarks.games[gameId];
+changed = true;
+}
+});
+if (changed) saveFootballBookmarks(bookmarks);
+else scheduleFootballBookmarkExpiry(bookmarks);
+return bookmarks;
+}
+function saveFootballBookmarks(bookmarks) {
+const games = Object.entries(bookmarks?.games || {})
+.sort((a, b) => Number(b[1]?.savedAt || 0) - Number(a[1]?.savedAt || 0))
+.slice(0, MAX_FOOTBALL_BOOKMARKS);
+try {
+localStorage.setItem(FOOTBALL_BOOKMARKS_KEY, JSON.stringify({ version: 1, games: Object.fromEntries(games) }));
+} catch (error) {
+console.error('Could not save Football bookmarks.', error);
+}
+scheduleFootballBookmarkExpiry({ games: Object.fromEntries(games) });
+}
+function setFootballBookmarkToggleState(toggle, saved) {
+if (!toggle) return;
+toggle.classList.toggle('saved', saved);
+const label = saved ? '★ SAVED' : '☆ SAVE';
+if (toggle.textContent !== label) toggle.textContent = label;
+toggle.title = saved ? 'Remove this saved fixture' : 'Keep this fixture marked until it starts';
+toggle.setAttribute('aria-pressed', saved ? 'true' : 'false');
+}
+function renderFootballBookmarkToggle(matchElement, fixture) {
+if (!matchElement || !fixture?.gameId || !fixture?.matchType) return;
+let toggle = matchElement.querySelector('.tbp-football-bookmark-toggle');
+if (!toggle) {
+toggle = document.createElement('span');
+toggle.className = 'tbp-football-bookmark-toggle';
+toggle.setAttribute('role', 'button');
+toggle.setAttribute('tabindex', '0');
+matchElement.appendChild(toggle);
+}
+toggle.dataset.gameId = String(fixture.gameId);
+toggle.dataset.href = String(fixture.href || `#/football/${fixture.gameId}`);
+toggle.dataset.matchType = String(fixture.matchType);
+toggle.dataset.badgeText = String(fixture.badgeText || 'SAVED');
+toggle.dataset.badgeTitle = String(fixture.badgeTitle || fixture.matchTitle || 'Saved Football fixture');
+toggle.dataset.startTimestamp = String(Number(fixture.startTimestamp || 0));
+toggle.dataset.matchTitle = String(fixture.matchTitle || '');
+const saved = Boolean(loadFootballBookmarks().games[String(fixture.gameId)]);
+matchElement.closest('li.c-pointer')?.classList.toggle('tbp-football-bookmarked', saved);
+setFootballBookmarkToggleState(toggle, saved);
+}
+function toggleFootballBookmark(toggle) {
+const gameId = String(toggle?.dataset.gameId || '');
+if (!gameId) return;
+const bookmarks = loadFootballBookmarks();
+const wasSaved = Boolean(bookmarks.games[gameId]);
+if (wasSaved) {
+delete bookmarks.games[gameId];
+} else {
+bookmarks.games[gameId] = {
+gameId,
+href: toggle.dataset.href || `#/football/${gameId}`,
+matchType: toggle.dataset.matchType || '',
+badgeText: toggle.dataset.badgeText || 'SAVED',
+badgeTitle: toggle.dataset.badgeTitle || '',
+matchTitle: toggle.dataset.matchTitle || '',
+startTimestamp: Number(toggle.dataset.startTimestamp || 0),
+savedAt: Date.now()
+};
+}
+saveFootballBookmarks(bookmarks);
+const saved = !wasSaved;
+toggle.closest('li.c-pointer')?.classList.toggle('tbp-football-bookmarked', saved);
+setFootballBookmarkToggleState(toggle, saved);
+const count = Object.keys(bookmarks.games || {}).length;
+const countElement = document.getElementById('tbp-football-bookmark-count');
+if (countElement) {
+countElement.textContent = `★ ${count}`;
+countElement.style.display = count ? '' : 'none';
+}
+}
+function restoreFootballBookmarks() {
+if (document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+const bookmarks = loadFootballBookmarks();
+Object.values(bookmarks.games || {}).forEach(bookmark => {
+const item = findFootballItemForHref(bookmark.href || `#/football/${bookmark.gameId}`);
+if (!item || !bookmark.matchType) return;
+const matchElement = item.querySelector('.matchName p, .pop-game .name p');
+if (!matchElement) return;
+item.classList.remove(
+'tbp-football-home-green',
+'tbp-football-home-yellow',
+'tbp-football-home-lime',
+'tbp-football-home-olive',
+'tbp-football-home-minus-one',
+'tbp-football-away-orange'
+);
+item.classList.add('tbp-football-match', `tbp-football-${bookmark.matchType}`, 'tbp-football-bookmarked');
+matchElement.querySelectorAll('.tbp-football-color-badge').forEach(badge => {
+if (!badge.classList.contains(`tbp-football-badge-${bookmark.matchType}`)) badge.remove();
+});
+if (!matchElement.querySelector(`.tbp-football-badge-${bookmark.matchType}`)) {
+const badge = document.createElement('span');
+badge.className = `tbp-football-badge tbp-football-color-badge tbp-football-badge-${bookmark.matchType}`;
+badge.textContent = bookmark.badgeText || 'SAVED';
+badge.title = bookmark.badgeTitle || bookmark.matchTitle || 'Saved Football fixture';
+matchElement.appendChild(badge);
+}
+renderFootballBookmarkToggle(matchElement, bookmark);
+});
+}
+let footballBookmarkRestoreTimer = null;
+function scheduleFootballBookmarkRestore() {
+if (footballBookmarkRestoreTimer || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+footballBookmarkRestoreTimer = setTimeout(() => {
+footballBookmarkRestoreTimer = null;
+restoreFootballBookmarks();
+}, 100);
+}
 function clearFootballHighlights() {
 document.querySelectorAll('li.tbp-football-match').forEach(item => {
 item.classList.remove(
@@ -1548,7 +1702,10 @@ item.classList.remove(
 );
 });
 document.querySelectorAll('.tbp-football-badge').forEach(badge => badge.remove());
+document.querySelectorAll('.tbp-football-bookmark-toggle').forEach(toggle => toggle.remove());
+document.querySelectorAll('li.tbp-football-bookmarked').forEach(item => item.classList.remove('tbp-football-bookmarked'));
 document.querySelectorAll('.tbp-football-market-math-line').forEach(line => line.remove());
+scheduleFootballBookmarkRestore();
 }
 function parseDecimalMultiplier(value) {
 const match = String(value || '').match(/x\s*([\d.]+)/i);
@@ -3495,6 +3652,7 @@ item.classList.remove(
 'tbp-football-away-orange'
 );
 matchElement.querySelectorAll('.tbp-football-badge').forEach(badge => badge.remove());
+matchElement.querySelectorAll('.tbp-football-bookmark-toggle').forEach(toggle => toggle.remove());
 let matchType = null;
 let badgeText = '';
 let badgeTitle = '';
@@ -3533,17 +3691,24 @@ badgeTitle = awayUsesMinusHalf
 ? `${awayName || 'Away team'} -0.5 — +${(awayBestOdds - Number(awayOdds || 0)).toFixed(2)} versus 3-Way`
 : `${awayName || 'Away team'} — 3-Way Ordinary time`;
 }
-captureReviewedFootballFixture(item, href, market, matchType);
+const fixtureRecord = captureReviewedFootballFixture(item, href, market, matchType);
 if (!matchType) {
 renderFootballMarketMathBadges(matchElement, marketMath);
 return { scanned: 1, matched: 0, matchType: null, marketMath };
 }
 item.classList.add('tbp-football-match', `tbp-football-${matchType}`);
 const badge = document.createElement('span');
-badge.className = `tbp-football-badge tbp-football-badge-${matchType}`;
+badge.className = `tbp-football-badge tbp-football-color-badge tbp-football-badge-${matchType}`;
 badge.textContent = badgeText;
 badge.title = badgeTitle;
 matchElement.appendChild(badge);
+renderFootballBookmarkToggle(matchElement, {
+...fixtureRecord,
+href,
+matchType,
+badgeText,
+badgeTitle
+});
 renderFootballMarketMathBadges(matchElement, marketMath);
 return { scanned: 1, matched: 1, matchType, marketMath };
 }
@@ -3818,12 +3983,14 @@ return;
 }
 if (!showDebug && activeTab === 'debug') activeTab = 'open';
 container.className = '';
+const footballBookmarkCount = Object.keys(loadFootballBookmarks().games || {}).length;
 container.innerHTML = `
 <div class="tbp-header">
 <div class="tbp-header-title">
 <strong>Bookie Panel</strong><span class="tbp-muted" style="font-size:9px;">v${SCRIPT_VERSION}</span>
 ${footballScanEnabled && !guidedFootballReviewEnabled ? '<button class="tbp-btn tbp-scan-btn" id="tbp-football-scan-btn">Scan Games</button>' : ''}
 ${guidedFootballReviewEnabled ? `<button class="tbp-btn tbp-guide-btn" id="tbp-football-guide-btn">${guidedFootballButtonText()}</button>` : ''}
+<span class="tbp-football-bookmark-count" id="tbp-football-bookmark-count" style="${footballBookmarkCount ? '' : 'display:none;'}">★ ${footballBookmarkCount}</span>
 ${guidedFootballReviewEnabled ? '<span class="tbp-guide-loading" id="tbp-football-guide-loading" aria-live="polite"></span>' : ''}
 ${guidedFootballReviewEnabled && guidedFootballSession.active ? '<button class="tbp-btn tbp-btn-danger" id="tbp-football-end-guide-btn">End</button>' : ''}
 </div>
@@ -4137,7 +4304,7 @@ Records home, draw, and away multipliers locally when you manually open a Footba
 <input type="checkbox" id="tbp-guided-football-review-enabled" ${guidedFootballReviewEnabled ? 'checked' : ''}>
 </div>
 <div class="tbp-muted" style="margin-top:7px;">
-Game Review opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. Each opened game checks the slate -1 override and the standard yellow/lime/green/olive/orange win lines, complete-market guaranteed-money candidates, equivalent prices, total ladders, market logic, and unusual margins. Cyan lock-candidate and purple/red odds-check lines stay on the fixture until End. It also captures club details when you manually press a 3-Way BET button so they can appear in Open after an API refresh.
+Game Review opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. Each opened game checks the slate -1 override and the standard yellow/lime/green/olive/orange win lines, complete-market guaranteed-money candidates, equivalent prices, total ladders, market logic, and unusual margins. Use ☆ SAVE on a colored fixture to keep its color and a gold outline across End, reloads, and page changes until kickoff. Cyan lock-candidate and purple/red odds-check lines stay on the fixture until End. It also captures club details when you manually press a 3-Way BET button so they can appear in Open after an API refresh.
 </div>
 </div>
 <div class="tbp-card">
@@ -4625,6 +4792,14 @@ render();
 }
 }
 // Also refresh panel when Torn/PDA refresh-style buttons are clicked.
+document.addEventListener('click', event => {
+const target = event.target instanceof Element ? event.target : null;
+const toggle = target?.closest('.tbp-football-bookmark-toggle');
+if (!toggle) return;
+event.preventDefault();
+event.stopImmediatePropagation();
+toggleFootballBookmark(toggle);
+}, true);
 document.addEventListener('click', async e => {
 const btn = e.target.closest('button, a, [role="button"], input[type="button"], input[type="submit"]');
 if (!btn) return;
@@ -4696,10 +4871,13 @@ return;
 scheduleGuidedFootballHighlightRestore();
 }
 window.addEventListener('hashchange', handleFootballReviewRouteChange);
+window.addEventListener('hashchange', scheduleFootballBookmarkRestore);
 window.addEventListener('hashchange', captureArmedBetFromCurrentMyBetsRoute);
 window.addEventListener('hashchange', scheduleMyBetsSnapshotCapture);
 window.addEventListener('popstate', handleFootballReviewRouteChange);
+window.addEventListener('popstate', scheduleFootballBookmarkRestore);
 document.addEventListener('visibilitychange', () => {
+if (document.visibilityState === 'visible') scheduleFootballBookmarkRestore();
 if (!guidedFootballSession.active) return;
 if (document.visibilityState !== 'visible') {
 stopGuidedFootballHighlightKeeper();
@@ -4714,6 +4892,7 @@ if (visibleFootballResultCaptureTimer) return;
 visibleFootballResultCaptureTimer = setTimeout(() => {
 visibleFootballResultCaptureTimer = null;
 if (document.visibilityState !== 'visible') return;
+scheduleFootballBookmarkRestore();
 if (/^#\/your-bets(?:\/|$)/i.test(location.hash)) {
 captureVisibleMyBetsSnapshot();
 }
@@ -4739,6 +4918,8 @@ hydrateFromCache();
 scheduleMyBetsSnapshotCapture();
 startVisibleFootballResultCapture();
 startFootballDisplayClock();
+loadFootballBookmarks();
+scheduleFootballBookmarkRestore();
 if (footballOddsHistoryEnabled) scheduleFootballHistoryExpiry(loadFootballOddsHistory());
 } catch (error) {
 console.error('Bookie Panel failed to start.', error);
