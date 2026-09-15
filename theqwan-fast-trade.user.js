@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan Fast Trade
 // @namespace    theqwan.torn.fast-trade
-// @version      1.0.2
+// @version      1.0.3
 // @description  PDA-friendly, manual-tap quick access, cash deposit, and trade acceptance
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
@@ -550,11 +550,11 @@
   function prepareStartForm(config) {
     const root = document.querySelector(".init-trade") || tradeRoot();
     if (!root) return;
-    const idInput = newTradeUserField(root);
-    if (idInput && parseMoney(idInput.value) !== Number(config.targetId)) {
-      setNativeInputValue(idInput, config.targetId);
+    const userInput = newTradeUserField(root);
+    if (userInput && String(userInput.value || "").trim() !== config.targetName) {
+      setNativeInputValue(userInput, config.targetName);
     }
-    const description = newTradeDescriptionField(root, idInput);
+    const description = newTradeDescriptionField(root, userInput);
     if (description && !String(description.value || "").trim()) {
       setNativeInputValue(description, config.description);
     }
@@ -599,6 +599,10 @@
 
     if (!config.targetId) {
       return state("setup", "SET", "hold 3s", "setup", "settings");
+    }
+
+    if (!config.targetName) {
+      return state("username-setup", "NAME", "set username", "error", "settings");
     }
 
     if (!currentRoute.isTrade) {
@@ -916,8 +920,9 @@
       <label for="tqft-target-id">Target player ID</label>
       <input id="tqft-target-id" name="targetId" inputmode="numeric" pattern="[0-9]+" autocomplete="off" required>
       <div class="tqft-help">The numeric ID from the player's profile link.</div>
-      <label for="tqft-target-name">Button label (optional)</label>
-      <input id="tqft-target-name" name="targetName" maxlength="24" autocomplete="off">
+      <label for="tqft-target-name">Target username</label>
+      <input id="tqft-target-name" name="targetName" maxlength="24" autocomplete="off" required>
+      <div class="tqft-help">The player's exact current Torn username; this is entered into Torn's New Trade search bar.</div>
       <label for="tqft-description">New-trade description</label>
       <input id="tqft-description" name="description" maxlength="64" autocomplete="off">
       <label for="tqft-reserve">Keep in wallet</label>
@@ -948,6 +953,7 @@
     card.addEventListener("submit", (event) => {
       event.preventDefault();
       const targetId = String(card.elements.targetId.value || "").replace(/\D/g, "");
+      const targetName = String(card.elements.targetName.value || "").trim();
       const tradeId = String(card.elements.tradeId.value || "").replace(/\D/g, "");
       const reserveText = String(card.elements.reserve.value || "0").trim();
       const reserve = parseMoney(reserveText);
@@ -956,12 +962,16 @@
         error.textContent = "Enter the target player's numeric Torn ID.";
         return;
       }
+      if (!targetName) {
+        error.textContent = "Enter the target player's exact Torn username.";
+        return;
+      }
       if (reserveText && reserve === 0 && !/^\$?0+(?:\.0+)?$/i.test(reserveText.replace(/,/g, ""))) {
         error.textContent = "The wallet reserve is not a valid amount.";
         return;
       }
       setStored(KEYS.targetId, targetId);
-      setStored(KEYS.targetName, String(card.elements.targetName.value || "").trim());
+      setStored(KEYS.targetName, targetName);
       setStored(KEYS.description, String(card.elements.description.value || "").trim() || "Storage");
       setStored(KEYS.reserve, String(reserve));
       setStored(KEYS.tradeId, tradeId);

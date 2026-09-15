@@ -11,9 +11,11 @@ Use this raw URL in Torn PDA:
 
 `https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/fast-trade/theqwan-fast-trade.user.js`
 
-No player ID is embedded in the published source. On first use, tap **SET** and
-enter the trusted player's numeric Torn ID. The optional remembered trade ID is
-learned automatically after that player's trade is visibly verified.
+No player details are embedded in the published source. On first use, tap
+**SET** and enter both the trusted player's numeric Torn ID and exact current
+username. The ID is used for links and identity verification; the username is
+entered into Torn's visible New Trade search bar. The optional remembered trade
+ID is learned automatically after that player's trade is visibly verified.
 
 ## Button states
 
@@ -49,9 +51,11 @@ Torn's public rules remain authoritative and can change. See
 
 ## Updates
 
-- **1.0.2:** Fill the configured player ID and trade description into Torn's
-  visible New Trade form. The normal "no current trades" notice is no longer
-  mistaken for an expired remembered trade.
+- **1.0.3:** Use the configured target username—not the numeric player ID—in
+  Torn's New Trade search field. The numeric ID remains required for direct
+  links and recipient verification.
+- **1.0.2:** Added visible New Trade form filling. The normal "no current
+  trades" notice is no longer mistaken for an expired remembered trade.
 - **1.0.1:** Store settings synchronously in Torn's local page storage first so
   Torn PDA cannot return an asynchronous `GM_getValue` result in place of the
   saved target. Compatible userscript storage is still mirrored as a fallback.
