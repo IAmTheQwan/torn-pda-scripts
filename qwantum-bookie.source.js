@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.17.1
+// @version      1.17.2
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -58,7 +58,7 @@
     let indexedLoanLedger = { version: 1, payments: [] };
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.17.1';
+    const SCRIPT_VERSION = '1.17.2';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -203,6 +203,16 @@
             outline:2px solid #39d353;
             box-shadow:inset 7px 0 0 #28a745, 0 0 9px rgba(57,211,83,.75)!important;
         }
+        li.tbp-football-hockey-ot-orange > a > ul.pop-game {
+            background:linear-gradient(90deg, rgba(255,183,77,.58), rgba(255,183,77,.22))!important;
+            outline:2px solid #ffb74d;
+            box-shadow:inset 7px 0 0 #f29b38, 0 0 9px rgba(255,183,77,.72)!important;
+        }
+        li.tbp-football-hockey-ot-olive > a > ul.pop-game {
+            background:linear-gradient(90deg, rgba(128,145,55,.58), rgba(128,145,55,.22))!important;
+            outline:2px solid #9aaa52;
+            box-shadow:inset 7px 0 0 #74852e, 0 0 9px rgba(154,170,82,.72)!important;
+        }
         li.tbp-football-match > a > ul.pop-game .matchName,
         li.tbp-football-match > a > ul.pop-game .team-names { font-weight:700!important; }
         li.tbp-football-bookmarked > a > ul.pop-game { outline:3px solid #ffd54f!important; outline-offset:-3px!important; }
@@ -214,6 +224,8 @@
         .tbp-football-badge-away-orange { background:#e87800; color:#fff; }
         .tbp-football-badge-hockey-yellow { background:#d4ad00; color:#171300; }
         .tbp-football-badge-hockey-green { background:#28a745; color:#fff; }
+        .tbp-football-badge-hockey-ot-orange { background:#f29b38; color:#261500; }
+        .tbp-football-badge-hockey-ot-olive { background:#74852e; color:#fff; }
         .tbp-football-bookmark-toggle { position:absolute; top:50%; right:62px; z-index:8; transform:translateY(-50%); display:flex; align-items:center; justify-content:center; min-width:46px; min-height:28px; padding:3px 6px; border:1px solid #c49a00; border-radius:5px; background:#332b0d; color:#ffd54f; font-size:10px; font-weight:900; line-height:1.1; cursor:pointer; touch-action:manipulation; box-sizing:border-box; }
         .tbp-football-bookmark-toggle.saved { background:#ffd54f; color:#241d00; border-color:#ffe082; box-shadow:0 0 7px rgba(255,213,79,.85); }
         .tbp-football-bookmark-count { padding:2px 5px; border:1px solid #8c7200; border-radius:3px; background:#332b0d; color:#ffd54f; font-size:9px; font-weight:900; white-space:nowrap; }
@@ -1314,11 +1326,21 @@
         const market = String(fixture.market || '').replace(/\s+/g, ' ').trim();
         const odds = Number(betOdds || fixture.myBetsOdds || fixture.odds || 0);
         const isHockey = fixture.sport === 'hockey' || String(fixture.matchType || '').startsWith('hockey-');
-        if (isHockey && /\b(?:money\s*line|moneyline|match winner|2-way|head to head|to win|winner)\b/i.test(market)) {
-            if (odds >= HOCKEY_ML_YELLOW_MIN && odds <= HOCKEY_ML_YELLOW_MAX) return 'hockeyYellow';
-            if (odds >= HOCKEY_ML_GREEN_MIN && odds <= HOCKEY_ML_GREEN_MAX) return 'hockeyGreen';
-            if (!odds && fixture.matchType === 'hockey-yellow') return 'hockeyYellow';
-            if (!odds && fixture.matchType === 'hockey-green') return 'hockeyGreen';
+        if (isHockey) {
+            const isRegularThreeWay = /^3[\s-]*Way\s+(?:Regular|Ordinary)\s+time/i.test(market);
+            const isIncludingOvertime = /^2[\s-]*Way\s+(?:Including|Incl\.?)\s+Overtime/i.test(market);
+            if (isRegularThreeWay) {
+                if (odds >= HOCKEY_ML_YELLOW_MIN && odds <= HOCKEY_ML_YELLOW_MAX) return 'hockeyYellow';
+                if (odds >= HOCKEY_ML_GREEN_MIN && odds <= HOCKEY_ML_GREEN_MAX) return 'hockeyGreen';
+                if (!odds && fixture.matchType === 'hockey-yellow') return 'hockeyYellow';
+                if (!odds && fixture.matchType === 'hockey-green') return 'hockeyGreen';
+            }
+            if (isIncludingOvertime) {
+                if (odds >= HOCKEY_ML_YELLOW_MIN && odds <= HOCKEY_ML_YELLOW_MAX) return 'hockeyOtOrange';
+                if (odds >= HOCKEY_ML_GREEN_MIN && odds <= HOCKEY_ML_GREEN_MAX) return 'hockeyOtOlive';
+                if (!odds && fixture.matchType === 'hockey-ot-orange') return 'hockeyOtOrange';
+                if (!odds && fixture.matchType === 'hockey-ot-olive') return 'hockeyOtOlive';
+            }
             return 'other';
         }
         const isThreeWay = !market || /^3-Way Ordinary time$/i.test(market);
@@ -1940,7 +1962,9 @@
                 'tbp-football-home-minus-one',
                 'tbp-football-away-orange',
                 'tbp-football-hockey-yellow',
-                'tbp-football-hockey-green'
+                'tbp-football-hockey-green',
+                'tbp-football-hockey-ot-orange',
+                'tbp-football-hockey-ot-olive'
             );
             item.classList.add('tbp-football-match', `tbp-football-${bookmark.matchType}`, 'tbp-football-bookmarked');
             matchElement.querySelectorAll('.tbp-football-color-badge').forEach(badge => {
@@ -1978,7 +2002,9 @@
                 'tbp-football-home-minus-one',
                 'tbp-football-away-orange',
                 'tbp-football-hockey-yellow',
-                'tbp-football-hockey-green'
+                'tbp-football-hockey-green',
+                'tbp-football-hockey-ot-orange',
+                'tbp-football-hockey-ot-olive'
             );
         });
         document.querySelectorAll('.tbp-football-badge').forEach(badge => badge.remove());
@@ -2105,14 +2131,27 @@
         }) || null;
     }
 
-    function getHockeyMoneylineMarket(item) {
+    function getHockeyThreeWayMarket(item) {
         return Array.from(item.querySelectorAll('.info-wrap ul.bets-wrap')).find(wrap => {
             const name = getMarketName(wrap);
             const rows = wrap.querySelectorAll(':scope > li.bets .bet-cell.result');
-            return /\b(?:money\s*line|moneyline|match winner|2-way|head to head|to win|winner)\b/i.test(name)
-                && !/\b(?:first|second|third)\s+(?:period|half)\b/i.test(name)
-                && rows.length >= 2;
+            return /^3[\s-]*Way\s+(?:Regular|Ordinary)\s+time(?:\s+due to start.*)?$/i.test(name)
+                && rows.length === 3;
         }) || null;
+    }
+
+    function getHockeyOvertimeMarket(item) {
+        return Array.from(item.querySelectorAll('.info-wrap ul.bets-wrap')).find(wrap => {
+            const name = getMarketName(wrap);
+            const rows = wrap.querySelectorAll(':scope > li.bets .bet-cell.result');
+            return /^2[\s-]*Way\s+(?:Including|Incl\.?)\s+Overtime(?:\s+due to start.*)?$/i.test(name)
+                && rows.length === 2;
+        }) || null;
+    }
+
+    function isHockeyReviewMarketName(name) {
+        return /^3[\s-]*Way\s+(?:Regular|Ordinary)\s+time(?:\s+due to start.*)?$/i.test(String(name || ''))
+            || /^2[\s-]*Way\s+(?:Including|Incl\.?)\s+Overtime(?:\s+due to start.*)?$/i.test(String(name || ''));
     }
 
     function getHalfGoalAsianHandicapMarket(item) {
@@ -2716,8 +2755,10 @@
 
     function createColorStatCategories() {
         return {
-            hockeyYellow: { key: 'hockeyYellow', label: 'Yellow Hockey ML', rule: `Either-team Moneyline Odds: ${HOCKEY_ML_YELLOW_MIN.toFixed(2)}-${HOCKEY_ML_YELLOW_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
-            hockeyGreen: { key: 'hockeyGreen', label: 'Green Hockey ML', rule: `Either-team Moneyline Odds: ${HOCKEY_ML_GREEN_MIN.toFixed(2)}-${HOCKEY_ML_GREEN_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+            hockeyYellow: { key: 'hockeyYellow', label: 'Yellow Hockey 3-Way', rule: `Regular-time win odds: ${HOCKEY_ML_YELLOW_MIN.toFixed(2)}-${HOCKEY_ML_YELLOW_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+            hockeyGreen: { key: 'hockeyGreen', label: 'Green Hockey 3-Way', rule: `Regular-time win odds: ${HOCKEY_ML_GREEN_MIN.toFixed(2)}-${HOCKEY_ML_GREEN_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+            hockeyOtOrange: { key: 'hockeyOtOrange', label: 'Light Orange Hockey OT', rule: `2-Way Including Overtime odds: ${HOCKEY_ML_YELLOW_MIN.toFixed(2)}-${HOCKEY_ML_YELLOW_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+            hockeyOtOlive: { key: 'hockeyOtOlive', label: 'Olive Hockey OT', rule: `2-Way Including Overtime odds: ${HOCKEY_ML_GREEN_MIN.toFixed(2)}-${HOCKEY_ML_GREEN_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
             slate: { key: 'slate', label: 'Slate Home −1', rule: `Home ML below ${FOOTBALL_HOME_MINUS_ONE_ML_MAX.toFixed(2)} with an active Asian Handicap -1 line`, wins: 0, losses: 0, net: 0 },
             yellow: { key: 'yellow', label: 'Yellow Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}-${FOOTBALL_HOME_YELLOW_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
             lime: { key: 'lime', label: 'Lime Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_LIME_MIN.toFixed(2)}-${FOOTBALL_HOME_LIME_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
@@ -3222,15 +3263,29 @@
     function captureReviewedHockeyFixture(item, href, market, matchType = null, selected = null) {
         const details = getFootballFixtureDetails(item, href);
         if (!details.gameId || !details.homeTeam || !details.awayTeam || !market) return null;
+        const regularMarket = getHockeyThreeWayMarket(item);
+        const overtimeMarket = getHockeyOvertimeMarket(item);
         const rows = getThreeWayRows(market);
+        const regularRows = getThreeWayRows(regularMarket);
+        const overtimeRows = getThreeWayRows(overtimeMarket);
+        const findTeam = (marketRows, team) => marketRows.find(entry =>
+            normalizeScoreTeamName(entry.selection) === normalizeScoreTeamName(team)
+        );
         const home = rows.find(entry => normalizeScoreTeamName(entry.selection) === normalizeScoreTeamName(details.homeTeam));
         const away = rows.find(entry => normalizeScoreTeamName(entry.selection) === normalizeScoreTeamName(details.awayTeam));
+        const draw = rows.find(entry => /^(draw|tie)$/i.test(entry.selection));
         const record = {
             ...details,
             sport: 'hockey',
-            market: getMarketName(market) || 'Moneyline',
+            market: getMarketName(market) || 'Hockey winner',
             homeOdds: Number(home?.odds || 0),
+            drawOdds: Number(draw?.odds || 0),
             awayOdds: Number(away?.odds || 0),
+            hockeyRegularHomeOdds: Number(findTeam(regularRows, details.homeTeam)?.odds || 0),
+            hockeyRegularAwayOdds: Number(findTeam(regularRows, details.awayTeam)?.odds || 0),
+            hockeyRegularDrawOdds: Number(regularRows.find(entry => /^(draw|tie)$/i.test(entry.selection))?.odds || 0),
+            hockeyOvertimeHomeOdds: Number(findTeam(overtimeRows, details.homeTeam)?.odds || 0),
+            hockeyOvertimeAwayOdds: Number(findTeam(overtimeRows, details.awayTeam)?.odds || 0),
             reviewedAt: Date.now()
         };
         if (matchType && selected) {
@@ -3272,8 +3327,7 @@
 
     function captureManualHockeyBet(item, row, market) {
         const href = location.hash;
-        const moneylineMarket = getHockeyMoneylineMarket(item) || market;
-        const fixture = captureReviewedHockeyFixture(item, href, moneylineMarket, null, null);
+        const fixture = captureReviewedHockeyFixture(item, href, market, null, null);
         if (!fixture) return;
         const selection = String(row.querySelector('.bet-cell.result')?.textContent || '').replace(/\s+/g, ' ').trim();
         const odds = parseDecimalMultiplier(row.querySelector('.bet-cell.odds.decimal')?.textContent);
@@ -3281,7 +3335,7 @@
         betClicks.push({
             selection,
             rawSelection: selection,
-            market: getMarketName(market) || 'Moneyline',
+            market: getMarketName(market) || 'Hockey winner',
             handicap: null,
             odds,
             stake: parseVisibleStake(row),
@@ -3939,7 +3993,9 @@
         if (!footballOddsHistoryEnabled || document.visibilityState !== 'visible' || !isReviewableBookiePage()) return 0;
 
         const reviewSport = getReviewSport(href) || getReviewSport();
-        const market = reviewSport === 'hockey' ? getHockeyMoneylineMarket(item) : getThreeWayMarket(item);
+        const market = reviewSport === 'hockey'
+            ? (getHockeyThreeWayMarket(item) || getHockeyOvertimeMarket(item))
+            : getThreeWayMarket(item);
         if (!market) return 0;
 
         const rawGameId = getFootballGameId(item, href);
@@ -3967,7 +4023,9 @@
 
         let recorded = 0;
         const visibleChanges = [];
-        const comparisonMarkets = [market, reviewSport === 'football' ? getHalfGoalAsianHandicapMarket(item) : null].filter(Boolean);
+        const comparisonMarkets = reviewSport === 'hockey'
+            ? [getHockeyThreeWayMarket(item), getHockeyOvertimeMarket(item)].filter(Boolean)
+            : [market, getHalfGoalAsianHandicapMarket(item)].filter(Boolean);
         const rows = comparisonMarkets.flatMap(comparisonMarket => {
             return Array.from(comparisonMarket.querySelectorAll(':scope > li.bets'))
                 .filter(row => row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal'))
@@ -3984,7 +4042,9 @@
 
             oddsCell.querySelector('.tbp-odds-delta')?.remove();
 
-            const selectionKey = selection.toLowerCase();
+            const selectionKey = reviewSport === 'hockey'
+                ? `${marketName.toLowerCase()}|${selection.toLowerCase()}`
+                : selection.toLowerCase();
             const observations = Array.isArray(game.selections[selectionKey])
                 ? game.selections[selectionKey]
                 : [];
@@ -4034,15 +4094,19 @@
         if (pendingFootballOddsSettleTimeout) clearTimeout(pendingFootballOddsSettleTimeout);
 
         let additionalMarketsRequestedAt = 0;
+        const openedAt = Date.now();
         const reviewSport = getReviewSport(href);
 
         const tryRecord = () => {
             const item = findFootballItemForHref(href);
             const info = item?.querySelector('.info-wrap');
             if (!item?.classList.contains('active') || info?.style?.display === 'none') return false;
-            const primaryMarket = reviewSport === 'hockey' ? getHockeyMoneylineMarket(item) : getThreeWayMarket(item);
-            if (!primaryMarket) return false;
-            const needsComparisonMarkets = reviewSport === 'football' && (footballScanEnabled || guidedFootballSession.active);
+            const primaryMarket = reviewSport === 'hockey'
+                ? (getHockeyThreeWayMarket(item) || getHockeyOvertimeMarket(item))
+                : getThreeWayMarket(item);
+            const needsComparisonMarkets = reviewSport === 'hockey'
+                ? (footballOddsHistoryEnabled || footballScanEnabled || guidedFootballSession.active)
+                : (footballScanEnabled || guidedFootballSession.active);
             const additionalMarketsControl = Array.from(item.querySelectorAll('a, button')).find(control => {
                 return /show(?:\s+\d+)?\s+additional betting options/i.test(String(control.textContent || '').replace(/\s+/g, ' ').trim());
             });
@@ -4053,10 +4117,17 @@
                 return false;
             }
             if (additionalMarketsRequestedAt && Date.now() - additionalMarketsRequestedAt < 1000) return false;
-            if (footballOddsHistoryEnabled) recordFootballOddsForItem(item, href);
-            if (footballScanEnabled || guidedFootballSession.active) {
-                const scanResult = scanReviewItem(item, href);
-                recordGuidedFootballResult(href, scanResult);
+            if (!primaryMarket) {
+                if (reviewSport !== 'hockey' || Date.now() - openedAt < 2500) return false;
+                if (guidedFootballSession.active) {
+                    recordGuidedFootballResult(href, { scanned: 1, matched: 0, matchType: null, marketMath: null });
+                }
+            } else {
+                if (footballOddsHistoryEnabled) recordFootballOddsForItem(item, href);
+                if (footballScanEnabled || guidedFootballSession.active) {
+                    const scanResult = scanReviewItem(item, href);
+                    recordGuidedFootballResult(href, scanResult);
+                }
             }
 
             pendingFootballOddsObserver?.disconnect();
@@ -4069,6 +4140,7 @@
         };
 
         const scheduleRecord = () => {
+            if (!pendingFootballOddsObserver) return;
             if (pendingFootballOddsSettleTimeout) clearTimeout(pendingFootballOddsSettleTimeout);
             pendingFootballOddsSettleTimeout = setTimeout(() => tryRecord(), 400);
         };
@@ -4076,6 +4148,7 @@
         pendingFootballOddsObserver = new MutationObserver(scheduleRecord);
         pendingFootballOddsObserver.observe(document.body, { childList: true, subtree: true });
         scheduleRecord();
+        if (reviewSport === 'hockey') setTimeout(scheduleRecord, 2600);
         pendingFootballOddsTimeout = setTimeout(() => {
             pendingFootballOddsObserver?.disconnect();
             pendingFootballOddsObserver = null;
@@ -4164,7 +4237,9 @@
             'tbp-football-home-minus-one',
             'tbp-football-away-orange',
             'tbp-football-hockey-yellow',
-            'tbp-football-hockey-green'
+            'tbp-football-hockey-green',
+            'tbp-football-hockey-ot-orange',
+            'tbp-football-hockey-ot-olive'
         );
         matchElement.querySelectorAll('.tbp-football-badge').forEach(badge => badge.remove());
         item.querySelectorAll('.tbp-football-bookmark-toggle').forEach(toggle => toggle.remove());
@@ -4240,28 +4315,43 @@
         const matchTitle = String(matchElement?.title || matchElement?.textContent || '').replace(/\s+/g, ' ').trim();
         if (!matchTitle) return { scanned: 0, matched: 0 };
         const fixtureDetails = getFootballFixtureDetails(item, href);
-        const market = getHockeyMoneylineMarket(item);
-        if (!market) return { scanned: 0, matched: 0 };
-        if (!market.querySelector('[data-tbp-observed-at]')) recordFootballOddsForItem(item, href);
-
-        const rows = getThreeWayRows(market).map(entry => ({
-            ...entry,
-            available: Boolean(entry.odds) && !footballBetRowIsSuspended(entry.row)
-        }));
         const homeKey = normalizeScoreTeamName(fixtureDetails.homeTeam);
         const awayKey = normalizeScoreTeamName(fixtureDetails.awayTeam);
-        const home = rows.find(entry => normalizeScoreTeamName(entry.selection) === homeKey);
-        const away = rows.find(entry => normalizeScoreTeamName(entry.selection) === awayKey);
-        const candidates = [
-            home?.available ? { ...home, side: 'HOME' } : null,
-            away?.available ? { ...away, side: 'AWAY' } : null
-        ].filter(Boolean);
-        const selected = candidates.find(entry => entry.odds >= HOCKEY_ML_YELLOW_MIN && entry.odds <= HOCKEY_ML_YELLOW_MAX)
-            || candidates.find(entry => entry.odds >= HOCKEY_ML_GREEN_MIN && entry.odds <= HOCKEY_ML_GREEN_MAX)
-            || null;
-        const matchType = selected
-            ? (selected.odds <= HOCKEY_ML_YELLOW_MAX ? 'hockey-yellow' : 'hockey-green')
-            : null;
+        const regularMarket = getHockeyThreeWayMarket(item);
+        const overtimeMarket = getHockeyOvertimeMarket(item);
+        if (!regularMarket && !overtimeMarket) return { scanned: 0, matched: 0 };
+        if ([regularMarket, overtimeMarket].filter(Boolean).some(market => !market.querySelector('[data-tbp-observed-at]'))) {
+            recordFootballOddsForItem(item, href);
+        }
+
+        const marketCandidates = (market, marketKind) => {
+            const rows = getThreeWayRows(market).map(entry => ({
+                ...entry,
+                available: Boolean(entry.odds) && !footballBetRowIsSuspended(entry.row)
+            }));
+            const home = rows.find(entry => normalizeScoreTeamName(entry.selection) === homeKey);
+            const away = rows.find(entry => normalizeScoreTeamName(entry.selection) === awayKey);
+            return [
+                home?.available ? { ...home, side: 'HOME', market, marketKind } : null,
+                away?.available ? { ...away, side: 'AWAY', market, marketKind } : null
+            ].filter(Boolean);
+        };
+        const selectInRanges = candidates => candidates.find(entry =>
+            entry.odds >= HOCKEY_ML_YELLOW_MIN && entry.odds <= HOCKEY_ML_YELLOW_MAX
+        ) || candidates.find(entry =>
+            entry.odds >= HOCKEY_ML_GREEN_MIN && entry.odds <= HOCKEY_ML_GREEN_MAX
+        ) || null;
+        const regularSelected = selectInRanges(marketCandidates(regularMarket, 'regular'));
+        const overtimeSelected = selectInRanges(marketCandidates(overtimeMarket, 'overtime'));
+        const selected = overtimeSelected || regularSelected;
+        const matchTypeFor = candidate => {
+            if (!candidate) return null;
+            if (candidate.marketKind === 'overtime') {
+                return candidate.odds <= HOCKEY_ML_YELLOW_MAX ? 'hockey-ot-orange' : 'hockey-ot-olive';
+            }
+            return candidate.odds <= HOCKEY_ML_YELLOW_MAX ? 'hockey-yellow' : 'hockey-green';
+        };
+        const matchType = matchTypeFor(selected);
 
         item.classList.remove(
             'tbp-football-match',
@@ -4272,22 +4362,30 @@
             'tbp-football-home-minus-one',
             'tbp-football-away-orange',
             'tbp-football-hockey-yellow',
-            'tbp-football-hockey-green'
+            'tbp-football-hockey-green',
+            'tbp-football-hockey-ot-orange',
+            'tbp-football-hockey-ot-olive'
         );
         matchElement.querySelectorAll('.tbp-football-badge').forEach(badge => badge.remove());
         item.querySelectorAll('.tbp-football-bookmark-toggle').forEach(toggle => toggle.remove());
 
-        const fixtureRecord = captureReviewedHockeyFixture(item, href, market, matchType, selected);
+        const fixtureRecord = captureReviewedHockeyFixture(item, href, selected?.market || regularMarket || overtimeMarket, matchType, selected);
         if (!matchType || !selected) return { scanned: 1, matched: 0, matchType: null, marketMath: null };
 
-        const badgeText = `${selected.side} ML x${Number(selected.odds).toFixed(2)}`;
-        const badgeTitle = `${selected.selection} hockey moneyline — ${getMarketName(market) || 'Moneyline'}`;
+        const matchedMarkets = [regularSelected, overtimeSelected].filter(Boolean);
+        const badgeTextFor = candidate => `${candidate.marketKind === 'overtime' ? 'OT' : 'REG'} ${candidate.side} x${Number(candidate.odds).toFixed(2)}`;
+        const badgeTitleFor = candidate => `${candidate.selection} — ${getMarketName(candidate.market)}`;
+        const badgeText = matchedMarkets.map(badgeTextFor).join(' · ');
+        const badgeTitle = matchedMarkets.map(badgeTitleFor).join(' | ');
         item.classList.add('tbp-football-match', `tbp-football-${matchType}`);
-        const badge = document.createElement('span');
-        badge.className = `tbp-football-badge tbp-football-color-badge tbp-football-badge-${matchType}`;
-        badge.textContent = badgeText;
-        badge.title = badgeTitle;
-        matchElement.appendChild(badge);
+        matchedMarkets.forEach(candidate => {
+            const candidateType = matchTypeFor(candidate);
+            const badge = document.createElement('span');
+            badge.className = `tbp-football-badge tbp-football-color-badge tbp-football-badge-${candidateType}`;
+            badge.textContent = badgeTextFor(candidate);
+            badge.title = badgeTitleFor(candidate);
+            matchElement.appendChild(badge);
+        });
         renderFootballBookmarkToggle(matchElement, {
             ...fixtureRecord,
             href,
@@ -4447,7 +4545,9 @@
             'tbp-football-home-minus-one',
             'tbp-football-away-orange',
             'tbp-football-hockey-yellow',
-            'tbp-football-hockey-green'
+            'tbp-football-hockey-green',
+            'tbp-football-hockey-ot-orange',
+            'tbp-football-hockey-ot-olive'
         ];
         Object.entries(guidedFootballSession.results).forEach(([href, storedResult]) => {
             const result = typeof storedResult === 'string'
@@ -4953,7 +5053,7 @@ ${safeJson(log.raw)}
                     <input type="checkbox" id="tbp-football-scan-enabled" ${footballScanEnabled ? 'checked' : ''}>
                 </div>
                 <div class="tbp-muted" style="margin-top:7px;">
-                    Football compares each 3-Way straight win with the same team's full-match Asian Handicap -0.5 when Torn offers it, using the existing slate/yellow/lime/green/olive/orange rules. Hockey highlights either team's moneyline yellow at x${HOCKEY_ML_YELLOW_MIN.toFixed(2)}–x${HOCKEY_ML_YELLOW_MAX.toFixed(2)} and green at x${HOCKEY_ML_GREEN_MIN.toFixed(2)}–x${HOCKEY_ML_GREEN_MAX.toFixed(2)}.
+                    Football uses the existing slate/yellow/lime/green/olive/orange rules. Hockey 3-Way Regular Time is yellow at x${HOCKEY_ML_YELLOW_MIN.toFixed(2)}–x${HOCKEY_ML_YELLOW_MAX.toFixed(2)} and green at x${HOCKEY_ML_GREEN_MIN.toFixed(2)}–x${HOCKEY_ML_GREEN_MAX.toFixed(2)}. Hockey 2-Way Including Overtime uses light orange and olive green for those same ranges.
                 </div>
             </div>
 
@@ -4963,7 +5063,7 @@ ${safeJson(log.raw)}
                     <input type="checkbox" id="tbp-football-odds-history-enabled" ${footballOddsHistoryEnabled ? 'checked' : ''}>
                 </div>
                 <div class="tbp-muted" style="margin-top:7px;">
-                    Records Football 3-Way/handicap and Hockey moneyline multipliers locally when you open a game. Changed odds receive a signed badge such as +0.12 or −0.08; tap or hover the badge to see the prior observation time. A game's records are deleted when its Torn start time is reached.
+                    Records Football 3-Way/handicap plus Hockey 3-Way Regular Time and 2-Way Including Overtime multipliers locally when you open a game. Changed odds receive a signed badge such as +0.12 or −0.08; tap or hover the badge to see the prior observation time. A game's records are deleted when its Torn start time is reached.
                 </div>
             </div>
 
@@ -4973,7 +5073,7 @@ ${safeJson(log.raw)}
                     <input type="checkbox" id="tbp-guided-football-review-enabled" ${guidedFootballReviewEnabled ? 'checked' : ''}>
                 </div>
                 <div class="tbp-muted" style="margin-top:7px;">
-                    Game Review works from either the Football or Hockey list, opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. Football uses the full existing review logic; Hockey checks the yellow and green moneyline ranges. Use ☆ SAVE on a colored fixture to keep its color and a gold outline across End, reloads, and page changes until kickoff.
+                    Game Review works from either the Football or Hockey list, opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. Hockey checks both 3-Way Regular Time and 2-Way Including Overtime. Use ☆ SAVE on a colored fixture to keep its color and a gold outline across End, reloads, and page changes until kickoff.
                 </div>
             </div>
 
@@ -5154,6 +5254,8 @@ ${safeJson(log.raw)}
         const colorStyles = {
             hockeyYellow: 'border-left:6px solid #d4ad00;',
             hockeyGreen: 'border-left:6px solid #28a745;',
+            hockeyOtOrange: 'border-left:6px solid #f29b38;',
+            hockeyOtOlive: 'border-left:6px solid #74852e;',
             slate: 'border-left:6px solid #546e7a;',
             green: 'border-left:6px solid #28a745;',
             yellow: 'border-left:6px solid #d4ad00;',
@@ -5407,7 +5509,7 @@ ${safeJson(log.raw)}
                 }
 
                 footballScanBtn.textContent = `${result.matched} found`;
-                const reviewSportLabel = getReviewSport() === 'hockey' ? 'Hockey moneyline' : '3-Way Football';
+                const reviewSportLabel = getReviewSport() === 'hockey' ? 'Hockey Regular/OT' : '3-Way Football';
                 footballScanBtn.title = result.scanned
                     ? `Scanned ${result.scanned} loaded ${reviewSportLabel} fixture${result.scanned === 1 ? '' : 's'}.`
                     : `No loaded ${reviewSportLabel} markets found. Manually expand games, then scan again.`;
@@ -5630,9 +5732,7 @@ document.addEventListener('click', async e => {
             .trim();
         const isFootballMarket = /^3-Way Ordinary time$/i.test(marketName)
             || /^Asian Handicap 0(?:[.,]5) Ordinary time(?:\s+due to start.*)?$/i.test(marketName);
-        const isHockeyMarket = getReviewSport() === 'hockey'
-            && /\b(?:money\s*line|moneyline|match winner|2-way|head to head|to win|winner)\b/i.test(marketName)
-            && !/\b(?:first|second|third)\s+(?:period|half)\b/i.test(marketName);
+        const isHockeyMarket = getReviewSport() === 'hockey' && isHockeyReviewMarketName(marketName);
         if (!isFootballMarket && !isHockeyMarket) return;
         if (!row.querySelector('.bet-cell.result') || !row.querySelector('.bet-cell.odds.decimal')) return;
         const selection = String(row.querySelector('.bet-cell.result')?.textContent || '').replace(/\s+/g, ' ').trim();
