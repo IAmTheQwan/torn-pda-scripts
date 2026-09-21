@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.17.0
+// @version      1.17.1
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -58,7 +58,7 @@
     let indexedLoanLedger = { version: 1, payments: [] };
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.17.0';
+    const SCRIPT_VERSION = '1.17.1';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -5097,6 +5097,7 @@ ${safeJson(log.raw)}
 
     function renderLoanRepaymentCard() {
         const state = getLoanRepaymentState();
+        const today = localDateKey(new Date());
         const period = state.duePeriod || state.currentPeriod;
         const payment = period ? Math.min(period.calculatedPayment, state.remainingBalance) : 0;
         const isDue = Boolean(state.duePeriod && state.remainingBalance > 0);
@@ -5108,7 +5109,11 @@ ${safeJson(log.raw)}
                     ? `Current period · due ${displayDateKey(period.dueDate)}`
                     : 'No payment period available';
         const recentPayments = [...state.payments]
-            .sort((a, b) => Number(b.paidAt || 0) - Number(a.paidAt || 0))
+            .sort((a, b) => {
+                const bDate = b.paymentDate ? Date.parse(`${b.paymentDate}T12:00:00`) : Number(b.paidAt || 0);
+                const aDate = a.paymentDate ? Date.parse(`${a.paymentDate}T12:00:00`) : Number(a.paidAt || 0);
+                return Number(bDate || 0) - Number(aDate || 0);
+            })
             .slice(0, 4);
 
         return `
@@ -5128,9 +5133,16 @@ ${safeJson(log.raw)}
                     <div class="tbp-row"><span>50% of positive net</span><span>${money(payment)}</span></div>
                 ` : ''}
                 ${isDue ? `<button class="tbp-btn tbp-btn-success" id="tbp-mark-loan-paid" style="width:100%; margin-top:9px;">Mark ${money(payment)} Paid</button>` : ''}
+                ${state.remainingBalance > 0 ? `
+                    <div style="font-weight:bold; margin-top:12px; margin-bottom:5px;">Record Manual Payment</div>
+                    <div class="tbp-muted" style="margin-bottom:6px;">Use this for any extra loan payment. It reduces the remaining balance but does not mark a weekly payment as paid.</div>
+                    <input type="date" id="tbp-manual-loan-payment-date" class="tbp-input" value="${today}" style="margin-bottom:6px;">
+                    <input type="text" inputmode="numeric" id="tbp-manual-loan-payment-amount" class="tbp-input" placeholder="Payment amount" style="margin-bottom:6px;">
+                    <button class="tbp-btn tbp-btn-primary" id="tbp-record-manual-loan-payment" style="width:100%;">Record Manual Payment</button>
+                ` : ''}
                 ${recentPayments.length ? `
                     <div style="font-weight:bold; margin-top:10px; margin-bottom:4px;">Recent Payments</div>
-                    ${recentPayments.map(item => `<div class="tbp-row"><span>${displayDateKey(item.startDate)}–${displayDateKey(item.endDate)}</span><span class="tbp-win">${money(item.amount)}</span></div>`).join('')}
+                    ${recentPayments.map(item => `<div class="tbp-row"><span>${item.type === 'manual' ? `Manual · ${displayDateKey(item.paymentDate)}` : `${displayDateKey(item.startDate)}–${displayDateKey(item.endDate)}`}</span><span class="tbp-win">${money(item.amount)}</span></div>`).join('')}
                 ` : '<div class="tbp-muted" style="margin-top:9px;">No payments recorded yet.</div>'}
             </div>
         `;
@@ -5310,12 +5322,14 @@ ${safeJson(log.raw)}
                     ? [...indexedLoanLedger.payments]
                     : [];
                 payments.push({
+                    type: 'weekly',
                     startDate: period.startDate,
                     endDate: period.endDate,
                     dueDate: period.dueDate,
                     weeklyNet: period.weeklyNet,
                     amount,
                     recipientId: LOAN_RECIPIENT_ID,
+                    paymentDate: localDateKey(new Date()),
                     paidAt: Date.now()
                 });
                 indexedLoanLedger = { version: 1, payments };
@@ -5326,6 +5340,54 @@ ${safeJson(log.raw)}
                     payments.pop();
                     indexedLoanLedger = { version: 1, payments };
                     alert(`Could not save the payment record: ${String(error?.message || error)}`);
+                }
+                render();
+            };
+        }
+
+        const manualLoanPaymentBtn = document.getElementById('tbp-record-manual-loan-payment');
+        if (manualLoanPaymentBtn) {
+            manualLoanPaymentBtn.onclick = async () => {
+                const dateInput = document.getElementById('tbp-manual-loan-payment-date');
+                const amountInput = document.getElementById('tbp-manual-loan-payment-amount');
+                const paymentDate = String(dateInput?.value || '').trim();
+                const amountText = String(amountInput?.value || '').replace(/[$,\s]/g, '');
+                const amount = Math.floor(Number(amountText));
+                const state = getLoanRepaymentState();
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(paymentDate)) {
+                    alert('Choose the date the manual payment was made.');
+                    return;
+                }
+                if (!Number.isFinite(amount) || amount <= 0) {
+                    alert('Enter a manual payment amount greater than $0.');
+                    return;
+                }
+                if (amount > state.remainingBalance) {
+                    alert(`That payment is larger than the remaining loan balance of ${money(state.remainingBalance)}.`);
+                    return;
+                }
+                if (!confirm(`Record a manual payment of ${money(amount)} to Torn ID ${LOAN_RECIPIENT_ID} on ${displayDateKey(paymentDate)}?`)) return;
+
+                manualLoanPaymentBtn.disabled = true;
+                manualLoanPaymentBtn.textContent = 'Saving payment...';
+                const payments = Array.isArray(indexedLoanLedger?.payments)
+                    ? [...indexedLoanLedger.payments]
+                    : [];
+                payments.push({
+                    type: 'manual',
+                    paymentDate,
+                    amount,
+                    recipientId: LOAN_RECIPIENT_ID,
+                    paidAt: Date.now()
+                });
+                indexedLoanLedger = { version: 1, payments };
+                try {
+                    await storeIndexedLoanLedger(indexedLoanLedger);
+                    lastLoadStatus = `Recorded manual loan payment of ${money(amount)} on ${displayDateKey(paymentDate)}.`;
+                } catch (error) {
+                    payments.pop();
+                    indexedLoanLedger = { version: 1, payments };
+                    alert(`Could not save the manual payment: ${String(error?.message || error)}`);
                 }
                 render();
             };
