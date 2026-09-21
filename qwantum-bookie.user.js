@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.16.6
+// @version      1.17.0
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -51,7 +51,7 @@ let lastLoadStatus = 'Not loaded yet.';
 let indexedManualBetLinks = {};
 let indexedLoanLedger = { version: 1, payments: [] };
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.16.6';
+const SCRIPT_VERSION = '1.17.0';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -67,6 +67,10 @@ const FOOTBALL_HOME_OLIVE_MAX = 1.75;
 const FOOTBALL_HOME_MINUS_ONE_ML_MAX = 1.35;
 const FOOTBALL_AWAY_ODDS_MIN = 1.2;
 const FOOTBALL_AWAY_ODDS_MAX = 1.7;
+const HOCKEY_ML_YELLOW_MIN = 1.3;
+const HOCKEY_ML_YELLOW_MAX = 1.39;
+const HOCKEY_ML_GREEN_MIN = 1.4;
+const HOCKEY_ML_GREEN_MAX = 1.59;
 const FOOTBALL_EQUIVALENT_ODDS_GAP = 0.01;
 const FOOTBALL_LOGIC_ODDS_GAP = 0.02;
 const FOOTBALL_IDENTITY_PROBABILITY_GAP = 0.04;
@@ -180,6 +184,16 @@ background:linear-gradient(90deg, rgba(255,140,0,.58), rgba(255,140,0,.22))!impo
 outline:2px solid #ff9800;
 box-shadow:inset 7px 0 0 #e87800, 0 0 9px rgba(255,152,0,.72)!important;
 }
+li.tbp-football-hockey-yellow > a > ul.pop-game {
+background:linear-gradient(90deg, rgba(255,215,0,.56), rgba(255,215,0,.22))!important;
+outline:2px solid #ffd700;
+box-shadow:inset 7px 0 0 #d4ad00, 0 0 9px rgba(255,215,0,.72)!important;
+}
+li.tbp-football-hockey-green > a > ul.pop-game {
+background:linear-gradient(90deg, rgba(40,167,69,.48), rgba(40,167,69,.2))!important;
+outline:2px solid #39d353;
+box-shadow:inset 7px 0 0 #28a745, 0 0 9px rgba(57,211,83,.75)!important;
+}
 li.tbp-football-match > a > ul.pop-game .matchName,
 li.tbp-football-match > a > ul.pop-game .team-names { font-weight:700!important; }
 li.tbp-football-bookmarked > a > ul.pop-game { outline:3px solid #ffd54f!important; outline-offset:-3px!important; }
@@ -189,6 +203,8 @@ li.tbp-football-bookmarked > a > ul.pop-game { outline:3px solid #ffd54f!importa
 .tbp-football-badge-home-olive { background:#8a8f22; color:#fff; }
 .tbp-football-badge-home-minus-one { background:#546e7a; color:#fff; }
 .tbp-football-badge-away-orange { background:#e87800; color:#fff; }
+.tbp-football-badge-hockey-yellow { background:#d4ad00; color:#171300; }
+.tbp-football-badge-hockey-green { background:#28a745; color:#fff; }
 .tbp-football-bookmark-toggle { position:absolute; top:50%; right:62px; z-index:8; transform:translateY(-50%); display:flex; align-items:center; justify-content:center; min-width:46px; min-height:28px; padding:3px 6px; border:1px solid #c49a00; border-radius:5px; background:#332b0d; color:#ffd54f; font-size:10px; font-weight:900; line-height:1.1; cursor:pointer; touch-action:manipulation; box-sizing:border-box; }
 .tbp-football-bookmark-toggle.saved { background:#ffd54f; color:#241d00; border-color:#ffe082; box-shadow:0 0 7px rgba(255,213,79,.85); }
 .tbp-football-bookmark-count { padding:2px 5px; border:1px solid #8c7200; border-radius:3px; background:#332b0d; color:#ffd54f; font-size:9px; font-weight:900; white-space:nowrap; }
@@ -630,7 +646,9 @@ saveFootballScoreCache(cache);
 return stored;
 }
 async function checkOpenBetScoresSportsDb(namedBets) {
-const reviewedByGameId = new Map(loadFootballFixtureRecords().map(fixture => [String(fixture.gameId), fixture]));
+const reviewedByGameId = new Map(loadFootballFixtureRecords()
+.filter(fixture => (fixture.sport || 'football') === 'football')
+.map(fixture => [String(fixture.gameId), fixture]));
 const today = utcDateKey();
 const scoreMatches = loadFootballScoreMatches();
 let matched = 0;
@@ -800,7 +818,9 @@ if (!footballScoreApiKey) {
 alert('Add an API-Football key in Settings first.');
 return;
 }
-const reviewedByGameId = new Map(loadFootballFixtureRecords().map(fixture => [String(fixture.gameId), fixture]));
+const reviewedByGameId = new Map(loadFootballFixtureRecords()
+.filter(fixture => (fixture.sport || 'football') === 'football')
+.map(fixture => [String(fixture.gameId), fixture]));
 const fixtures = namedBets.map(bet => ({
 bet,
 fixture: { ...(reviewedByGameId.get(String(bet.fixture.gameId)) || {}), ...bet.fixture }
@@ -864,6 +884,7 @@ function getActiveApiFootballFixtures(now = Date.now()) {
 const scoreMatches = restoreFootballScoresForOpenBets(loadFootballScoreMatches());
 const byFixtureId = new Map();
 openBets.forEach(bet => {
+if ((bet.fixture?.sport || 'football') !== 'football') return;
 const betId = String(bet.id);
 const score = scoreMatches[betId];
 if (score?.provider !== 'api-football' || !score.providerFixtureId || !isFootballFixtureInActiveWindow(score, now)) return;
@@ -1003,7 +1024,11 @@ if (!footballScoreEnabled) {
 alert('Enable Football scores in Settings first.');
 return;
 }
-const namedBets = openBets.filter(bet => bet.fixture?.homeTeam && bet.fixture?.awayTeam);
+const namedBets = openBets.filter(bet =>
+(bet.fixture?.sport || 'football') === 'football'
+&& bet.fixture?.homeTeam
+&& bet.fixture?.awayTeam
+);
 if (!namedBets.length) {
 alert('No named open Football bets are available to match.');
 return;
@@ -1175,6 +1200,15 @@ return {};
 function getFixtureStatsCategory(fixture, betOdds = 0) {
 if (!fixture) return '';
 const market = String(fixture.market || '').replace(/\s+/g, ' ').trim();
+const odds = Number(betOdds || fixture.myBetsOdds || fixture.odds || 0);
+const isHockey = fixture.sport === 'hockey' || String(fixture.matchType || '').startsWith('hockey-');
+if (isHockey && /\b(?:money\s*line|moneyline|match winner|2-way|head to head|to win|winner)\b/i.test(market)) {
+if (odds >= HOCKEY_ML_YELLOW_MIN && odds <= HOCKEY_ML_YELLOW_MAX) return 'hockeyYellow';
+if (odds >= HOCKEY_ML_GREEN_MIN && odds <= HOCKEY_ML_GREEN_MAX) return 'hockeyGreen';
+if (!odds && fixture.matchType === 'hockey-yellow') return 'hockeyYellow';
+if (!odds && fixture.matchType === 'hockey-green') return 'hockeyGreen';
+return 'other';
+}
 const isThreeWay = !market || /^3-Way Ordinary time$/i.test(market);
 const isHalfGoalHandicap = /^Asian Handicap 0(?:[.,]5) Ordinary time(?:\s+due to start.*)?$/i.test(market);
 const isOneGoalHandicap = /^Asian Handicap 1(?:[.,]0)? Ordinary time(?:\s+due to start.*)?$/i.test(market);
@@ -1189,7 +1223,6 @@ if (isOneGoalHandicap && (!Number.isFinite(placedHandicap) || Math.abs(placedHan
 const selection = normalizeScoreTeamName(rawSelection.replace(/\s*\([^)]*\)\s*$/, ''));
 const home = normalizeScoreTeamName(fixture.homeTeam);
 const away = normalizeScoreTeamName(fixture.awayTeam);
-const odds = Number(betOdds || fixture.myBetsOdds || fixture.odds || 0);
 const hasMinusOneSignal = Number(fixture.homeOdds || 0) > 1
 && Number(fixture.homeOdds) < FOOTBALL_HOME_MINUS_ONE_ML_MAX
 && Number(fixture.homeMinusOneOdds || 0) > 1;
@@ -1541,6 +1574,25 @@ return location.pathname === '/page.php'
 return false;
 }
 }
+function isHockeyBookiePage() {
+try {
+const params = new URLSearchParams(location.search);
+return location.pathname === '/page.php'
+&& params.get('sid') === 'bookie'
+&& /^#\/hockey(?:\/|$)/i.test(location.hash);
+} catch {
+return false;
+}
+}
+function getReviewSport(hash = location.hash) {
+return String(hash || '').match(/^#\/(football|hockey)(?:\/|$)/i)?.[1]?.toLowerCase() || '';
+}
+function getReviewFixtureKey(sport, gameId) {
+return `${String(sport || 'football').toLowerCase()}:${String(gameId || '')}`;
+}
+function isReviewableBookiePage() {
+return isFootballBookiePage() || isHockeyBookiePage();
+}
 let footballBookmarkExpiryTimer = null;
 function scheduleFootballBookmarkExpiry(bookmarks) {
 if (footballBookmarkExpiryTimer) clearTimeout(footballBookmarkExpiryTimer);
@@ -1556,7 +1608,8 @@ footballBookmarkExpiryTimer = null;
 const current = loadFootballBookmarks();
 document.querySelectorAll('li.tbp-football-bookmarked').forEach(item => {
 const toggle = item.querySelector('.tbp-football-bookmark-toggle');
-if (!toggle || current.games[String(toggle.dataset.gameId || '')]) return;
+const key = getReviewFixtureKey(toggle?.dataset.sport, toggle?.dataset.gameId);
+if (!toggle || current.games[key]) return;
 item.classList.remove('tbp-football-bookmarked');
 toggle.remove();
 });
@@ -1574,6 +1627,13 @@ try {
 const parsed = JSON.parse(localStorage.getItem(FOOTBALL_BOOKMARKS_KEY) || '{}');
 if (parsed && typeof parsed === 'object' && parsed.games) bookmarks = parsed;
 } catch {}
+const migratedGames = {};
+Object.values(bookmarks.games || {}).forEach(bookmark => {
+if (!bookmark?.gameId) return;
+const sport = bookmark.sport || getReviewSport(bookmark.href) || 'football';
+migratedGames[getReviewFixtureKey(sport, bookmark.gameId)] = { ...bookmark, sport };
+});
+bookmarks.games = migratedGames;
 const now = Date.now();
 let changed = false;
 Object.entries(bookmarks.games || {}).forEach(([gameId, bookmark]) => {
@@ -1595,7 +1655,7 @@ const games = Object.entries(bookmarks?.games || {})
 try {
 localStorage.setItem(FOOTBALL_BOOKMARKS_KEY, JSON.stringify({ version: 1, games: Object.fromEntries(games) }));
 } catch (error) {
-console.error('Could not save Football bookmarks.', error);
+console.error('Could not save Bookie bookmarks.', error);
 }
 scheduleFootballBookmarkExpiry({ games: Object.fromEntries(games) });
 }
@@ -1621,13 +1681,15 @@ toggle.setAttribute('tabindex', '0');
 gameBar.appendChild(toggle);
 }
 toggle.dataset.gameId = String(fixture.gameId);
-toggle.dataset.href = String(fixture.href || `#/football/${fixture.gameId}`);
+const fixtureSport = fixture.sport || getReviewSport(fixture.href) || getReviewSport() || 'football';
+toggle.dataset.sport = fixtureSport;
+toggle.dataset.href = String(fixture.href || `#/${fixtureSport}/${fixture.gameId}`);
 toggle.dataset.matchType = String(fixture.matchType);
 toggle.dataset.badgeText = String(fixture.badgeText || 'SAVED');
-toggle.dataset.badgeTitle = String(fixture.badgeTitle || fixture.matchTitle || 'Saved Football fixture');
+toggle.dataset.badgeTitle = String(fixture.badgeTitle || fixture.matchTitle || 'Saved Bookie fixture');
 toggle.dataset.startTimestamp = String(Number(fixture.startTimestamp || 0));
 toggle.dataset.matchTitle = String(fixture.matchTitle || '');
-const saved = Boolean(loadFootballBookmarks().games[String(fixture.gameId)]);
+const saved = Boolean(loadFootballBookmarks().games[getReviewFixtureKey(fixtureSport, fixture.gameId)]);
 matchElement.closest('li.c-pointer')?.classList.toggle('tbp-football-bookmarked', saved);
 setFootballBookmarkToggleState(toggle, saved);
 }
@@ -1635,13 +1697,16 @@ function toggleFootballBookmark(toggle) {
 const gameId = String(toggle?.dataset.gameId || '');
 if (!gameId) return;
 const bookmarks = loadFootballBookmarks();
-const wasSaved = Boolean(bookmarks.games[gameId]);
+const sport = toggle.dataset.sport || getReviewSport(toggle.dataset.href) || 'football';
+const bookmarkKey = getReviewFixtureKey(sport, gameId);
+const wasSaved = Boolean(bookmarks.games[bookmarkKey]);
 if (wasSaved) {
-delete bookmarks.games[gameId];
+delete bookmarks.games[bookmarkKey];
 } else {
-bookmarks.games[gameId] = {
+bookmarks.games[bookmarkKey] = {
 gameId,
-href: toggle.dataset.href || `#/football/${gameId}`,
+sport,
+href: toggle.dataset.href || `#/${toggle.dataset.sport || 'football'}/${gameId}`,
 matchType: toggle.dataset.matchType || '',
 badgeText: toggle.dataset.badgeText || 'SAVED',
 badgeTitle: toggle.dataset.badgeTitle || '',
@@ -1657,10 +1722,10 @@ setFootballBookmarkToggleState(toggle, saved);
 updateFootballBookmarkCount(Object.keys(bookmarks.games || {}).length);
 }
 function restoreFootballBookmarks() {
-if (document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+if (document.visibilityState !== 'visible' || !isReviewableBookiePage()) return;
 const bookmarks = loadFootballBookmarks();
 Object.values(bookmarks.games || {}).forEach(bookmark => {
-const item = findFootballItemForHref(bookmark.href || `#/football/${bookmark.gameId}`);
+const item = findFootballItemForHref(bookmark.href || `#/${bookmark.sport || 'football'}/${bookmark.gameId}`);
 if (!item || !bookmark.matchType) return;
 const matchElement = item.querySelector('.matchName p, .pop-game .name p');
 if (!matchElement) return;
@@ -1670,7 +1735,9 @@ item.classList.remove(
 'tbp-football-home-lime',
 'tbp-football-home-olive',
 'tbp-football-home-minus-one',
-'tbp-football-away-orange'
+'tbp-football-away-orange',
+'tbp-football-hockey-yellow',
+'tbp-football-hockey-green'
 );
 item.classList.add('tbp-football-match', `tbp-football-${bookmark.matchType}`, 'tbp-football-bookmarked');
 matchElement.querySelectorAll('.tbp-football-color-badge').forEach(badge => {
@@ -1680,7 +1747,7 @@ if (!matchElement.querySelector(`.tbp-football-badge-${bookmark.matchType}`)) {
 const badge = document.createElement('span');
 badge.className = `tbp-football-badge tbp-football-color-badge tbp-football-badge-${bookmark.matchType}`;
 badge.textContent = bookmark.badgeText || 'SAVED';
-badge.title = bookmark.badgeTitle || bookmark.matchTitle || 'Saved Football fixture';
+badge.title = bookmark.badgeTitle || bookmark.matchTitle || 'Saved Bookie fixture';
 matchElement.appendChild(badge);
 }
 renderFootballBookmarkToggle(matchElement, bookmark);
@@ -1688,7 +1755,7 @@ renderFootballBookmarkToggle(matchElement, bookmark);
 }
 let footballBookmarkRestoreTimer = null;
 function scheduleFootballBookmarkRestore() {
-if (footballBookmarkRestoreTimer || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+if (footballBookmarkRestoreTimer || document.visibilityState !== 'visible' || !isReviewableBookiePage()) return;
 footballBookmarkRestoreTimer = setTimeout(() => {
 footballBookmarkRestoreTimer = null;
 restoreFootballBookmarks();
@@ -1703,7 +1770,9 @@ item.classList.remove(
 'tbp-football-home-lime',
 'tbp-football-home-olive',
 'tbp-football-home-minus-one',
-'tbp-football-away-orange'
+'tbp-football-away-orange',
+'tbp-football-hockey-yellow',
+'tbp-football-hockey-green'
 );
 });
 document.querySelectorAll('.tbp-football-badge').forEach(badge => badge.remove());
@@ -1780,7 +1849,7 @@ history.games = Object.fromEntries(games);
 try {
 localStorage.setItem(FOOTBALL_ODDS_HISTORY_KEY, JSON.stringify(history));
 } catch (error) {
-console.error('Could not save Football odds history.', error);
+console.error('Could not save Bookie odds history.', error);
 }
 scheduleFootballHistoryExpiry(history);
 }
@@ -1796,7 +1865,7 @@ const sign = Number(change.delta || 0) > 0 ? '+' : '−';
 return `${change.selection} ${sign}${Math.abs(Number(change.delta || 0)).toFixed(2)} → x${Number(change.odds || 0).toFixed(2)}`;
 }).join(' · ');
 const time = new Date(Number(game.latestChanges.observedAt || Date.now())).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-return `Odds moved — ${game.matchTitle || 'Football'}: ${changes} (${time})`;
+return `Odds moved — ${game.matchTitle || 'Bookie game'}: ${changes} (${time})`;
 }
 function updateFootballOddsChangeStrip() {
 const strip = document.getElementById('tbp-odds-change-strip');
@@ -1813,6 +1882,15 @@ const name = String(wrap.querySelector('.market-name-cell .bold')?.textContent |
 .trim();
 const rows = wrap.querySelectorAll(':scope > li.bets .bet-cell.result');
 return /^3-Way Ordinary time$/i.test(name) && rows.length === 3;
+}) || null;
+}
+function getHockeyMoneylineMarket(item) {
+return Array.from(item.querySelectorAll('.info-wrap ul.bets-wrap')).find(wrap => {
+const name = getMarketName(wrap);
+const rows = wrap.querySelectorAll(':scope > li.bets .bet-cell.result');
+return /\b(?:money\s*line|moneyline|match winner|2-way|head to head|to win|winner)\b/i.test(name)
+&& !/\b(?:first|second|third)\s+(?:period|half)\b/i.test(name)
+&& rows.length >= 2;
 }) || null;
 }
 function getHalfGoalAsianHandicapMarket(item) {
@@ -2343,7 +2421,7 @@ if (location.hash === href) {
 const activeItem = document.querySelector('li.c-pointer.active');
 if (activeItem) return activeItem;
 }
-const link = Array.from(document.querySelectorAll('a[href*="#/football/"]'))
+const link = Array.from(document.querySelectorAll('a[href*="#/football/"], a[href*="#/hockey/"]'))
 .find(candidate => candidate.getAttribute('href') === href);
 return link?.closest('li.c-pointer') || null;
 }
@@ -2351,10 +2429,10 @@ function getFootballGameId(item, href = '') {
 const candidates = [
 href,
 item?.classList.contains('active') ? location.hash : '',
-item?.querySelector('a[href*="#/football/"]')?.getAttribute('href') || ''
+item?.querySelector('a[href*="#/football/"], a[href*="#/hockey/"]')?.getAttribute('href') || ''
 ];
 for (const candidate of candidates) {
-const gameId = String(candidate || '').match(/#\/football\/(\d+)/i)?.[1];
+const gameId = String(candidate || '').match(/#\/(?:football|hockey)\/(\d+)/i)?.[1];
 if (gameId) return gameId;
 }
 return '';
@@ -2376,6 +2454,8 @@ competition: (competitionIndex >= 0 ? remainder.slice(competitionIndex + 3) : ''
 }
 function createColorStatCategories() {
 return {
+hockeyYellow: { key: 'hockeyYellow', label: 'Yellow Hockey ML', rule: `Either-team Moneyline Odds: ${HOCKEY_ML_YELLOW_MIN.toFixed(2)}-${HOCKEY_ML_YELLOW_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+hockeyGreen: { key: 'hockeyGreen', label: 'Green Hockey ML', rule: `Either-team Moneyline Odds: ${HOCKEY_ML_GREEN_MIN.toFixed(2)}-${HOCKEY_ML_GREEN_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
 slate: { key: 'slate', label: 'Slate Home −1', rule: `Home ML below ${FOOTBALL_HOME_MINUS_ONE_ML_MAX.toFixed(2)} with an active Asian Handicap -1 line`, wins: 0, losses: 0, net: 0 },
 yellow: { key: 'yellow', label: 'Yellow Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}-${FOOTBALL_HOME_YELLOW_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
 lime: { key: 'lime', label: 'Lime Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_LIME_MIN.toFixed(2)}-${FOOTBALL_HOME_LIME_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
@@ -2694,6 +2774,10 @@ if (!link?.homeTeam || !link?.awayTeam || !link?.placedSelection || !Number(link
 unresolved++;
 continue;
 }
+if ((link.sport || 'football') !== 'football') {
+unresolved++;
+continue;
+}
 if (['win', 'loss'].includes(link.providerOutcome)) {
 measured++;
 continue;
@@ -2744,6 +2828,7 @@ const matchTitle = String(matchElement?.title || matchElement?.textContent || ''
 .trim();
 return {
 gameId: getFootballGameId(item, href),
+sport: getReviewSport(href || (item?.classList.contains('active') ? location.hash : '')) || 'football',
 matchTitle,
 ...parseFootballFixtureTitle(matchTitle),
 startTimestamp: parseFootballStartTimestamp(item)
@@ -2765,7 +2850,11 @@ return [];
 function saveFootballFixtureRecord(record) {
 if (!record?.gameId) return null;
 const records = loadFootballFixtureRecords();
-const index = records.findIndex(candidate => candidate.gameId === record.gameId);
+const recordSport = record.sport || 'football';
+const index = records.findIndex(candidate =>
+String(candidate.gameId) === String(record.gameId)
+&& String(candidate.sport || 'football') === String(recordSport)
+);
 const existing = index >= 0 ? records[index] : {};
 const merged = {
 ...existing,
@@ -2783,7 +2872,7 @@ const limited = records
 try {
 localStorage.setItem(FOOTBALL_FIXTURE_RECORDS_KEY, JSON.stringify(limited));
 } catch (error) {
-console.error('Could not save Football fixture details.', error);
+console.error('Could not save Bookie fixture details.', error);
 }
 return merged;
 }
@@ -2840,6 +2929,28 @@ record.recommendedMarket = recommendedMarket;
 }
 return saveFootballFixtureRecord(record);
 }
+function captureReviewedHockeyFixture(item, href, market, matchType = null, selected = null) {
+const details = getFootballFixtureDetails(item, href);
+if (!details.gameId || !details.homeTeam || !details.awayTeam || !market) return null;
+const rows = getThreeWayRows(market);
+const home = rows.find(entry => normalizeScoreTeamName(entry.selection) === normalizeScoreTeamName(details.homeTeam));
+const away = rows.find(entry => normalizeScoreTeamName(entry.selection) === normalizeScoreTeamName(details.awayTeam));
+const record = {
+...details,
+sport: 'hockey',
+market: getMarketName(market) || 'Moneyline',
+homeOdds: Number(home?.odds || 0),
+awayOdds: Number(away?.odds || 0),
+reviewedAt: Date.now()
+};
+if (matchType && selected) {
+record.matchType = matchType;
+record.recommendedSelection = selected.selection;
+record.recommendedOdds = Number(selected.odds || 0);
+record.recommendedMarket = record.market;
+}
+return saveFootballFixtureRecord(record);
+}
 function parseVisibleStake(row) {
 const value = String(row?.querySelector('input.amount[type="text"]')?.value || '');
 const parsed = Number(value.replace(/[^\d.-]/g, ''));
@@ -2860,6 +2971,25 @@ selection,
 rawSelection,
 market: getMarketName(market),
 handicap: handicapMatch ? Number(handicapMatch[1].replace(',', '.')) : null,
+odds,
+stake: parseVisibleStake(row),
+clickedAt: Date.now()
+});
+return saveFootballFixtureRecord({ ...fixture, betClicks });
+}
+function captureManualHockeyBet(item, row, market) {
+const href = location.hash;
+const moneylineMarket = getHockeyMoneylineMarket(item) || market;
+const fixture = captureReviewedHockeyFixture(item, href, moneylineMarket, null, null);
+if (!fixture) return;
+const selection = String(row.querySelector('.bet-cell.result')?.textContent || '').replace(/\s+/g, ' ').trim();
+const odds = parseDecimalMultiplier(row.querySelector('.bet-cell.odds.decimal')?.textContent);
+const betClicks = Array.isArray(fixture.betClicks) ? [...fixture.betClicks] : [];
+betClicks.push({
+selection,
+rawSelection: selection,
+market: getMarketName(market) || 'Moneyline',
+handicap: null,
 odds,
 stake: parseVisibleStake(row),
 clickedAt: Date.now()
@@ -3462,11 +3592,13 @@ document.body.appendChild(notice);
 setTimeout(() => notice.remove(), 5000);
 }
 function recordFootballOddsForItem(item, href = '') {
-if (!footballOddsHistoryEnabled || document.visibilityState !== 'visible' || !isFootballBookiePage()) return 0;
-const market = getThreeWayMarket(item);
+if (!footballOddsHistoryEnabled || document.visibilityState !== 'visible' || !isReviewableBookiePage()) return 0;
+const reviewSport = getReviewSport(href) || getReviewSport();
+const market = reviewSport === 'hockey' ? getHockeyMoneylineMarket(item) : getThreeWayMarket(item);
 if (!market) return 0;
-const gameId = getFootballGameId(item, href);
-if (!gameId) return 0;
+const rawGameId = getFootballGameId(item, href);
+if (!rawGameId) return 0;
+const gameId = reviewSport === 'hockey' ? `hockey:${rawGameId}` : rawGameId;
 const matchElement = item.querySelector('.matchName p, .pop-game .name p');
 const matchTitle = String(matchElement?.title || matchElement?.textContent || '')
 .replace(/\s+/g, ' ')
@@ -3486,7 +3618,7 @@ return 0;
 }
 let recorded = 0;
 const visibleChanges = [];
-const comparisonMarkets = [market, getHalfGoalAsianHandicapMarket(item)].filter(Boolean);
+const comparisonMarkets = [market, reviewSport === 'football' ? getHalfGoalAsianHandicapMarket(item) : null].filter(Boolean);
 const rows = comparisonMarkets.flatMap(comparisonMarket => {
 return Array.from(comparisonMarket.querySelectorAll(':scope > li.bets'))
 .filter(row => row.querySelector('.bet-cell.result') && row.querySelector('.bet-cell.odds.decimal'))
@@ -3543,11 +3675,14 @@ pendingFootballOddsObserver?.disconnect();
 if (pendingFootballOddsTimeout) clearTimeout(pendingFootballOddsTimeout);
 if (pendingFootballOddsSettleTimeout) clearTimeout(pendingFootballOddsSettleTimeout);
 let additionalMarketsRequestedAt = 0;
+const reviewSport = getReviewSport(href);
 const tryRecord = () => {
 const item = findFootballItemForHref(href);
 const info = item?.querySelector('.info-wrap');
-if (!item?.classList.contains('active') || info?.style?.display === 'none' || !getThreeWayMarket(item)) return false;
-const needsComparisonMarkets = footballScanEnabled || guidedFootballSession.active;
+if (!item?.classList.contains('active') || info?.style?.display === 'none') return false;
+const primaryMarket = reviewSport === 'hockey' ? getHockeyMoneylineMarket(item) : getThreeWayMarket(item);
+if (!primaryMarket) return false;
+const needsComparisonMarkets = reviewSport === 'football' && (footballScanEnabled || guidedFootballSession.active);
 const additionalMarketsControl = Array.from(item.querySelectorAll('a, button')).find(control => {
 return /show(?:\s+\d+)?\s+additional betting options/i.test(String(control.textContent || '').replace(/\s+/g, ' ').trim());
 });
@@ -3560,7 +3695,7 @@ return false;
 if (additionalMarketsRequestedAt && Date.now() - additionalMarketsRequestedAt < 1000) return false;
 if (footballOddsHistoryEnabled) recordFootballOddsForItem(item, href);
 if (footballScanEnabled || guidedFootballSession.active) {
-const scanResult = scanFootballItem(item, href);
+const scanResult = scanReviewItem(item, href);
 recordGuidedFootballResult(href, scanResult);
 }
 pendingFootballOddsObserver?.disconnect();
@@ -3654,7 +3789,9 @@ item.classList.remove(
 'tbp-football-home-lime',
 'tbp-football-home-olive',
 'tbp-football-home-minus-one',
-'tbp-football-away-orange'
+'tbp-football-away-orange',
+'tbp-football-hockey-yellow',
+'tbp-football-hockey-green'
 );
 matchElement.querySelectorAll('.tbp-football-badge').forEach(badge => badge.remove());
 item.querySelectorAll('.tbp-football-bookmark-toggle').forEach(toggle => toggle.remove());
@@ -3717,21 +3854,86 @@ badgeTitle
 renderFootballMarketMathBadges(matchElement, marketMath);
 return { scanned: 1, matched: 1, matchType, marketMath };
 }
+function scanHockeyItem(item, href = '') {
+if (item.classList.contains('disabled')) return { scanned: 0, matched: 0 };
+const sport = String(item.querySelector('li.game')?.title || '').trim().toLowerCase();
+if (sport && !sport.includes('hockey')) return { scanned: 0, matched: 0 };
+const matchElement = item.querySelector('.matchName p, .pop-game .name p');
+const matchTitle = String(matchElement?.title || matchElement?.textContent || '').replace(/\s+/g, ' ').trim();
+if (!matchTitle) return { scanned: 0, matched: 0 };
+const fixtureDetails = getFootballFixtureDetails(item, href);
+const market = getHockeyMoneylineMarket(item);
+if (!market) return { scanned: 0, matched: 0 };
+if (!market.querySelector('[data-tbp-observed-at]')) recordFootballOddsForItem(item, href);
+const rows = getThreeWayRows(market).map(entry => ({
+...entry,
+available: Boolean(entry.odds) && !footballBetRowIsSuspended(entry.row)
+}));
+const homeKey = normalizeScoreTeamName(fixtureDetails.homeTeam);
+const awayKey = normalizeScoreTeamName(fixtureDetails.awayTeam);
+const home = rows.find(entry => normalizeScoreTeamName(entry.selection) === homeKey);
+const away = rows.find(entry => normalizeScoreTeamName(entry.selection) === awayKey);
+const candidates = [
+home?.available ? { ...home, side: 'HOME' } : null,
+away?.available ? { ...away, side: 'AWAY' } : null
+].filter(Boolean);
+const selected = candidates.find(entry => entry.odds >= HOCKEY_ML_YELLOW_MIN && entry.odds <= HOCKEY_ML_YELLOW_MAX)
+|| candidates.find(entry => entry.odds >= HOCKEY_ML_GREEN_MIN && entry.odds <= HOCKEY_ML_GREEN_MAX)
+|| null;
+const matchType = selected
+? (selected.odds <= HOCKEY_ML_YELLOW_MAX ? 'hockey-yellow' : 'hockey-green')
+: null;
+item.classList.remove(
+'tbp-football-match',
+'tbp-football-home-green',
+'tbp-football-home-yellow',
+'tbp-football-home-lime',
+'tbp-football-home-olive',
+'tbp-football-home-minus-one',
+'tbp-football-away-orange',
+'tbp-football-hockey-yellow',
+'tbp-football-hockey-green'
+);
+matchElement.querySelectorAll('.tbp-football-badge').forEach(badge => badge.remove());
+item.querySelectorAll('.tbp-football-bookmark-toggle').forEach(toggle => toggle.remove());
+const fixtureRecord = captureReviewedHockeyFixture(item, href, market, matchType, selected);
+if (!matchType || !selected) return { scanned: 1, matched: 0, matchType: null, marketMath: null };
+const badgeText = `${selected.side} ML x${Number(selected.odds).toFixed(2)}`;
+const badgeTitle = `${selected.selection} hockey moneyline — ${getMarketName(market) || 'Moneyline'}`;
+item.classList.add('tbp-football-match', `tbp-football-${matchType}`);
+const badge = document.createElement('span');
+badge.className = `tbp-football-badge tbp-football-color-badge tbp-football-badge-${matchType}`;
+badge.textContent = badgeText;
+badge.title = badgeTitle;
+matchElement.appendChild(badge);
+renderFootballBookmarkToggle(matchElement, {
+...fixtureRecord,
+href,
+matchType,
+badgeText,
+badgeTitle
+});
+return { scanned: 1, matched: 1, matchType, marketMath: null };
+}
+function scanReviewItem(item, href = '') {
+const sport = getReviewSport(href) || getReviewSport();
+return sport === 'hockey' ? scanHockeyItem(item, href) : scanFootballItem(item, href);
+}
 function scanLoadedFootballGames() {
 if (!guidedFootballSession.active) clearFootballHighlights();
 if (!footballScanEnabled) {
-return { error: 'Enable Football win-odds scanning in Settings first.' };
+return { error: 'Enable Football/Hockey odds scanning in Settings first.' };
 }
-if (!isFootballBookiePage()) {
-return { error: 'Open the Football section of Torn Bookie before scanning.' };
+if (!isReviewableBookiePage()) {
+return { error: 'Open the Football or Hockey section of Torn Bookie before scanning.' };
 }
 if (document.visibilityState !== 'visible') {
-return { error: 'The Football page must be visible while scanning.' };
+return { error: 'The Bookie sport page must be visible while scanning.' };
 }
 let scanned = 0;
 let matched = 0;
 document.querySelectorAll('li.c-pointer').forEach(item => {
-const result = scanFootballItem(item);
+const result = scanReviewItem(item);
 scanned += result.scanned;
 matched += result.matched;
 });
@@ -3739,6 +3941,7 @@ return { scanned, matched };
 }
 let guidedFootballSession = {
 active: false,
+sport: '',
 hrefs: [],
 index: -1,
 results: {},
@@ -3761,6 +3964,7 @@ if (guidedFootballLoadTimer) clearTimeout(guidedFootballLoadTimer);
 guidedFootballLoadTimer = null;
 guidedFootballSession = {
 active: false,
+sport: '',
 hrefs: [],
 index: -1,
 results: {},
@@ -3824,7 +4028,7 @@ reviewBtn.title = loading
 ? `Review complete: ${guidedFootballFoundCount()} found. Press End to clear the review.`
 : guidedFootballSession.active
 ? `Press once to open the next game; ${guidedFootballFoundCount()} found so far.`
-: 'Start a review of up to 20 upcoming Football games.';
+: 'Start a review of up to 20 upcoming Football or Hockey games.';
 }
 if (loadingIndicator) {
 loadingIndicator.classList.toggle('visible', loading);
@@ -3837,14 +4041,16 @@ loadingIndicator.title = loading
 }
 }
 function restoreGuidedFootballHighlights() {
-if (!guidedFootballSession.active || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+if (!guidedFootballSession.active || document.visibilityState !== 'visible' || !isReviewableBookiePage()) return;
 const colorClasses = [
 'tbp-football-home-green',
 'tbp-football-home-yellow',
 'tbp-football-home-lime',
 'tbp-football-home-olive',
 'tbp-football-home-minus-one',
-'tbp-football-away-orange'
+'tbp-football-away-orange',
+'tbp-football-hockey-yellow',
+'tbp-football-hockey-green'
 ];
 Object.entries(guidedFootballSession.results).forEach(([href, storedResult]) => {
 const result = typeof storedResult === 'string'
@@ -3869,7 +4075,7 @@ renderFootballMarketMathBadges(matchElement, result.marketMath);
 });
 }
 function scheduleGuidedFootballHighlightRestore() {
-if (!guidedFootballSession.active || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+if (!guidedFootballSession.active || document.visibilityState !== 'visible' || !isReviewableBookiePage()) return;
 if (guidedFootballHighlightTimer) clearTimeout(guidedFootballHighlightTimer);
 guidedFootballHighlightTimer = setTimeout(() => {
 guidedFootballHighlightTimer = null;
@@ -3878,7 +4084,7 @@ restoreGuidedFootballHighlights();
 }
 function startGuidedFootballHighlightKeeper() {
 stopGuidedFootballHighlightKeeper();
-if (!guidedFootballSession.active || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+if (!guidedFootballSession.active || document.visibilityState !== 'visible' || !isReviewableBookiePage()) return;
 guidedFootballHighlightObserver = new MutationObserver(scheduleGuidedFootballHighlightRestore);
 guidedFootballHighlightObserver.observe(document.body, {
 childList: true,
@@ -3899,22 +4105,24 @@ updateGuidedFootballControls();
 }
 function endGuidedFootballReview({ leftFootball = false } = {}) {
 const wasActive = guidedFootballSession.active;
+const reviewSport = guidedFootballSession.sport || getReviewSport() || 'football';
 resetGuidedFootballSession();
 clearFootballHighlights();
-if (wasActive && !leftFootball && isFootballBookiePage()) location.hash = '#/football/';
+if (wasActive && !leftFootball && isReviewableBookiePage()) location.hash = `#/${reviewSport}/`;
 render();
 }
 function getGuidedFootballCandidates() {
 const seen = new Set();
+const reviewSport = getReviewSport();
 return Array.from(document.querySelectorAll('li.c-pointer'))
 .filter(item => {
 if (item.classList.contains('disabled')) return false;
 const startTitle = String(item.querySelector('.state-wrap .state')?.title || '');
 return /^Due to start at/i.test(startTitle);
 })
-.map(item => item.querySelector('a[href*="#/football/"]')?.getAttribute('href') || '')
+.map(item => item.querySelector(`a[href*="#/${reviewSport}/"]`)?.getAttribute('href') || '')
 .filter(href => {
-if (!/^#\/football\/\d+$/i.test(href) || seen.has(href)) return false;
+if (!new RegExp(`^#/${reviewSport}/\\d+$`, 'i').test(href) || seen.has(href)) return false;
 seen.add(href);
 return true;
 })
@@ -3922,10 +4130,12 @@ return true;
 }
 function advanceGuidedFootballReview() {
 if (!guidedFootballReviewEnabled) {
-return { error: 'Enable Guided Football review in Settings first.' };
+return { error: 'Enable Bookie Game Review in Settings first.' };
 }
-if (!isFootballBookiePage() || document.visibilityState !== 'visible') {
-return { error: 'Open and actively view the Football section before starting guided review.' };
+const reviewSport = getReviewSport();
+const reviewLabel = reviewSport === 'hockey' ? 'Hockey' : 'Football';
+if (!isReviewableBookiePage() || document.visibilityState !== 'visible') {
+return { error: 'Open and actively view the Football or Hockey section before starting Game Review.' };
 }
 if (guidedFootballSession.loading) {
 return { loading: true };
@@ -3933,9 +4143,10 @@ return { loading: true };
 let started = false;
 if (!guidedFootballSession.active) {
 const hrefs = getGuidedFootballCandidates();
-if (!hrefs.length) return { error: 'No upcoming Football games are currently available in the loaded list.' };
+if (!hrefs.length) return { error: `No upcoming ${reviewLabel} games are currently available in the loaded list.` };
 guidedFootballSession = {
 active: true,
+sport: reviewSport,
 hrefs,
 index: -1,
 results: {},
@@ -3955,12 +4166,12 @@ matched: guidedFootballFoundCount()
 }
 const nextIndex = guidedFootballSession.index + 1;
 const href = guidedFootballSession.hrefs[nextIndex];
-const link = Array.from(document.querySelectorAll('a[href*="#/football/"]'))
+const link = Array.from(document.querySelectorAll(`a[href*="#/${guidedFootballSession.sport || reviewSport}/"]`))
 .find(candidate => candidate.getAttribute('href') === href);
 if (!link) {
 clearFootballHighlights();
 resetGuidedFootballSession();
-return { error: 'The Football list changed. Press Game Review again to start a fresh session.' };
+return { error: `The ${reviewLabel} list changed. Press Game Review again to start a fresh session.` };
 }
 guidedFootballSession.index = nextIndex;
 startGuidedFootballLoading(href);
@@ -4111,7 +4322,7 @@ ${fixture.competition ? `<div class="tbp-muted" style="margin-bottom:7px;">${esc
 ${(fixture.market || fixture.recommendedMarket) ? `<div class="tbp-row"><span>Market</span><span>${escapeHtml(fixture.placedSelection ? fixture.market : fixture.recommendedMarket || fixture.market)}</span></div>` : ''}
 ${fixture.linkedBy === 'unique-reviewed-odds' ? '<div class="tbp-muted" style="margin-bottom:5px;">Auto-matched from uniquely matching reviewed odds</div>' : ''}
 ${displayedKickoff ? `<div class="tbp-row"><span>Kickoff</span><span>${escapeHtml(formatDate(Math.floor(displayedKickoff / 1000)))}</span></div>` : ''}
-${footballScoreEnabled ? `<div style="margin:8px 0 3px; padding:7px 8px; background:#172633; border:1px solid #3b82a8; border-radius:4px;"><div class="tbp-row" style="margin-top:0;"><span style="font-weight:bold; color:#7fc8f1;">Score<span data-tbp-football-clock-bet-id="${escapeHtml(String(b.id))}" style="display:${footballClock.visible ? 'inline' : 'none'}; color:#f2f2f2; font-weight:normal;">${footballClock.visible ? ` ⚽ ${escapeHtml(footballClock.text)}` : ''}</span></span><span class="${footballScoreClass}" style="font-size:13px;">${escapeHtml(footballScoreText)}</span></div></div>` : ''}
+${footballScoreEnabled && (fixture.sport || 'football') === 'football' ? `<div style="margin:8px 0 3px; padding:7px 8px; background:#172633; border:1px solid #3b82a8; border-radius:4px;"><div class="tbp-row" style="margin-top:0;"><span style="font-weight:bold; color:#7fc8f1;">Score<span data-tbp-football-clock-bet-id="${escapeHtml(String(b.id))}" style="display:${footballClock.visible ? 'inline' : 'none'}; color:#f2f2f2; font-weight:normal;">${footballClock.visible ? ` ⚽ ${escapeHtml(footballClock.text)}` : ''}</span></span><span class="${footballScoreClass}" style="font-size:13px;">${escapeHtml(footballScoreText)}</span></div></div>` : ''}
 ` : `
 <div style="font-weight:bold; font-size:12px;">Selection</div>
 <div class="tbp-muted">${escapeHtml(b.selection)}</div>
@@ -4278,38 +4489,38 @@ Page Limit Only ignores the configured scan date. Full Rescan always requires a 
 <div class="tbp-card">
 <div style="font-weight:bold; margin-bottom:6px;">API usage and privacy</div>
 <div class="tbp-muted">
-<strong>Data storage:</strong> Bookie logs in this browser's IndexedDB; viewed Football fixtures, manual bet clicks, and My Bets name links in local storage.<br>
+<strong>Data storage:</strong> Bookie logs in this browser's IndexedDB; viewed Football/Hockey fixtures, manual bet clicks, and My Bets name links in local storage.<br>
 <strong>Data sharing:</strong> Torn history stays local. When Football scores are enabled, only team names and fixture dates are sent to the selected score provider; captured bet amounts and Torn history are never sent.<br>
-<strong>Purpose:</strong> Personal bookie history, totals, named open-bet estimates, Football review, and incremental refreshes.<br>
+<strong>Purpose:</strong> Personal bookie history, totals, named open-bet estimates, Football/Hockey review, and incremental refreshes.<br>
 <strong>Key handling:</strong> Keys stay in this browser. The Torn key is sent only to api.torn.com, and the optional API-Football key only to v3.football.api-sports.io. TheSportsDB free mode uses its public key.<br>
 <strong>Required access:</strong> Custom access to user → log, restricted to category 195 (Bookie), or Full Access.
 </div>
 </div>
 <div class="tbp-card">
 <div class="tbp-row">
-<span>Enable Football win-odds scan</span>
+<span>Enable Football/Hockey odds scan</span>
 <input type="checkbox" id="tbp-football-scan-enabled" ${footballScanEnabled ? 'checked' : ''}>
 </div>
 <div class="tbp-muted" style="margin-top:7px;">
-Compares each 3-Way straight win with the same team's full-match Asian Handicap -0.5 when Torn offers it, then highlights the better equivalent payout: yellow for home x${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}–x${FOOTBALL_HOME_YELLOW_MAX.toFixed(2)}, lime for home x${FOOTBALL_HOME_LIME_MIN.toFixed(2)}–x${FOOTBALL_HOME_LIME_MAX.toFixed(2)}, green for home x${FOOTBALL_HOME_GREEN_MIN.toFixed(2)}–x${FOOTBALL_HOME_GREEN_MAX.toFixed(2)}, olive for home x${FOOTBALL_HOME_OLIVE_MIN.toFixed(2)}–x${FOOTBALL_HOME_OLIVE_MAX.toFixed(2)}, and orange for away x${FOOTBALL_AWAY_ODDS_MIN.toFixed(2)}–x${FOOTBALL_AWAY_ODDS_MAX.toFixed(2)}. Slate overrides yellow or lime when the home moneyline is below x${FOOTBALL_HOME_MINUS_ONE_ML_MAX.toFixed(2)} and an active home Asian Handicap -1 line is visible. +0.5 is never treated as equivalent.
+Football compares each 3-Way straight win with the same team's full-match Asian Handicap -0.5 when Torn offers it, using the existing slate/yellow/lime/green/olive/orange rules. Hockey highlights either team's moneyline yellow at x${HOCKEY_ML_YELLOW_MIN.toFixed(2)}–x${HOCKEY_ML_YELLOW_MAX.toFixed(2)} and green at x${HOCKEY_ML_GREEN_MIN.toFixed(2)}–x${HOCKEY_ML_GREEN_MAX.toFixed(2)}.
 </div>
 </div>
 <div class="tbp-card">
 <div class="tbp-row">
-<span>Track viewed 3-Way odds</span>
+<span>Track viewed Bookie odds</span>
 <input type="checkbox" id="tbp-football-odds-history-enabled" ${footballOddsHistoryEnabled ? 'checked' : ''}>
 </div>
 <div class="tbp-muted" style="margin-top:7px;">
-Records home, draw, and away multipliers locally when you manually open a Football game. Changed odds receive a signed badge such as +0.12 or −0.08; tap or hover the badge to see the prior observation time. A game's records are deleted when its Torn start time is reached.
+Records Football 3-Way/handicap and Hockey moneyline multipliers locally when you open a game. Changed odds receive a signed badge such as +0.12 or −0.08; tap or hover the badge to see the prior observation time. A game's records are deleted when its Torn start time is reached.
 </div>
 </div>
 <div class="tbp-card">
 <div class="tbp-row">
-<span>Enable Football Game Review</span>
+<span>Enable Bookie Game Review</span>
 <input type="checkbox" id="tbp-guided-football-review-enabled" ${guidedFootballReviewEnabled ? 'checked' : ''}>
 </div>
 <div class="tbp-muted" style="margin-top:7px;">
-Game Review opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. Each opened game checks the slate -1 override and the standard yellow/lime/green/olive/orange win lines, complete-market guaranteed-money candidates, equivalent prices, total ladders, market logic, and unusual margins. Use ☆ SAVE on a colored fixture to keep its color and a gold outline across End, reloads, and page changes until kickoff. Cyan lock-candidate and purple/red odds-check lines stay on the fixture until End. It also captures club details when you manually press a 3-Way BET button so they can appear in Open after an API refresh.
+Game Review works from either the Football or Hockey list, opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. Football uses the full existing review logic; Hockey checks the yellow and green moneyline ranges. Use ☆ SAVE on a colored fixture to keep its color and a gold outline across End, reloads, and page changes until kickoff.
 </div>
 </div>
 <div class="tbp-card">
@@ -4464,6 +4675,8 @@ function renderStats(body) {
 const stats = getColorBetStats();
 const total = stats.total;
 const colorStyles = {
+hockeyYellow: 'border-left:6px solid #d4ad00;',
+hockeyGreen: 'border-left:6px solid #28a745;',
 slate: 'border-left:6px solid #546e7a;',
 green: 'border-left:6px solid #28a745;',
 yellow: 'border-left:6px solid #d4ad00;',
@@ -4655,9 +4868,10 @@ updateGuidedFootballControls();
 return;
 }
 footballScanBtn.textContent = `${result.matched} found`;
+const reviewSportLabel = getReviewSport() === 'hockey' ? 'Hockey moneyline' : '3-Way Football';
 footballScanBtn.title = result.scanned
-? `Scanned ${result.scanned} loaded 3-Way Football fixture${result.scanned === 1 ? '' : 's'}.`
-: 'No loaded 3-Way markets found. Manually expand games, then scan again.';
+? `Scanned ${result.scanned} loaded ${reviewSportLabel} fixture${result.scanned === 1 ? '' : 's'}.`
+: `No loaded ${reviewSportLabel} markets found. Manually expand games, then scan again.`;
 if (!result.scanned) alert(footballScanBtn.title);
 };
 }
@@ -4837,7 +5051,7 @@ if (result.captured) clearArmedMyBetsCaptureTimers();
 handleManualCaptureResult(result);
 }, true);
 document.addEventListener('click', event => {
-if (!guidedFootballSession.active || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+if (!guidedFootballSession.active || document.visibilityState !== 'visible' || !isReviewableBookiePage()) return;
 const target = event.target instanceof Element ? event.target : null;
 const button = target?.closest('button');
 const row = button?.closest('li.bets');
@@ -4847,29 +5061,35 @@ if (!button || !row || !market || !item || button.disabled || button.classList.c
 const marketName = String(market.querySelector('.market-name-cell .bold')?.textContent || '')
 .replace(/\s+/g, ' ')
 .trim();
-if (!/^3-Way Ordinary time$/i.test(marketName)
-&& !/^Asian Handicap 0(?:[.,]5) Ordinary time(?:\s+due to start.*)?$/i.test(marketName)) return;
+const isFootballMarket = /^3-Way Ordinary time$/i.test(marketName)
+|| /^Asian Handicap 0(?:[.,]5) Ordinary time(?:\s+due to start.*)?$/i.test(marketName);
+const isHockeyMarket = getReviewSport() === 'hockey'
+&& /\b(?:money\s*line|moneyline|match winner|2-way|head to head|to win|winner)\b/i.test(marketName)
+&& !/\b(?:first|second|third)\s+(?:period|half)\b/i.test(marketName);
+if (!isFootballMarket && !isHockeyMarket) return;
 if (!row.querySelector('.bet-cell.result') || !row.querySelector('.bet-cell.odds.decimal')) return;
 const selection = String(row.querySelector('.bet-cell.result')?.textContent || '').replace(/\s+/g, ' ').trim();
 if (/^Asian Handicap 0(?:[.,]5) Ordinary time(?:\s+due to start.*)?$/i.test(marketName)
 && !/\(\s*-0(?:[.,]5)\s*\)\s*$/.test(selection)) return;
 const odds = parseDecimalMultiplier(row.querySelector('.bet-cell.odds.decimal')?.textContent);
-const captured = captureManualFootballBet(item, row, market);
+const captured = isHockeyMarket
+? captureManualHockeyBet(item, row, market)
+: captureManualFootballBet(item, row, market);
 if (!captured) return;
 showFootballBetCaptureNotice(captured, selection, odds);
 if (activeTab === 'open') setTimeout(render, 0);
 }, true);
 document.addEventListener('click', event => {
-if ((!footballOddsHistoryEnabled && !footballScanEnabled && !guidedFootballSession.active) || document.visibilityState !== 'visible' || !isFootballBookiePage()) return;
+if ((!footballOddsHistoryEnabled && !footballScanEnabled && !guidedFootballSession.active) || document.visibilityState !== 'visible' || !isReviewableBookiePage()) return;
 const target = event.target instanceof Element ? event.target : null;
-const link = target?.closest('a[href*="#/football/"]');
+const link = target?.closest('a[href*="#/football/"], a[href*="#/hockey/"]');
 const href = link?.getAttribute('href') || '';
-if (!/^#\/football\/\d+$/i.test(href)) return;
+if (!/^#\/(?:football|hockey)\/\d+$/i.test(href)) return;
 watchManuallyOpenedFootballGame(href);
 }, true);
 function handleFootballReviewRouteChange() {
 if (!guidedFootballSession.active) return;
-if (!isFootballBookiePage()) {
+if (!isReviewableBookiePage() || (guidedFootballSession.sport && guidedFootballSession.sport !== getReviewSport())) {
 endGuidedFootballReview({ leftFootball: true });
 return;
 }
@@ -4888,7 +5108,7 @@ if (document.visibilityState !== 'visible') {
 stopGuidedFootballHighlightKeeper();
 return;
 }
-if (isFootballBookiePage()) startGuidedFootballHighlightKeeper();
+if (isReviewableBookiePage()) startGuidedFootballHighlightKeeper();
 });
 let visibleFootballResultCaptureTimer = null;
 let visibleFootballResultObserver = null;
