@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.17.3
+// @version      1.17.4
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -44,6 +44,8 @@
     let footballAutoScoreEnabled = JSON.parse(localStorage.getItem('tbp_football_auto_score_enabled') || 'false');
     let footballScoreDayStartHour = Math.max(0, Math.min(23, Number(localStorage.getItem('tbp_football_score_day_start_hour') || 8)));
     let batchFeatureEnabled = JSON.parse(localStorage.getItem('tbp_batch_feature_enabled') || 'false');
+    let footballStatsExpanded = JSON.parse(localStorage.getItem('tbp_football_stats_expanded') ?? 'true');
+    let hockeyStatsExpanded = JSON.parse(localStorage.getItem('tbp_hockey_stats_expanded') ?? 'false');
 
     let batches = JSON.parse(localStorage.getItem('tbp_batches') || '[]');
     let selectedBatchId = localStorage.getItem('tbp_selected_batch_id') || '';
@@ -58,7 +60,7 @@
     let indexedLoanLedger = { version: 1, payments: [] };
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.17.3';
+    const SCRIPT_VERSION = '1.17.4';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -289,6 +291,8 @@
         localStorage.setItem('tbp_football_auto_score_enabled', JSON.stringify(footballAutoScoreEnabled));
         localStorage.setItem('tbp_football_score_day_start_hour', String(footballScoreDayStartHour));
         localStorage.setItem('tbp_batch_feature_enabled', JSON.stringify(batchFeatureEnabled));
+        localStorage.setItem('tbp_football_stats_expanded', JSON.stringify(footballStatsExpanded));
+        localStorage.setItem('tbp_hockey_stats_expanded', JSON.stringify(hockeyStatsExpanded));
         localStorage.setItem('tbp_batches', JSON.stringify(batches));
         localStorage.setItem('tbp_selected_batch_id', selectedBatchId);
     }
@@ -5287,6 +5291,36 @@ ${safeJson(log.raw)}
             other: 'border-left:6px solid #777;',
             non3way: 'border-left:6px solid #4da3ff;'
         };
+        const footballKeys = new Set(['slate', 'yellow', 'lime', 'green', 'olive', 'orange']);
+        const hockeyKeys = new Set(['hockeyYellow', 'hockeyGreen', 'hockeyMoss', 'hockeyOtOrange', 'hockeyOtOlive']);
+        const footballRows = stats.rows.filter(row => footballKeys.has(row.key));
+        const hockeyRows = stats.rows.filter(row => hockeyKeys.has(row.key));
+        const otherRows = stats.rows.filter(row => !footballKeys.has(row.key) && !hockeyKeys.has(row.key));
+        const renderStatRows = rows => rows.map(row => `
+            <div class="tbp-card" style="${colorStyles[row.key]}">
+                <div style="font-weight:bold; font-size:13px;">${row.label}</div>
+                <div class="tbp-muted" style="margin:2px 0 5px;">${escapeHtml(row.rule)}</div>
+                <div class="tbp-row"><span>Record</span><span>${row.wins}-${row.losses}</span></div>
+                <div class="tbp-row"><span>Win / Loss</span><span>${row.winPct.toFixed(1)}% / ${row.lossPct.toFixed(1)}%</span></div>
+                <div class="tbp-row"><span>Net</span><span class="${row.net >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(row.net)}</span></div>
+            </div>
+        `).join('');
+        const renderStatSection = (key, title, expanded, rows) => {
+            const summary = rows.reduce((result, row) => ({
+                wins: result.wins + row.wins,
+                losses: result.losses + row.losses,
+                net: result.net + row.net
+            }), { wins: 0, losses: 0, net: 0 });
+            return `
+                <button class="tbp-btn tbp-stats-section-toggle" data-tbp-stats-section="${key}" aria-expanded="${expanded ? 'true' : 'false'}" style="display:flex; align-items:center; justify-content:space-between; width:100%; margin:10px 0 8px; padding:9px 10px; background:#303030; border:1px solid #4a4a4a; color:#eee; text-align:left;">
+                    <span style="font-weight:bold; font-size:13px;">${title}</span>
+                    <span style="font-size:11px; color:#bbb;">${summary.wins}-${summary.losses} · <span class="${summary.net >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(summary.net)}</span> · ${expanded ? '▼' : '▶'}</span>
+                </button>
+                <div class="tbp-stats-section" data-tbp-stats-body="${key}" style="display:${expanded ? 'block' : 'none'};">
+                    ${renderStatRows(rows)}
+                </div>
+            `;
+        };
         body.innerHTML = `
             ${renderLoanRepaymentCard()}
             <div class="tbp-muted" style="margin-bottom:8px;">${lastLoadStatus}</div>
@@ -5303,15 +5337,10 @@ ${safeJson(log.raw)}
                 <div class="tbp-summary-box"><div class="tbp-summary-label">Win / Loss</div><div class="tbp-summary-value" style="font-size:13px;">${total.winPct.toFixed(1)}% / ${total.lossPct.toFixed(1)}%</div></div>
                 <div class="tbp-summary-box" style="grid-column:1 / -1;"><div class="tbp-summary-label">Total Net</div><div class="tbp-summary-value ${total.net >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(total.net)}</div></div>
             </div>
-            ${stats.rows.map(row => `
-                <div class="tbp-card" style="${colorStyles[row.key]}">
-                    <div style="font-weight:bold; font-size:13px;">${row.label}</div>
-                    <div class="tbp-muted" style="margin:2px 0 5px;">${escapeHtml(row.rule)}</div>
-                    <div class="tbp-row"><span>Record</span><span>${row.wins}-${row.losses}</span></div>
-                    <div class="tbp-row"><span>Win / Loss</span><span>${row.winPct.toFixed(1)}% / ${row.lossPct.toFixed(1)}%</span></div>
-                    <div class="tbp-row"><span>Net</span><span class="${row.net >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(row.net)}</span></div>
-                </div>
-            `).join('')}
+            ${renderStatSection('football', 'Football / Soccer Colors', footballStatsExpanded, footballRows)}
+            ${renderStatSection('hockey', 'Hockey Colors', hockeyStatsExpanded, hockeyRows)}
+            <div style="font-weight:bold; font-size:13px; margin:12px 2px 7px;">Other Bookie Bets</div>
+            ${renderStatRows(otherRows)}
             ${(stats.before.classifiedPlaced || stats.before.missingFixture) ? `
                 <div class="tbp-card" style="border-left:6px solid #4da3ff;">
                     <div style="font-weight:bold; font-size:13px;">Before ${escapeHtml(stats.fromDate)}</div>
@@ -5418,6 +5447,16 @@ ${safeJson(log.raw)}
         }
 
         const measureStatsBtn = document.getElementById('tbp-measure-stats-btn');
+        document.querySelectorAll('.tbp-stats-section-toggle').forEach(button => {
+            button.onclick = () => {
+                const section = button.dataset.tbpStatsSection;
+                if (section === 'football') footballStatsExpanded = !footballStatsExpanded;
+                if (section === 'hockey') hockeyStatsExpanded = !hockeyStatsExpanded;
+                saveData();
+                render();
+            };
+        });
+
         if (measureStatsBtn) {
             measureStatsBtn.onclick = async () => {
                 measureStatsBtn.disabled = true;
