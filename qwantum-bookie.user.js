@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.17.2
+// @version      1.17.3
 // @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -51,7 +51,7 @@ let lastLoadStatus = 'Not loaded yet.';
 let indexedManualBetLinks = {};
 let indexedLoanLedger = { version: 1, payments: [] };
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.17.2';
+const SCRIPT_VERSION = '1.17.3';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -71,6 +71,8 @@ const HOCKEY_ML_YELLOW_MIN = 1.3;
 const HOCKEY_ML_YELLOW_MAX = 1.39;
 const HOCKEY_ML_GREEN_MIN = 1.4;
 const HOCKEY_ML_GREEN_MAX = 1.59;
+const HOCKEY_3WAY_MOSS_MIN = 1.6;
+const HOCKEY_3WAY_MOSS_MAX = 1.7;
 const FOOTBALL_EQUIVALENT_ODDS_GAP = 0.01;
 const FOOTBALL_LOGIC_ODDS_GAP = 0.02;
 const FOOTBALL_IDENTITY_PROBABILITY_GAP = 0.04;
@@ -194,6 +196,11 @@ background:linear-gradient(90deg, rgba(40,167,69,.48), rgba(40,167,69,.2))!impor
 outline:2px solid #39d353;
 box-shadow:inset 7px 0 0 #28a745, 0 0 9px rgba(57,211,83,.75)!important;
 }
+li.tbp-football-hockey-moss > a > ul.pop-game {
+background:linear-gradient(90deg, rgba(103,112,48,.62), rgba(91,73,38,.28))!important;
+outline:2px solid #7f8840;
+box-shadow:inset 7px 0 0 #5f672c, 0 0 9px rgba(127,136,64,.72)!important;
+}
 li.tbp-football-hockey-ot-orange > a > ul.pop-game {
 background:linear-gradient(90deg, rgba(255,183,77,.58), rgba(255,183,77,.22))!important;
 outline:2px solid #ffb74d;
@@ -215,6 +222,7 @@ li.tbp-football-bookmarked > a > ul.pop-game { outline:3px solid #ffd54f!importa
 .tbp-football-badge-away-orange { background:#e87800; color:#fff; }
 .tbp-football-badge-hockey-yellow { background:#d4ad00; color:#171300; }
 .tbp-football-badge-hockey-green { background:#28a745; color:#fff; }
+.tbp-football-badge-hockey-moss { background:#5f672c; color:#fff; }
 .tbp-football-badge-hockey-ot-orange { background:#f29b38; color:#261500; }
 .tbp-football-badge-hockey-ot-olive { background:#74852e; color:#fff; }
 .tbp-football-bookmark-toggle { position:absolute; top:50%; right:62px; z-index:8; transform:translateY(-50%); display:flex; align-items:center; justify-content:center; min-width:46px; min-height:28px; padding:3px 6px; border:1px solid #c49a00; border-radius:5px; background:#332b0d; color:#ffd54f; font-size:10px; font-weight:900; line-height:1.1; cursor:pointer; touch-action:manipulation; box-sizing:border-box; }
@@ -1215,13 +1223,18 @@ const market = String(fixture.market || '').replace(/\s+/g, ' ').trim();
 const odds = Number(betOdds || fixture.myBetsOdds || fixture.odds || 0);
 const isHockey = fixture.sport === 'hockey' || String(fixture.matchType || '').startsWith('hockey-');
 if (isHockey) {
+const hockeySelection = normalizeScoreTeamName(fixture.placedSelection || fixture.recommendedSelection || '');
+const hockeyHome = normalizeScoreTeamName(fixture.homeTeam);
+if (!hockeySelection || hockeySelection !== hockeyHome) return 'other';
 const isRegularThreeWay = /^3[\s-]*Way\s+(?:Regular|Ordinary)\s+time/i.test(market);
 const isIncludingOvertime = /^2[\s-]*Way\s+(?:Including|Incl\.?)\s+Overtime/i.test(market);
 if (isRegularThreeWay) {
 if (odds >= HOCKEY_ML_YELLOW_MIN && odds <= HOCKEY_ML_YELLOW_MAX) return 'hockeyYellow';
 if (odds >= HOCKEY_ML_GREEN_MIN && odds <= HOCKEY_ML_GREEN_MAX) return 'hockeyGreen';
+if (odds >= HOCKEY_3WAY_MOSS_MIN && odds <= HOCKEY_3WAY_MOSS_MAX) return 'hockeyMoss';
 if (!odds && fixture.matchType === 'hockey-yellow') return 'hockeyYellow';
 if (!odds && fixture.matchType === 'hockey-green') return 'hockeyGreen';
+if (!odds && fixture.matchType === 'hockey-moss') return 'hockeyMoss';
 }
 if (isIncludingOvertime) {
 if (odds >= HOCKEY_ML_YELLOW_MIN && odds <= HOCKEY_ML_YELLOW_MAX) return 'hockeyOtOrange';
@@ -1760,6 +1773,7 @@ item.classList.remove(
 'tbp-football-away-orange',
 'tbp-football-hockey-yellow',
 'tbp-football-hockey-green',
+'tbp-football-hockey-moss',
 'tbp-football-hockey-ot-orange',
 'tbp-football-hockey-ot-olive'
 );
@@ -1797,6 +1811,7 @@ item.classList.remove(
 'tbp-football-away-orange',
 'tbp-football-hockey-yellow',
 'tbp-football-hockey-green',
+'tbp-football-hockey-moss',
 'tbp-football-hockey-ot-orange',
 'tbp-football-hockey-ot-olive'
 );
@@ -2491,10 +2506,11 @@ competition: (competitionIndex >= 0 ? remainder.slice(competitionIndex + 3) : ''
 }
 function createColorStatCategories() {
 return {
-hockeyYellow: { key: 'hockeyYellow', label: 'Yellow Hockey 3-Way', rule: `Regular-time win odds: ${HOCKEY_ML_YELLOW_MIN.toFixed(2)}-${HOCKEY_ML_YELLOW_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
-hockeyGreen: { key: 'hockeyGreen', label: 'Green Hockey 3-Way', rule: `Regular-time win odds: ${HOCKEY_ML_GREEN_MIN.toFixed(2)}-${HOCKEY_ML_GREEN_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
-hockeyOtOrange: { key: 'hockeyOtOrange', label: 'Light Orange Hockey OT', rule: `2-Way Including Overtime odds: ${HOCKEY_ML_YELLOW_MIN.toFixed(2)}-${HOCKEY_ML_YELLOW_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
-hockeyOtOlive: { key: 'hockeyOtOlive', label: 'Olive Hockey OT', rule: `2-Way Including Overtime odds: ${HOCKEY_ML_GREEN_MIN.toFixed(2)}-${HOCKEY_ML_GREEN_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+hockeyYellow: { key: 'hockeyYellow', label: 'Yellow Hockey 3-Way', rule: `Home Regular-time odds: ${HOCKEY_ML_YELLOW_MIN.toFixed(2)}-${HOCKEY_ML_YELLOW_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+hockeyGreen: { key: 'hockeyGreen', label: 'Green Hockey 3-Way', rule: `Home Regular-time odds: ${HOCKEY_ML_GREEN_MIN.toFixed(2)}-${HOCKEY_ML_GREEN_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+hockeyMoss: { key: 'hockeyMoss', label: 'Brown-Green Hockey 3-Way', rule: `Home Regular-time odds: ${HOCKEY_3WAY_MOSS_MIN.toFixed(2)}-${HOCKEY_3WAY_MOSS_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+hockeyOtOrange: { key: 'hockeyOtOrange', label: 'Light Orange Hockey OT', rule: `Home 2-Way Including Overtime odds: ${HOCKEY_ML_YELLOW_MIN.toFixed(2)}-${HOCKEY_ML_YELLOW_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
+hockeyOtOlive: { key: 'hockeyOtOlive', label: 'Olive Hockey OT', rule: `Home 2-Way Including Overtime odds: ${HOCKEY_ML_GREEN_MIN.toFixed(2)}-${HOCKEY_ML_GREEN_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
 slate: { key: 'slate', label: 'Slate Home −1', rule: `Home ML below ${FOOTBALL_HOME_MINUS_ONE_ML_MAX.toFixed(2)} with an active Asian Handicap -1 line`, wins: 0, losses: 0, net: 0 },
 yellow: { key: 'yellow', label: 'Yellow Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_YELLOW_MIN.toFixed(2)}-${FOOTBALL_HOME_YELLOW_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
 lime: { key: 'lime', label: 'Lime Home', rule: `Best Home Win / -0.5 Odds: ${FOOTBALL_HOME_LIME_MIN.toFixed(2)}-${FOOTBALL_HOME_LIME_MAX.toFixed(2)}`, wins: 0, losses: 0, net: 0 },
@@ -3863,6 +3879,7 @@ item.classList.remove(
 'tbp-football-away-orange',
 'tbp-football-hockey-yellow',
 'tbp-football-hockey-green',
+'tbp-football-hockey-moss',
 'tbp-football-hockey-ot-orange',
 'tbp-football-hockey-ot-olive'
 );
@@ -3936,7 +3953,6 @@ const matchTitle = String(matchElement?.title || matchElement?.textContent || ''
 if (!matchTitle) return { scanned: 0, matched: 0 };
 const fixtureDetails = getFootballFixtureDetails(item, href);
 const homeKey = normalizeScoreTeamName(fixtureDetails.homeTeam);
-const awayKey = normalizeScoreTeamName(fixtureDetails.awayTeam);
 const regularMarket = getHockeyThreeWayMarket(item);
 const overtimeMarket = getHockeyOvertimeMarket(item);
 if (!regularMarket && !overtimeMarket) return { scanned: 0, matched: 0 };
@@ -3949,26 +3965,29 @@ const rows = getThreeWayRows(market).map(entry => ({
 available: Boolean(entry.odds) && !footballBetRowIsSuspended(entry.row)
 }));
 const home = rows.find(entry => normalizeScoreTeamName(entry.selection) === homeKey);
-const away = rows.find(entry => normalizeScoreTeamName(entry.selection) === awayKey);
 return [
-home?.available ? { ...home, side: 'HOME', market, marketKind } : null,
-away?.available ? { ...away, side: 'AWAY', market, marketKind } : null
+home?.available ? { ...home, side: 'HOME', market, marketKind } : null
 ].filter(Boolean);
 };
-const selectInRanges = candidates => candidates.find(entry =>
+const selectBaseRange = candidates => candidates.find(entry =>
 entry.odds >= HOCKEY_ML_YELLOW_MIN && entry.odds <= HOCKEY_ML_YELLOW_MAX
 ) || candidates.find(entry =>
 entry.odds >= HOCKEY_ML_GREEN_MIN && entry.odds <= HOCKEY_ML_GREEN_MAX
 ) || null;
-const regularSelected = selectInRanges(marketCandidates(regularMarket, 'regular'));
-const overtimeSelected = selectInRanges(marketCandidates(overtimeMarket, 'overtime'));
+const regularCandidates = marketCandidates(regularMarket, 'regular');
+const regularSelected = selectBaseRange(regularCandidates) || regularCandidates.find(entry =>
+entry.odds >= HOCKEY_3WAY_MOSS_MIN && entry.odds <= HOCKEY_3WAY_MOSS_MAX
+) || null;
+const overtimeSelected = selectBaseRange(marketCandidates(overtimeMarket, 'overtime'));
 const selected = overtimeSelected || regularSelected;
 const matchTypeFor = candidate => {
 if (!candidate) return null;
 if (candidate.marketKind === 'overtime') {
 return candidate.odds <= HOCKEY_ML_YELLOW_MAX ? 'hockey-ot-orange' : 'hockey-ot-olive';
 }
-return candidate.odds <= HOCKEY_ML_YELLOW_MAX ? 'hockey-yellow' : 'hockey-green';
+if (candidate.odds <= HOCKEY_ML_YELLOW_MAX) return 'hockey-yellow';
+if (candidate.odds <= HOCKEY_ML_GREEN_MAX) return 'hockey-green';
+return 'hockey-moss';
 };
 const matchType = matchTypeFor(selected);
 item.classList.remove(
@@ -3981,6 +4000,7 @@ item.classList.remove(
 'tbp-football-away-orange',
 'tbp-football-hockey-yellow',
 'tbp-football-hockey-green',
+'tbp-football-hockey-moss',
 'tbp-football-hockey-ot-orange',
 'tbp-football-hockey-ot-olive'
 );
@@ -4147,6 +4167,7 @@ const colorClasses = [
 'tbp-football-away-orange',
 'tbp-football-hockey-yellow',
 'tbp-football-hockey-green',
+'tbp-football-hockey-moss',
 'tbp-football-hockey-ot-orange',
 'tbp-football-hockey-ot-olive'
 ];
@@ -4600,7 +4621,7 @@ Page Limit Only ignores the configured scan date. Full Rescan always requires a 
 <input type="checkbox" id="tbp-football-scan-enabled" ${footballScanEnabled ? 'checked' : ''}>
 </div>
 <div class="tbp-muted" style="margin-top:7px;">
-Football uses the existing slate/yellow/lime/green/olive/orange rules. Hockey 3-Way Regular Time is yellow at x${HOCKEY_ML_YELLOW_MIN.toFixed(2)}–x${HOCKEY_ML_YELLOW_MAX.toFixed(2)} and green at x${HOCKEY_ML_GREEN_MIN.toFixed(2)}–x${HOCKEY_ML_GREEN_MAX.toFixed(2)}. Hockey 2-Way Including Overtime uses light orange and olive green for those same ranges.
+Football uses the existing slate/yellow/lime/green/olive/orange rules. Hockey colors are home-team-only: 3-Way Regular Time is yellow at x${HOCKEY_ML_YELLOW_MIN.toFixed(2)}–x${HOCKEY_ML_YELLOW_MAX.toFixed(2)}, green at x${HOCKEY_ML_GREEN_MIN.toFixed(2)}–x${HOCKEY_ML_GREEN_MAX.toFixed(2)}, and moss brown-green at x${HOCKEY_3WAY_MOSS_MIN.toFixed(2)}–x${HOCKEY_3WAY_MOSS_MAX.toFixed(2)}. Hockey 2-Way Including Overtime uses light orange and olive green for the first two ranges.
 </div>
 </div>
 <div class="tbp-card">
@@ -4787,6 +4808,7 @@ const total = stats.total;
 const colorStyles = {
 hockeyYellow: 'border-left:6px solid #d4ad00;',
 hockeyGreen: 'border-left:6px solid #28a745;',
+hockeyMoss: 'border-left:6px solid #5f672c;',
 hockeyOtOrange: 'border-left:6px solid #f29b38;',
 hockeyOtOlive: 'border-left:6px solid #74852e;',
 slate: 'border-left:6px solid #546e7a;',
