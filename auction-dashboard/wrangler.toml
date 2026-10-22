@@ -11,6 +11,8 @@ run_worker_first = true
 ENVIRONMENT = "development"
 REQUIRE_ACCESS = "true"
 SYNC_PAGES_PER_RUN = "5"
+FORWARD_SYNC_INTERVAL_SECONDS = "3600"
+BACKFILL_DAILY_INSERT_LIMIT = "40000"
 TORN_API_BASE_URL = "https://api.torn.com/v2"
 CF_ACCESS_TEAM_DOMAIN = "https://small-wave-b24c.cloudflareaccess.com"
 CF_ACCESS_AUD = "dddf25be5fb3978715e8759108da2e3fbca41103f0c1706ba461e3fe4ca3d09e"
@@ -22,7 +24,7 @@ database_id = "a76f60dd-586f-48a4-86eb-2a054b2b9a82"
 migrations_dir = "migrations"
 
 [triggers]
-crons = ["0 * * * *"]
+crons = ["*/5 * * * *"]
 
 [observability]
 enabled = true

@@ -71,7 +71,12 @@ async function refreshStatus() {
     setText("metric-items", number.format(Number(data.sales?.item_count || 0)));
     setText("metric-range", total ? `${formatDate(data.sales.oldest_sale)} → ${formatDate(data.sales.newest_sale)}` : "Waiting for the first sync");
     setText("metric-sync", data.sync?.last_run_at ? timeAgo(data.sync.last_run_at) : "Not run");
-    setText("metric-sync-detail", data.sync?.last_error || (data.sync?.history_caught_up_at ? "Caught up; checking hourly" : "Backfill is resumable"));
+    const backfillStatus = data.sync?.history_caught_up_at
+      ? "All API-available history stored; checking hourly for new sales"
+      : total
+        ? `Backfilling older sales from ${formatDate(data.sales.oldest_sale)}; progress is saved`
+        : "Backfill is resumable";
+    setText("metric-sync-detail", data.sync?.last_error || backfillStatus);
     setText("metric-snapshot", data.latestSnapshot ? timeAgo(data.latestSnapshot.captured_at) : "None yet");
     setText("metric-snapshot-detail", data.latestSnapshot ? `${data.latestSnapshot.item_count} listings from foreground capture` : "No foreground capture uploaded");
     document.getElementById("health-pill").className = `pill ${data.sync?.last_error ? "bad" : "good"}`;
@@ -290,7 +295,8 @@ async function runSync() {
   button.textContent = "Syncing…";
   try {
     const result = await api("/api/admin/sync", { method: "POST", body: JSON.stringify({}) });
-    showNotice(result.skipped ? result.reason : `Processed ${result.processedPages} page(s); stored ${number.format(result.inserted)} new sales.`, result.skipped ? "" : "success");
+    const budgetNote = result.budgetReached ? " Daily storage guardrail reached; it will resume tomorrow." : "";
+    showNotice(result.skipped ? result.reason : `Processed ${result.processedPages} page(s); stored ${number.format(result.inserted)} new sales.${budgetNote}`, result.skipped ? "" : "success");
     await Promise.all([refreshStatus(), refreshOverview()]);
   } catch (error) {
     showNotice(error.message, "error");

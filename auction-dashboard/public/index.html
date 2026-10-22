@@ -204,6 +204,17 @@
               <div><strong>Not performed</strong><span>Background page scraping, automatic AH page cycling, or live off-page notifications.</span></div>
             </div>
           </article>
+
+          <article class="panel wide">
+            <p class="eyebrow">TORN API DISCLOSURE</p>
+            <h2>How the history importer uses data</h2>
+            <div class="boundary-grid">
+              <div><strong>Data storage</strong><span>Finished-auction equipment data is stored persistently in the owner's private Cloudflare D1 database.</span></div>
+              <div><strong>Data sharing</strong><span>Only the owner can view the dashboard. Data is not sold or shared with another service.</span></div>
+              <div><strong>Purpose</strong><span>Personal auction-price research, historical comparisons, and trend analysis.</span></div>
+              <div><strong>Key handling</strong><span>A custom public-level key limited to market → auctionhouse is stored only as an encrypted Worker secret and is never returned to the browser.</span></div>
+            </div>
+          </article>
         </div>
       </section>
     </main>

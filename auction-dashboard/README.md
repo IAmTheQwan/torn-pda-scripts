@@ -41,12 +41,11 @@ Do not put a Torn key, Access service token, or device token in Git.
 
 ## Backfill behavior
 
-The importer begins with Torn's newest finished-auction page; it never starts from Unix time zero or treats an unexpectedly empty initial page as complete history. It then keeps two independent, API-provided pagination checkpoints in D1:
+The importer begins with Torn's newest finished-auction page; it never starts from Unix time zero or treats the newest response's missing `next` link as proof that history is complete. Older pages use Torn's documented inclusive `to` parameter, moving the boundary to one second before the oldest raw timestamp returned. The only completion signal is an empty, explicitly bounded response.
 
-- a forward cursor for current sales, processed first on every run;
-- a backward cursor for progressively filling older history with the remaining request budget.
+The importer keeps independent forward and backward checkpoints in D1. Forward requests rewind one second from the newest stored ending timestamp so auctions sharing that boundary are not lost; duplicate listing IDs are ignored. The five-minute schedule uses at most `SYNC_PAGES_PER_RUN` requests per invocation, checks forward history hourly, and spends the remaining request budget on older records. `BACKFILL_DAILY_INSERT_LIMIT` defaults to 40,000 newly stored sales so the one-time fill cannot silently consume the D1 free-tier row-write allowance. When the daily guardrail is reached, forward checks continue and the historical fill resumes the next UTC day.
 
-`SYNC_PAGES_PER_RUN` defaults to five pages per hourly run to respect the D1 free-tier row-write allowance. A manual sync button invokes the same resumable process. Forward requests rewind one second from the newest stored ending timestamp so auctions sharing that boundary are not lost; duplicate listing IDs are ignored. Status records include raw, normalized, dropped, and newly inserted counts so an upstream API or normalization problem is visible instead of appearing to be a successful empty sync.
+A manual sync button invokes the same resumable process and the same storage guardrail. Status records include raw, normalized, dropped, newly inserted, oldest stored, and completion values so an upstream API or normalization problem is visible instead of appearing to be a successful empty sync.
 
 ## Local development
 

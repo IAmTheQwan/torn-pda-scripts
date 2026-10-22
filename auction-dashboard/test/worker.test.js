@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {
   bonusSignature,
   hasValidAccessIdentity,
+  historicalAuctionUrl,
   incrementalAuctionUrl,
+  nextBackfillTimestamp,
   normalizeAuction,
   normalizeSnapshotPayload,
   percentile,
@@ -86,6 +88,21 @@ test("incrementalAuctionUrl rewinds one second to retain timestamp-boundary auct
   const url = new URL(incrementalAuctionUrl({}, 1_790_000_000));
   assert.equal(url.searchParams.get("sort"), "ASC");
   assert.equal(url.searchParams.get("from"), "1789999999");
+});
+
+test("historicalAuctionUrl requests records at or before an explicit boundary", () => {
+  const url = new URL(historicalAuctionUrl({}, 1_790_000_000));
+  assert.equal(url.pathname, "/v2/market/auctionhouse");
+  assert.equal(url.searchParams.get("sort"), "DESC");
+  assert.equal(url.searchParams.get("limit"), "100");
+  assert.equal(url.searchParams.get("to"), "1790000000");
+  assert.equal(url.searchParams.has("from"), false);
+});
+
+test("backfill timestamp advances before the oldest inclusive API timestamp", () => {
+  assert.equal(nextBackfillTimestamp(1_790_000_000, 1_789_999_900), 1_789_999_899);
+  assert.throws(() => nextBackfillTimestamp(1_790_000_000, 1_790_000_001), /did not move/);
+  assert.throws(() => nextBackfillTimestamp(1_790_000_000, 0), /usable oldest timestamp/);
 });
 
 test("native Worker Access identity accepts only the configured owner email", async () => {

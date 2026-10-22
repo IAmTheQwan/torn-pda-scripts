@@ -5,7 +5,7 @@
 - Worker name: `caf-auction-dev`
 - D1 database: `caf-auction-dev`
 - Production URL: `https://caf-auction-dev.fapsports.workers.dev`
-- Cron: hourly at minute zero
+- Cron: every five minutes; forward/new-sale checks are internally limited to hourly
 - Access: require owner email for the Worker
 - Access exception: bypass `/api/snapshots/ingest` only; application-level device-token authentication remains mandatory
 
@@ -25,7 +25,7 @@ Protecting the entire Worker is the safe default. Native Worker Access supplies 
 
 ## Free-tier guardrails
 
-- Keep `SYNC_PAGES_PER_RUN=5` during initial backfill.
+- Keep `SYNC_PAGES_PER_RUN=5` and `BACKFILL_DAILY_INSERT_LIMIT=40000` during initial backfill.
 - Review D1 row-write metrics before increasing it.
 - Do not add redundant indexes without accounting for their row-write cost.
 - If the D1 database approaches 400 MB, archive old raw records or split them by year before reaching the 500 MB free per-database limit.

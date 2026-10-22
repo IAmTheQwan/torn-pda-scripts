@@ -9,6 +9,8 @@ This document records the rules used when designing CAF Clean. It is a developme
 - [Torn game rules — Scripting Abuse](https://www.torn.com/rules.php)
 - [Torn announcement — Updated Rules Page: Scripting & Scraping (2026-01-26)](https://www.torn.com/forums.php?p=threads&t=16534470)
 - [Torn API documentation and API Terms of Service](https://www.torn.com/api.html)
+- [Torn API v2 OpenAPI definition](https://www.torn.com/swagger/openapi.json)
+- [Torn staff clarification introducing the finished-auction API](https://www.torn.com/forums.php?p=threads&t=16528580)
 
 ## Working interpretation
 
@@ -31,6 +33,8 @@ The current rules prohibit:
 WebSocket or live-DOM information follows the same foreground requirement. A script may process the currently viewed live page, but it must not monitor that feed from a hidden page or use hidden observations to notify the player elsewhere.
 
 API-only automation is allowed subject to the API's access, rate, data-handling, key-security, and disclosure requirements. Tools that request an API key must clearly disclose what is stored, who receives it, why it is used, how the key is handled, and the required key access level.
+
+Torn currently permits up to 100 API requests per minute across all keys owned by a user, but this is a ceiling rather than a polling target. CAF must use the least request volume needed, honor rate-limit/API errors without immediate retry loops, and keep historical imports resumable. Finished Auction House history must come from Torn's official `market -> auctionhouse` API. Another tool's archive may be imported only through an owner-published API/export whose terms permit reuse, or after obtaining the owner's explicit permission; public visibility alone is not permission to copy its database.
 
 ## CAF Clean guardrails
 

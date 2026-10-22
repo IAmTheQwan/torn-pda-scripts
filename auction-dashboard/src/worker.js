@@ -8,6 +8,7 @@ const MAX_TREND_SAMPLE = 5000;
 const MAX_SNAPSHOT_ITEMS = 120;
 const SNAPSHOT_RETENTION_SECONDS = 7 * 24 * 60 * 60;
 const ACCESS_JWKS_TTL_MS = 60 * 60 * 1000;
+const BACKFILL_STRATEGY_VERSION = "2";
 let accessJwksCache = null;
 
 export default {
@@ -54,7 +55,7 @@ async function routeApi(request, env, ctx, url) {
     if (request.method === "POST" && url.pathname === "/api/admin/sync") {
       const body = await readJson(request);
       const requested = clampInteger(body?.pages, 1, 20, Number(env.SYNC_PAGES_PER_RUN || 5));
-      const result = await runAuctionSync(env, requested);
+      const result = await runAuctionSync(env, requested, { forceForward: true });
       return json(result);
     }
 
@@ -107,7 +108,9 @@ async function getStatus(env) {
       FROM sync_state
       WHERE key IN (
         'last_run_at', 'last_ended_at', 'last_inserted', 'last_error',
-        'history_caught_up_at', 'last_raw_received', 'last_normalized', 'last_dropped'
+        'history_caught_up_at', 'last_raw_received', 'last_normalized', 'last_dropped',
+        'backfill_to', 'backfill_started_at', 'backfill_budget_day',
+        'backfill_inserted_today', 'last_forward_check_at'
       )
     `)
   ]);
@@ -430,7 +433,7 @@ export function normalizeSnapshotPayload(body, deviceId = null) {
   };
 }
 
-async function runAuctionSync(env, pageLimit) {
+async function runAuctionSync(env, pageLimit, options = {}) {
   if (!env.TORN_API_KEY) throw new Error("TORN_API_KEY is not configured.");
   const lock = await acquireSyncLock(env.DB);
   if (!lock) return { ok: false, skipped: true, reason: "Another sync is already running." };
@@ -441,12 +444,51 @@ async function runAuctionSync(env, pageLimit) {
   let inserted = 0;
   let newestTimestamp = Number(await getSyncState(env.DB, "last_ended_at") || 0);
   let forwardUrl = await getSyncState(env.DB, "forward_cursor_url");
-  let backfillUrl = await getSyncState(env.DB, "backfill_cursor_url");
-  const backfillStarted = Boolean(await getSyncState(env.DB, "backfill_started_at"));
+  let backfillTo = Number(await getSyncState(env.DB, "backfill_to") || 0);
+  let backfillStarted = Boolean(await getSyncState(env.DB, "backfill_started_at"));
+  let historyCaughtUpAt = Number(await getSyncState(env.DB, "history_caught_up_at") || 0);
+  const strategyVersion = await getSyncState(env.DB, "backfill_strategy_version");
+  const now = Math.floor(Date.now() / 1000);
+  const today = new Date(now * 1000).toISOString().slice(0, 10);
+  const storedBudgetDay = await getSyncState(env.DB, "backfill_budget_day");
+  let insertedToday = storedBudgetDay === today
+    ? Number(await getSyncState(env.DB, "backfill_inserted_today") || 0)
+    : 0;
+  const dailyInsertLimit = clampInteger(env.BACKFILL_DAILY_INSERT_LIMIT, 1_000, 90_000, 40_000);
+  const forwardInterval = clampInteger(env.FORWARD_SYNC_INTERVAL_SECONDS, 300, 86_400, 3_600);
+  let lastForwardCheckAt = Number(await getSyncState(env.DB, "last_forward_check_at") || 0);
 
   try {
+    if (storedBudgetDay !== today) {
+      await setSyncStates(env.DB, {
+        backfill_budget_day: today,
+        backfill_inserted_today: 0
+      });
+    }
+
+    // Versions before strategy 2 trusted the newest response's optional next
+    // link. Torn can omit that link even though older records are available.
+    // Recover automatically from the false "caught up" state by deriving an
+    // explicit inclusive `to` boundary from the oldest stored timestamp.
+    if (backfillStarted && strategyVersion !== BACKFILL_STRATEGY_VERSION) {
+      const oldest = await env.DB.prepare("SELECT MIN(ended_at) AS value FROM auction_sales").first();
+      const oldestTimestamp = Number(oldest?.value || 0);
+      if (oldestTimestamp > 0) {
+        backfillTo = Math.max(0, oldestTimestamp - 1);
+        historyCaughtUpAt = 0;
+        await setSyncStates(env.DB, {
+          backfill_strategy_version: BACKFILL_STRATEGY_VERSION,
+          backfill_to: backfillTo,
+          backfill_cursor_url: "",
+          history_caught_up_at: ""
+        });
+      } else {
+        backfillStarted = false;
+      }
+    }
+
     // Seed from Torn's newest page. Starting with `from=0` can yield an empty
-    // page, and an empty page must never be mistaken for a complete backfill.
+    // page, and an empty page must never be mistaken for complete history.
     if (!backfillStarted) {
       const page = await fetchAuctionPage(env, recentAuctionUrl(env));
       if (!page.rawCount) {
@@ -457,20 +499,28 @@ async function runAuctionSync(env, pageLimit) {
       rawReceived += page.rawCount;
       normalizedReceived += page.normalized.length;
       inserted += changes;
+      insertedToday += changes;
       newestTimestamp = Math.max(newestTimestamp, page.maxTimestamp);
-      backfillUrl = page.nextUrl;
+      backfillTo = nextBackfillTimestamp(0, page.minTimestamp);
       forwardUrl = "";
+      backfillStarted = true;
+      lastForwardCheckAt = now;
       await setSyncStates(env.DB, {
-        backfill_started_at: Math.floor(Date.now() / 1000),
-        backfill_cursor_url: backfillUrl,
+        backfill_started_at: now,
+        backfill_strategy_version: BACKFILL_STRATEGY_VERSION,
+        backfill_to: backfillTo,
+        backfill_cursor_url: "",
         forward_cursor_url: "",
-        history_caught_up_at: backfillUrl ? "" : Math.floor(Date.now() / 1000)
+        history_caught_up_at: "",
+        last_forward_check_at: now,
+        backfill_budget_day: today,
+        backfill_inserted_today: insertedToday
       });
     } else {
-      // Always catch up newer sales before spending the remaining request
-      // budget on older history. Rewind one second and rely on the listing-id
-      // primary key so auctions sharing the boundary timestamp are not lost.
-      if (!forwardUrl) forwardUrl = incrementalAuctionUrl(env, newestTimestamp);
+      // Check new sales independently from the long historical fill. Rewind
+      // one second and rely on the listing-id primary key at the boundary.
+      const forwardDue = Boolean(options.forceForward) || Boolean(forwardUrl) || now - lastForwardCheckAt >= forwardInterval;
+      if (forwardDue && !forwardUrl) forwardUrl = incrementalAuctionUrl(env, newestTimestamp);
       while (forwardUrl && processedPages < pageLimit) {
         const page = await fetchAuctionPage(env, forwardUrl);
         const changes = await storeAuctionPage(env.DB, page.normalized);
@@ -478,27 +528,53 @@ async function runAuctionSync(env, pageLimit) {
         rawReceived += page.rawCount;
         normalizedReceived += page.normalized.length;
         inserted += changes;
+        insertedToday += changes;
         newestTimestamp = Math.max(newestTimestamp, page.maxTimestamp);
         forwardUrl = page.nextUrl;
-        await setSyncStates(env.DB, { forward_cursor_url: forwardUrl });
+        if (!forwardUrl) lastForwardCheckAt = now;
+        await setSyncStates(env.DB, {
+          forward_cursor_url: forwardUrl,
+          last_forward_check_at: lastForwardCheckAt,
+          backfill_inserted_today: insertedToday
+        });
       }
     }
 
-    // The backward cursor is independent of the live cursor. That prevents a
-    // long historical fill from delaying current finished-auction updates.
-    while (!forwardUrl && backfillUrl && processedPages < pageLimit) {
-      const page = await fetchAuctionPage(env, backfillUrl);
-      const changes = await storeAuctionPage(env.DB, page.normalized);
+    // Backfill with an explicit upper timestamp. This does not rely on Torn
+    // returning a `next` link for an unbounded newest-page request. An empty
+    // bounded page is the only signal that all API history has been reached.
+    while (!forwardUrl && backfillTo > 0 && insertedToday < dailyInsertLimit && processedPages < pageLimit) {
+      const page = await fetchAuctionPage(env, historicalAuctionUrl(env, backfillTo));
       processedPages += 1;
       rawReceived += page.rawCount;
       normalizedReceived += page.normalized.length;
+
+      if (!page.rawCount) {
+        backfillTo = 0;
+        historyCaughtUpAt = now;
+        await setSyncStates(env.DB, {
+          backfill_to: 0,
+          backfill_cursor_url: "",
+          history_caught_up_at: historyCaughtUpAt
+        });
+        break;
+      }
+
+      const changes = await storeAuctionPage(env.DB, page.normalized);
       inserted += changes;
+      insertedToday += changes;
       newestTimestamp = Math.max(newestTimestamp, page.maxTimestamp);
-      backfillUrl = page.nextUrl;
-      await setSyncStates(env.DB, { backfill_cursor_url: backfillUrl });
+      backfillTo = nextBackfillTimestamp(backfillTo, page.minTimestamp);
+      historyCaughtUpAt = 0;
+      await setSyncStates(env.DB, {
+        backfill_to: backfillTo,
+        backfill_cursor_url: "",
+        history_caught_up_at: "",
+        backfill_budget_day: today,
+        backfill_inserted_today: insertedToday
+      });
     }
 
-    const now = Math.floor(Date.now() / 1000);
     await setSyncStates(env.DB, {
       cursor_url: "",
       last_ended_at: newestTimestamp,
@@ -508,7 +584,10 @@ async function runAuctionSync(env, pageLimit) {
       last_dropped: rawReceived - normalizedReceived,
       last_inserted: inserted,
       last_error: "",
-      history_caught_up_at: backfillUrl ? "" : (await getSyncState(env.DB, "history_caught_up_at") || now)
+      backfill_to: backfillTo,
+      backfill_budget_day: today,
+      backfill_inserted_today: insertedToday,
+      history_caught_up_at: historyCaughtUpAt || ""
     });
 
     return {
@@ -520,7 +599,11 @@ async function runAuctionSync(env, pageLimit) {
       inserted,
       newestTimestamp,
       liveHasMore: Boolean(forwardUrl),
-      historyHasMore: Boolean(backfillUrl)
+      historyHasMore: backfillTo > 0,
+      backfillTo,
+      dailyInsertLimit,
+      insertedToday,
+      budgetReached: insertedToday >= dailyInsertLimit
     };
   } catch (error) {
     await setSyncStates(env.DB, {
@@ -553,9 +636,11 @@ async function fetchAuctionPage(env, candidate) {
 
   const normalized = payload.auctionhouse.map(normalizeAuction).filter(Boolean);
   const candidateNext = payload?._metadata?.links?.next;
+  const timestamps = payload.auctionhouse.map(listing => Number(listing?.timestamp) || 0).filter(Boolean);
   return {
     rawCount: payload.auctionhouse.length,
-    maxTimestamp: Math.max(0, ...payload.auctionhouse.map(listing => Number(listing?.timestamp) || 0)),
+    maxTimestamp: Math.max(0, ...timestamps),
+    minTimestamp: timestamps.length ? Math.min(...timestamps) : 0,
     normalized,
     nextUrl: candidateNext ? safeTornApiUrl(candidateNext, env) : ""
   };
@@ -564,7 +649,7 @@ async function fetchAuctionPage(env, candidate) {
 async function storeAuctionPage(db, normalized) {
   if (!normalized.length) return 0;
   const result = await insertAuctionBatch(db, normalized);
-  return Number(result.meta?.changes || 0);
+  return result.results?.length || 0;
 }
 
 export function normalizeAuction(listing) {
@@ -629,7 +714,8 @@ async function insertAuctionBatch(db, rows) {
       json_extract(value, '$.bonus2_title'),
       json_extract(value, '$.bonus2_value')
     FROM json_each(?1)
-  `).bind(JSON.stringify(rows)).run();
+    RETURNING listing_id
+  `).bind(JSON.stringify(rows)).all();
 }
 
 export function recentAuctionUrl(env = {}) {
@@ -651,6 +737,28 @@ export function incrementalAuctionUrl(env = {}, newestTimestamp = 0) {
   }
   url.searchParams.set("comment", "cafauction");
   return url.toString();
+}
+
+export function historicalAuctionUrl(env = {}, upperTimestamp) {
+  const boundary = Math.max(1, Math.floor(Number(upperTimestamp) || 0));
+  const base = String(env.TORN_API_BASE_URL || "https://api.torn.com/v2").replace(/\/$/, "");
+  const url = new URL(`${base}/market/auctionhouse`);
+  url.searchParams.set("limit", "100");
+  url.searchParams.set("sort", "DESC");
+  url.searchParams.set("to", String(boundary));
+  url.searchParams.set("comment", "cafauction");
+  return url.toString();
+}
+
+export function nextBackfillTimestamp(currentUpperTimestamp, pageMinimumTimestamp) {
+  const current = Math.floor(Number(currentUpperTimestamp) || 0);
+  const minimum = Math.floor(Number(pageMinimumTimestamp) || 0);
+  if (minimum <= 0) throw new Error("Torn auction page did not provide a usable oldest timestamp.");
+  const next = Math.max(0, minimum - 1);
+  if (current > 0 && next >= current) {
+    throw new Error("Torn auction backfill did not move to an older timestamp.");
+  }
+  return next;
 }
 
 export function safeTornApiUrl(candidate, env = {}) {
