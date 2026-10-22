@@ -1,6 +1,6 @@
 # Torn scripting compliance notes
 
-Last reviewed: 2026-08-12
+Last reviewed: 2026-10-22
 
 This document records the rules used when designing CAF Clean. It is a development reference, not official approval from Torn staff. Recheck the linked sources before changing any feature that reads Torn pages, sends requests, monitors live data, or produces alerts.
 
@@ -52,6 +52,9 @@ API-only automation is allowed subject to the API's access, rate, data-handling,
 | Open watched item | A direct player tap performs one navigation to the saved Auction House page. After that page is visibly loaded, CAF may locate and highlight the matching item in the DOM. |
 | Update watched item | A direct player tap performs one navigation to the saved Auction House page, then refreshes the local snapshot only after matching the item and reading its fields from the foreground DOM. Missing image/color/quality fields preserve the prior snapshot, and an unreadable bid never overwrites the saved value. CAF does not make the legacy build's separate item-detail request to obtain missing quality. |
 | Watched-item updates | Refresh a saved snapshot only when its auction page is visibly open. |
+| Cloud history importer | Use only Torn API v2 `market -> auctionhouse`, with a custom key restricted to the public market selection. Never expose the key to CAF Clean, the browser UI, logs, or Git. Store finished-sale fields needed for analysis and omit buyer/seller identities. |
+| Private dashboard snapshots | Upload only after the player taps the disclosed control while the Auction House is visible. Send the visible listing fields, source page, and capture time to the player's configured dashboard using a revocable device token. Label the result as a timestamped, incomplete snapshot—not a live or complete Auction House feed. |
+| Dashboard access | Put the human dashboard behind Cloudflare Access. Exempt only the snapshot-ingest path from interactive Access and require a separate hashed/revocable device token there. |
 
 CAF Clean must not add background polling, hidden-page DOM or WebSocket observation, automatic multi-page searches, automatic bid tracking, ending-soon notifications, or automatic game actions.
 
@@ -83,3 +86,5 @@ Before merging a change, confirm that:
 - External data sharing is disclosed in the UI and documentation.
 - API use, if introduced, includes the required key and data-handling disclosure.
 - Item Market picks do not become a persistent or background market monitor.
+- Automated history collection uses only the official API, and its key is least-privilege and server-side.
+- Foreground snapshot uploads require a direct player tap and are labeled with their capture time.

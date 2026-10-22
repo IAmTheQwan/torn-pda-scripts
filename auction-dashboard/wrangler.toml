@@ -1,0 +1,27 @@
+name = "caf-auction-dev"
+main = "src/worker.js"
+compatibility_date = "2026-10-22"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+
+[vars]
+ENVIRONMENT = "development"
+REQUIRE_ACCESS = "true"
+SYNC_PAGES_PER_RUN = "5"
+TORN_API_BASE_URL = "https://api.torn.com/v2"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "caf-auction-dev"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[triggers]
+crons = ["0 * * * *"]
+
+[observability]
+enabled = true
+head_sampling_rate = 1

@@ -1,17 +1,18 @@
 // ==UserScript==
 // @name         TheQwan CAF Clean
 // @namespace    theqwan.torn.auction-history.clean
-// @version      1.26.1
+// @version      1.27.0
 // @description  Foreground-only Auction House, Item Market, and inventory history with bonus filters and local snapshot tools
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      btrmmuuoofbonmuwrkzg.supabase.co
+// @connect      *.workers.dev
 // @run-at       document-start
 // @license      MIT
-// @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/caf4-compliant/theqwan-caf-compliant.meta.js
-// @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/caf4-compliant/theqwan-caf-compliant.user.js
+// @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/auction-dashboard/theqwan-caf-compliant.meta.js
+// @downloadURL  https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/auction-dashboard/theqwan-caf-compliant.user.js
 // ==/UserScript==
 
 (function () {
@@ -40,6 +41,8 @@
   const WATCH_SUPER_COLLAPSED_KEY = "cafCleanWatchSuperCollapsed";
   const WATCH_REMOVE_MODE_KEY = "cafCleanWatchRemoveMode";
   const WATCH_TARGET_KEY = "cafCleanPendingWatchTarget";
+  const CLOUD_SETTINGS_KEY = "cafCleanCloudDashboardSettings";
+  const CLOUD_COLLAPSED_KEY = "cafCleanCloudDashboardCollapsed";
   const SUPABASE_URL = "https://btrmmuuoofbonmuwrkzg.supabase.co";
   const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0cm1tdXVvb2Zib25tdXdya3pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg4NTEzMTgsImV4cCI6MjA4NDQyNzMxOH0.E-s0k46BORXLICAvxtEpqoM3Qmh4-TRLaJAwXO6wJTY";
   const MARKET_SELECTORS = {
@@ -1771,6 +1774,166 @@
     if (!status) return;
     status.textContent = message;
     status.style.color = isError ? "#ff7b89" : "#aaa";
+  }
+
+  function defaultCloudSettings() {
+    return { dashboardUrl: "", deviceToken: "" };
+  }
+
+  function loadCloudSettings() {
+    try {
+      return {
+        ...defaultCloudSettings(),
+        ...JSON.parse(localStorage.getItem(CLOUD_SETTINGS_KEY) || "{}")
+      };
+    } catch {
+      return defaultCloudSettings();
+    }
+  }
+
+  function normalizeDashboardUrl(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    let url;
+    try {
+      url = new URL(raw);
+    } catch {
+      throw new Error("Dashboard URL is not a valid URL.");
+    }
+    if (url.protocol !== "https:" || !/(^|\.)workers\.dev$/i.test(url.hostname)) {
+      throw new Error("Use the HTTPS workers.dev address from the dashboard Setup tab.");
+    }
+    return url.origin;
+  }
+
+  function cloudSettingsFromControls() {
+    const saved = loadCloudSettings();
+    const panel = document.getElementById(PANEL_ID);
+    return {
+      dashboardUrl: panel?.querySelector("#caf-clean-cloud-url")?.value?.trim() || saved.dashboardUrl,
+      deviceToken: panel?.querySelector("#caf-clean-cloud-token")?.value?.trim() || saved.deviceToken
+    };
+  }
+
+  function setCloudStatus(message, isError = false) {
+    const status = document.getElementById("caf-clean-cloud-status");
+    if (!status) return;
+    status.textContent = message;
+    status.style.color = isError ? "#ff7b89" : "#aaa";
+  }
+
+  function saveCloudSettings() {
+    try {
+      const settings = cloudSettingsFromControls();
+      settings.dashboardUrl = normalizeDashboardUrl(settings.dashboardUrl);
+      if (!settings.deviceToken) throw new Error("Paste a device token from the dashboard Setup tab.");
+      localStorage.setItem(CLOUD_SETTINGS_KEY, JSON.stringify(settings));
+      const urlInput = document.getElementById("caf-clean-cloud-url");
+      const dashboardLink = document.getElementById("caf-clean-cloud-open");
+      if (urlInput) urlInput.value = settings.dashboardUrl;
+      if (dashboardLink) dashboardLink.href = settings.dashboardUrl;
+      setCloudStatus("Saved on this device. The token can be revoked from the dashboard.");
+      setStatus("Private dashboard connection saved on this device.");
+    } catch (error) {
+      setCloudStatus(error.message, true);
+      setStatus(error.message, true);
+    }
+  }
+
+  function snapshotBatchId() {
+    if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, character => {
+      const random = Math.floor(Math.random() * 16);
+      const value = character === "x" ? random : (random & 0x3) | 0x8;
+      return value.toString(16);
+    });
+  }
+
+  function cloudSnapshotRequest(url, token, payload) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: "POST",
+        url: `${url}/api/snapshots/ingest`,
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        data: JSON.stringify(payload),
+        timeout: 30000,
+        onload: response => {
+          let body = {};
+          try {
+            body = JSON.parse(response.responseText || "{}");
+          } catch {}
+          if (response.status >= 200 && response.status < 300) {
+            resolve(body);
+          } else {
+            reject(new Error(body.error || `Private dashboard returned ${response.status}.`));
+          }
+        },
+        onerror: () => reject(new Error("Private dashboard network error.")),
+        ontimeout: () => reject(new Error("Private dashboard upload timed out."))
+      });
+    });
+  }
+
+  async function uploadCurrentPageSnapshot() {
+    const button = document.getElementById("caf-clean-cloud-upload");
+    if (!isAuctionPage() || !isActiveView()) {
+      setCloudStatus("Keep the Auction House visible, then try again.", true);
+      return;
+    }
+
+    let settings;
+    try {
+      settings = cloudSettingsFromControls();
+      settings.dashboardUrl = normalizeDashboardUrl(settings.dashboardUrl);
+      if (!settings.deviceToken) throw new Error("Save a dashboard device token first.");
+    } catch (error) {
+      setCloudStatus(error.message, true);
+      return;
+    }
+
+    const items = readCurrentPageItems();
+    if (!items.length) {
+      setCloudStatus("No complete Auction House listings are visible yet.", true);
+      return;
+    }
+
+    const sourceStart = auctionStartFromUrl(location.href) || 0;
+    const payload = {
+      batchId: snapshotBatchId(),
+      capturedAt: Date.now(),
+      sourceUrl: location.href,
+      sourcePage: Math.floor(sourceStart / TORN_AUCTION_PAGE_SIZE) + 1,
+      items: items.map(item => ({
+        listingId: item.id,
+        name: normalizeItemName(item.name),
+        rarity: item.color,
+        damage: item.damage,
+        accuracy: item.accuracy,
+        quality: item.quality,
+        bid: item.bid,
+        bonuses: item.bonuses,
+        timeText: item.timeText,
+        endsAtMs: item.endsAtMs,
+        sourceUrl: item.sourceUrl || location.href
+      }))
+    };
+
+    if (button) button.disabled = true;
+    setCloudStatus(`Uploading ${items.length} visible listing(s)…`);
+    try {
+      localStorage.setItem(CLOUD_SETTINGS_KEY, JSON.stringify(settings));
+      const result = await cloudSnapshotRequest(settings.dashboardUrl, settings.deviceToken, payload);
+      setCloudStatus(`Uploaded ${Number(result.accepted || items.length)} listing(s). Snapshot ${String(result.batchId || payload.batchId).slice(0, 8)}…`);
+      setStatus(`Private dashboard snapshot uploaded from page ${payload.sourcePage}.`);
+    } catch (error) {
+      setCloudStatus(error.message, true);
+      setStatus(`Snapshot upload failed: ${error.message}`, true);
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   function loadCollection() {
@@ -5087,8 +5250,10 @@
     const savedCollection = loadCollection();
     const collectionTarget = Number(savedCollection?.target || 5);
     const filter = loadFilterSettings();
+    const cloud = loadCloudSettings();
     const collectorCollapsed = localStorage.getItem(COLLECTOR_COLLAPSED_KEY) === "true";
     const filterCollapsed = localStorage.getItem(FILTER_COLLAPSED_KEY) === "true";
+    const cloudCollapsed = localStorage.getItem(CLOUD_COLLAPSED_KEY) !== "false";
     const panel = document.createElement("div");
     panel.id = PANEL_ID;
     panel.innerHTML = `
@@ -5151,6 +5316,23 @@
           <button id="caf-clean-filter-clear">Clear Filtered List</button>
         </div>
       </div>
+      <div class="caf-clean-collector">
+        <button id="caf-clean-cloud-collapse" class="caf-clean-section-toggle">Private Cloud Dashboard ${cloudCollapsed ? "▶" : "▼"}</button>
+        <div id="caf-clean-cloud-body" class="caf-clean-filter-grid" style="display:${cloudCollapsed ? "none" : "grid"}">
+          <label class="caf-clean-filter-field" style="grid-column:1 / -1">
+            <span>Dashboard URL</span>
+            <input id="caf-clean-cloud-url" type="url" inputmode="url" autocomplete="url" placeholder="https://caf-auction-dev.…workers.dev" value="${escapeAttr(cloud.dashboardUrl)}">
+          </label>
+          <label class="caf-clean-filter-field" style="grid-column:1 / -1">
+            <span>Revocable device token</span>
+            <input id="caf-clean-cloud-token" type="password" autocomplete="off" placeholder="Create one in Dashboard → Setup" value="${escapeAttr(cloud.deviceToken)}">
+          </label>
+          <button id="caf-clean-cloud-save" type="button">Save Connection</button>
+          <a id="caf-clean-cloud-open" class="caf-clean-button" href="${escapeAttr(cloud.dashboardUrl || "#")}" target="_blank" rel="noopener noreferrer">Open Dashboard</a>
+          <button id="caf-clean-cloud-upload" type="button" style="grid-column:1 / -1">Upload This Visible Page</button>
+          <div id="caf-clean-cloud-status" style="grid-column:1 / -1;color:#aaa;line-height:1.3">Uploads happen only when you tap this button. Nothing is scraped in the background.</div>
+        </div>
+      </div>
       <div class="caf-clean-controls">
         <button id="caf-clean-analyze">Compile Loaded Items</button>
         <button id="caf-clean-all-history">Load History for Results</button>
@@ -5159,7 +5341,7 @@
       </div>
       <details class="caf-clean-disclosure">
         <summary>Data use</summary>
-        <div>History sends visible item details to the external Supabase history service. No Torn password, session cookie, or API key is sent. Results are cached locally for five minutes. Watched items remain only in this device's local browser storage and are not refreshed in the background.</div>
+        <div>History sends visible item details to the external Supabase history service. A manual private-dashboard upload sends only the currently visible listing details, page URL, and capture time to the workers.dev address you configured. No Torn password, session cookie, or API key is sent. Results are cached locally for five minutes. Watched items remain only in this device's local browser storage and are not refreshed in the background.</div>
       </details>
       <div id="caf-clean-status">Ready. This build makes no scripted requests to Torn.</div>
     `;
@@ -5172,6 +5354,8 @@
     panel.querySelector("#caf-clean-capture-page").addEventListener("click", captureLoadedCollectionPage);
     panel.querySelector("#caf-clean-filter-generate").addEventListener("click", generateFilteredResults);
     panel.querySelector("#caf-clean-filter-clear").addEventListener("click", clearGeneratedFilter);
+    panel.querySelector("#caf-clean-cloud-save").addEventListener("click", saveCloudSettings);
+    panel.querySelector("#caf-clean-cloud-upload").addEventListener("click", uploadCurrentPageSnapshot);
     panel.querySelector("#caf-clean-clear").addEventListener("click", clearAnalysis);
     panel.querySelector("#caf-clean-cache").addEventListener("click", () => {
       localStorage.removeItem(CACHE_KEY);
@@ -5180,6 +5364,7 @@
     panel.querySelectorAll("select, input").forEach(element => element.addEventListener("change", saveSettings));
     bindCollapsibleSection("caf-clean-collector-collapse", "caf-clean-collector-body", COLLECTOR_COLLAPSED_KEY, "Guided Collection");
     bindCollapsibleSection("caf-clean-filter-collapse", "caf-clean-filter-body", FILTER_COLLAPSED_KEY, "Generate Filtered List");
+    bindCollapsibleSection("caf-clean-cloud-collapse", "caf-clean-cloud-body", CLOUD_COLLAPSED_KEY, "Private Cloud Dashboard");
 
     document.addEventListener("pointerdown", markManualCollectionNavigation, true);
     document.addEventListener("click", markManualCollectionNavigation, true);

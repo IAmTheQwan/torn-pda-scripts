@@ -1,0 +1,5 @@
+# Copy to .dev.vars for local development. Never commit .dev.vars.
+TORN_API_KEY=custom-public-market-key
+ADMIN_EMAIL=your-email@example.com
+# Optional local/API fallback. Cloudflare Access is used in deployment.
+ADMIN_TOKEN=replace-with-a-long-random-value

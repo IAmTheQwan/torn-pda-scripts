@@ -1,0 +1,17 @@
+{
+  "name": "caf-auction-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create caf-auction-dev",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "wrangler": "^4.45.0"
+  }
+}

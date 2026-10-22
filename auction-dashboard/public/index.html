@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0c1117">
+  <title>CAF Auction Intelligence</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">CAF PRIVATE WORKSPACE</p>
+        <h1>Auction Intelligence</h1>
+        <p class="subtitle">Finished-sale history, defensible comps, and timestamped foreground snapshots.</p>
+      </div>
+      <div class="sync-cluster">
+        <span id="health-pill" class="pill neutral">Connecting</span>
+        <button id="sync-now" class="button secondary" type="button">Sync history</button>
+      </div>
+    </header>
+
+    <div id="notice" class="notice hidden" role="status"></div>
+
+    <nav class="tabs" aria-label="Dashboard sections">
+      <button class="tab active" data-tab="overview" type="button">Overview</button>
+      <button class="tab" data-tab="explorer" type="button">Item explorer</button>
+      <button class="tab" data-tab="current" type="button">Current snapshots</button>
+      <button class="tab" data-tab="setup" type="button">Setup</button>
+    </nav>
+
+    <main>
+      <section id="tab-overview" class="tab-panel active">
+        <div class="metric-grid">
+          <article class="metric-card accent-blue">
+            <span>Finished sales stored</span>
+            <strong id="metric-sales">—</strong>
+            <small id="metric-range">Waiting for the first sync</small>
+          </article>
+          <article class="metric-card accent-purple">
+            <span>Items represented</span>
+            <strong id="metric-items">—</strong>
+            <small>Distinct Torn item IDs</small>
+          </article>
+          <article class="metric-card accent-green">
+            <span>Last history sync</span>
+            <strong id="metric-sync">—</strong>
+            <small id="metric-sync-detail">No importer result yet</small>
+          </article>
+          <article class="metric-card accent-gold">
+            <span>Latest AH snapshot</span>
+            <strong id="metric-snapshot">—</strong>
+            <small id="metric-snapshot-detail">No foreground capture uploaded</small>
+          </article>
+        </div>
+
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">MARKET MOVEMENT</p>
+            <h2>Current trends</h2>
+          </div>
+          <div class="inline-controls">
+            <label>Window
+              <select id="overview-days">
+                <option value="7">7 days</option>
+                <option value="30" selected>30 days</option>
+                <option value="90">90 days</option>
+              </select>
+            </label>
+            <label>Minimum sales
+              <select id="overview-volume">
+                <option value="3">3</option>
+                <option value="5" selected>5</option>
+                <option value="10">10</option>
+                <option value="20">20</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <p class="context-note">Movement compares each selected window with the immediately preceding window. Raw item averages are context—not deal scores; rolls and bonuses still need like-for-like comparison.</p>
+
+        <div class="trend-grid">
+          <article class="panel">
+            <div class="panel-title"><h3>Rising</h3><span class="legend positive">Window over window</span></div>
+            <div id="rising-list" class="rank-list skeleton-list"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-title"><h3>Falling</h3><span class="legend negative">Window over window</span></div>
+            <div id="falling-list" class="rank-list skeleton-list"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-title"><h3>Lower averages</h3><span class="legend">Not automatically deals</span></div>
+            <div id="lower-list" class="rank-list skeleton-list"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-title"><h3>Higher averages</h3><span class="legend">Not automatically overpriced</span></div>
+            <div id="higher-list" class="rank-list skeleton-list"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="tab-explorer" class="tab-panel">
+        <article class="panel search-panel">
+          <div>
+            <p class="eyebrow">LIKE-FOR-LIKE RESEARCH</p>
+            <h2>Item explorer</h2>
+            <p>Search an item, then narrow the sample by bonus ID when needed.</p>
+          </div>
+          <form id="item-search-form" class="search-form">
+            <input id="item-search" type="search" autocomplete="off" placeholder="Search weapon or armor name…" minlength="2">
+            <button class="button primary" type="submit">Search</button>
+          </form>
+          <div id="search-results" class="search-results"></div>
+        </article>
+
+        <section id="item-detail" class="item-detail hidden">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">HISTORICAL COMPS</p>
+              <h2 id="item-detail-name">Selected item</h2>
+            </div>
+            <div class="inline-controls">
+              <label>History
+                <select id="item-days">
+                  <option value="30">30 days</option>
+                  <option value="90" selected>90 days</option>
+                  <option value="180">180 days</option>
+                  <option value="365">1 year</option>
+                  <option value="3650">All available</option>
+                </select>
+              </label>
+              <label>Bonus ID
+                <input id="item-bonus" inputmode="numeric" pattern="[0-9]*" placeholder="Any">
+              </label>
+              <button id="refresh-item" class="button secondary" type="button">Apply</button>
+            </div>
+          </div>
+
+          <div id="item-stat-grid" class="metric-grid compact"></div>
+          <article class="panel chart-panel">
+            <div class="panel-title">
+              <h3>Daily selling-price average</h3>
+              <span id="chart-caption" class="legend"></span>
+            </div>
+            <div id="trend-chart" class="trend-chart" aria-label="Daily auction price trend"></div>
+          </article>
+          <article class="panel table-panel">
+            <div class="panel-title"><h3>Recent finished sales</h3><span id="sales-sample-label" class="legend"></span></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Ended</th><th>Price</th><th>Stats</th><th>Bonuses</th><th>Bids</th></tr></thead>
+                <tbody id="sales-table"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+      </section>
+
+      <section id="tab-current" class="tab-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">FOREGROUND-ONLY DATA</p>
+            <h2>Current Auction House snapshots</h2>
+          </div>
+          <button id="refresh-snapshots" class="button secondary" type="button">Refresh</button>
+        </div>
+        <p class="context-note warning">These are timestamped observations from Torn pages you actively viewed. They are neither a complete live feed nor safe to treat as current after their capture time.</p>
+        <div id="snapshot-summary" class="snapshot-summary"></div>
+        <div id="snapshot-items" class="snapshot-grid"></div>
+      </section>
+
+      <section id="tab-setup" class="tab-panel">
+        <div class="setup-grid">
+          <article class="panel">
+            <p class="eyebrow">DEVICE ACCESS</p>
+            <h2>Connect CAF Clean</h2>
+            <p>Create a revocable upload token for one PDA/browser. The raw token is shown once and is never stored by the server.</p>
+            <form id="token-form" class="stack-form">
+              <label>Device label<input id="token-label" value="My Torn PDA" maxlength="80"></label>
+              <button class="button primary" type="submit">Generate device token</button>
+            </form>
+            <div id="new-token" class="token-result hidden">
+              <strong>Copy this token now</strong>
+              <code id="new-token-value"></code>
+              <button id="copy-token" class="button secondary" type="button">Copy token</button>
+            </div>
+          </article>
+
+          <article class="panel">
+            <p class="eyebrow">ACTIVE DEVICES</p>
+            <h2>Upload credentials</h2>
+            <div id="token-list" class="token-list"></div>
+          </article>
+
+          <article class="panel wide">
+            <p class="eyebrow">DATA BOUNDARY</p>
+            <h2>What this service stores</h2>
+            <div class="boundary-grid">
+              <div><strong>Finished history</strong><span>Official Torn API listing ID, ending time, item stats, bonuses, price, and bid count.</span></div>
+              <div><strong>Current snapshots</strong><span>Only listings CAF parsed from the foreground page, retained for seven days.</span></div>
+              <div><strong>Not retained</strong><span>Seller identity, buyer identity, Torn password, or the raw Torn API key.</span></div>
+              <div><strong>Not performed</strong><span>Background page scraping, automatic AH page cycling, or live off-page notifications.</span></div>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>CAF Auction Intelligence</span>
+      <span>Private development build</span>
+    </footer>
+  </div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

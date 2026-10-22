@@ -32,3 +32,7 @@ The Item Market deal rail is split vertically. Its top half shows the original p
 ## Compliance
 
 - [Torn scripting compliance notes](TORN-SCRIPTING-COMPLIANCE.md)
+
+## Private Auction Dashboard
+
+[`auction-dashboard/`](auction-dashboard/) contains the Cloudflare Worker and D1 application for private finished-sale history, price trends, and player-initiated Auction House snapshots. It uses Torn's official Auction House API for automated history collection. Active listings enter the dashboard only when the player taps **Upload This Visible Page** in CAF Clean; it does not crawl Torn pages or claim that a saved snapshot is live.
