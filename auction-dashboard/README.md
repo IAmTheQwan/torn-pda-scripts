@@ -21,10 +21,12 @@ See [`../TORN-SCRIPTING-COMPLIANCE.md`](../TORN-SCRIPTING-COMPLIANCE.md) for the
 
 ## First deployment
 
+The repository is currently bound to the provisioned `caf-auction-dev` D1 database and deployed at `https://caf-auction-dev.fapsports.workers.dev`. For a fresh Cloudflare account or a replacement database:
+
 1. Install dependencies: `npm install`.
 2. Authenticate Wrangler: `npx wrangler login`.
 3. Create D1: `npm run db:create`.
-4. Replace `REPLACE_WITH_D1_DATABASE_ID` in `wrangler.toml` with the returned ID.
+4. Replace the existing `database_id` in `wrangler.toml` with the returned ID.
 5. Apply migrations: `npm run db:migrate:remote`.
 6. Add encrypted secrets:
    - `npx wrangler secret put TORN_API_KEY`

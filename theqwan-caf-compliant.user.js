@@ -8,7 +8,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      btrmmuuoofbonmuwrkzg.supabase.co
-// @connect      *.workers.dev
+// @connect      caf-auction-dev.fapsports.workers.dev
 // @run-at       document-start
 // @license      MIT
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/auction-dashboard/theqwan-caf-compliant.meta.js
@@ -1777,7 +1777,7 @@
   }
 
   function defaultCloudSettings() {
-    return { dashboardUrl: "", deviceToken: "" };
+    return { dashboardUrl: "https://caf-auction-dev.fapsports.workers.dev", deviceToken: "" };
   }
 
   function loadCloudSettings() {
@@ -5321,7 +5321,7 @@
         <div id="caf-clean-cloud-body" class="caf-clean-filter-grid" style="display:${cloudCollapsed ? "none" : "grid"}">
           <label class="caf-clean-filter-field" style="grid-column:1 / -1">
             <span>Dashboard URL</span>
-            <input id="caf-clean-cloud-url" type="url" inputmode="url" autocomplete="url" placeholder="https://caf-auction-dev.…workers.dev" value="${escapeAttr(cloud.dashboardUrl)}">
+            <input id="caf-clean-cloud-url" type="url" inputmode="url" autocomplete="url" placeholder="https://caf-auction-dev.fapsports.workers.dev" value="${escapeAttr(cloud.dashboardUrl)}">
           </label>
           <label class="caf-clean-filter-field" style="grid-column:1 / -1">
             <span>Revocable device token</span>

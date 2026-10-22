@@ -4,7 +4,7 @@
 
 - Worker name: `caf-auction-dev`
 - D1 database: `caf-auction-dev`
-- Production URL: the generated `*.workers.dev` URL
+- Production URL: `https://caf-auction-dev.fapsports.workers.dev`
 - Cron: hourly at minute zero
 - Access: require owner email for the Worker
 - Access exception: bypass `/api/snapshots/ingest` only; application-level device-token authentication remains mandatory

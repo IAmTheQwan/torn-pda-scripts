@@ -8,7 +8,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      btrmmuuoofbonmuwrkzg.supabase.co
-// @connect      *.workers.dev
+// @connect      caf-auction-dev.fapsports.workers.dev
 // @run-at       document-start
 // @license      MIT
 // @updateURL    https://raw.githubusercontent.com/IAmTheQwan/torn-pda-scripts/auction-dashboard/theqwan-caf-compliant.meta.js

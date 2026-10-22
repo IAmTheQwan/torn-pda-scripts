@@ -16,7 +16,7 @@ TORN_API_BASE_URL = "https://api.torn.com/v2"
 [[d1_databases]]
 binding = "DB"
 database_name = "caf-auction-dev"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "a76f60dd-586f-48a4-86eb-2a054b2b9a82"
 migrations_dir = "migrations"
 
 [triggers]
