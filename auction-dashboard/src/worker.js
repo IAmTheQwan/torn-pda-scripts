@@ -7,6 +7,8 @@ const JSON_HEADERS = {
 const MAX_TREND_SAMPLE = 5000;
 const MAX_SNAPSHOT_ITEMS = 120;
 const SNAPSHOT_RETENTION_SECONDS = 7 * 24 * 60 * 60;
+const ACCESS_JWKS_TTL_MS = 60 * 60 * 1000;
+let accessJwksCache = null;
 
 export default {
   async fetch(request, env, ctx) {
@@ -604,11 +606,87 @@ async function setSyncStates(db, values) {
 
 async function isDashboardAuthorized(request, env) {
   if (String(env.REQUIRE_ACCESS || "").toLowerCase() !== "true") return true;
-  const assertedEmail = String(request.headers.get("Cf-Access-Authenticated-User-Email") || "").trim().toLowerCase();
-  const expectedEmail = String(env.ADMIN_EMAIL || "").trim().toLowerCase();
-  if (assertedEmail && (!expectedEmail || assertedEmail === expectedEmail)) return true;
+  if (await hasValidAccessIdentity(request, env)) return true;
   const token = bearerToken(request);
   return Boolean(token && env.ADMIN_TOKEN && constantTimeEqual(token, String(env.ADMIN_TOKEN)));
+}
+
+async function hasValidAccessIdentity(request, env) {
+  const assertion = String(request.headers.get("Cf-Access-Jwt-Assertion") || "").trim();
+  const teamDomain = normalizeAccessTeamDomain(env.CF_ACCESS_TEAM_DOMAIN);
+  const expectedAudience = String(env.CF_ACCESS_AUD || "").trim();
+  const expectedEmail = String(env.ADMIN_EMAIL || "").trim().toLowerCase();
+  if (!assertion || !teamDomain || !expectedAudience || !expectedEmail) return false;
+
+  try {
+    const parts = assertion.split(".");
+    if (parts.length !== 3) return false;
+    const header = JSON.parse(new TextDecoder().decode(base64UrlBytes(parts[0])));
+    const payload = JSON.parse(new TextDecoder().decode(base64UrlBytes(parts[1])));
+    if (header.alg !== "RS256" || !header.kid) return false;
+
+    const now = Math.floor(Date.now() / 1000);
+    if (!Number.isFinite(Number(payload.exp)) || Number(payload.exp) <= now) return false;
+    if (payload.nbf !== undefined && Number(payload.nbf) > now + 30) return false;
+    const audiences = Array.isArray(payload.aud) ? payload.aud.map(String) : [String(payload.aud || "")];
+    if (!audiences.includes(expectedAudience)) return false;
+    if (String(payload.iss || "").replace(/\/$/, "") !== teamDomain.replace(/\/$/, "")) return false;
+    if (String(payload.email || "").trim().toLowerCase() !== expectedEmail) return false;
+
+    const jwks = await getAccessJwks(teamDomain);
+    const jwk = jwks.find(key => key.kid === header.kid && key.kty === "RSA");
+    if (!jwk) return false;
+    const publicKey = await crypto.subtle.importKey(
+      "jwk",
+      jwk,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+    return crypto.subtle.verify(
+      "RSASSA-PKCS1-v1_5",
+      publicKey,
+      base64UrlBytes(parts[2]),
+      new TextEncoder().encode(`${parts[0]}.${parts[1]}`)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function normalizeAccessTeamDomain(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(/^https:\/\//i.test(raw) ? raw : `https://${raw}`);
+    if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/") return "";
+    return url.origin;
+  } catch {
+    return "";
+  }
+}
+
+async function getAccessJwks(teamDomain) {
+  const now = Date.now();
+  if (accessJwksCache?.teamDomain === teamDomain && accessJwksCache.expiresAt > now) {
+    return accessJwksCache.keys;
+  }
+  const response = await fetch(`${teamDomain}/cdn-cgi/access/certs`, {
+    headers: { Accept: "application/json" }
+  });
+  if (!response.ok) throw new Error("Unable to load Cloudflare Access signing keys.");
+  const payload = await response.json();
+  const keys = Array.isArray(payload?.keys) ? payload.keys : [];
+  if (!keys.length) throw new Error("Cloudflare Access returned no signing keys.");
+  accessJwksCache = { teamDomain, keys, expiresAt: now + ACCESS_JWKS_TTL_MS };
+  return keys;
+}
+
+function base64UrlBytes(value) {
+  const normalized = String(value).replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const binary = atob(padded);
+  return Uint8Array.from(binary, character => character.charCodeAt(0));
 }
 
 function snapshotPreflight(request) {

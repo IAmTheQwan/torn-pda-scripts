@@ -50,4 +50,4 @@ The importer follows Torn's API-provided pagination link and checkpoints it in D
    - `npm run db:migrate:local`
 3. Run `npm run dev`.
 
-When `REQUIRE_ACCESS` is `true`, local API requests need either the configured `ADMIN_TOKEN` bearer token or a simulated `Cf-Access-Authenticated-User-Email` header.
+When `REQUIRE_ACCESS` is `true`, requests need either a valid, cryptographically verified Cloudflare Access JWT or the configured `ADMIN_TOKEN` bearer token. An email header by itself is never trusted. Access deployments must also configure `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD`; without both values, Access identity headers are rejected closed.

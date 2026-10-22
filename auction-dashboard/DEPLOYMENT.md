@@ -16,6 +16,8 @@
 | `TORN_API_KEY` | Custom Torn key restricted to the public `market -> auctionhouse` selection |
 | `ADMIN_EMAIL` | Email Cloudflare Access must assert for dashboard/API access |
 | `ADMIN_TOKEN` | Optional emergency/manual API bearer token; use a long random value |
+| `CF_ACCESS_TEAM_DOMAIN` | Access team domain, for example `your-team.cloudflareaccess.com` |
+| `CF_ACCESS_AUD` | Audience tag from the Access application |
 
 ## Cloudflare Access
 
