@@ -105,7 +105,10 @@ async function getStatus(env) {
     env.DB.prepare(`
       SELECT key, value, updated_at
       FROM sync_state
-      WHERE key IN ('last_run_at', 'last_ended_at', 'last_inserted', 'last_error', 'history_caught_up_at')
+      WHERE key IN (
+        'last_run_at', 'last_ended_at', 'last_inserted', 'last_error',
+        'history_caught_up_at', 'last_raw_received', 'last_normalized', 'last_dropped'
+      )
     `)
   ]);
 
@@ -433,53 +436,92 @@ async function runAuctionSync(env, pageLimit) {
   if (!lock) return { ok: false, skipped: true, reason: "Another sync is already running." };
 
   let processedPages = 0;
-  let received = 0;
+  let rawReceived = 0;
+  let normalizedReceived = 0;
   let inserted = 0;
   let newestTimestamp = Number(await getSyncState(env.DB, "last_ended_at") || 0);
-  let nextUrl = await getSyncState(env.DB, "cursor_url");
+  let forwardUrl = await getSyncState(env.DB, "forward_cursor_url");
+  let backfillUrl = await getSyncState(env.DB, "backfill_cursor_url");
+  const backfillStarted = Boolean(await getSyncState(env.DB, "backfill_started_at"));
 
   try {
-    if (!nextUrl) nextUrl = initialAuctionUrl(env, newestTimestamp);
-
-    while (nextUrl && processedPages < pageLimit) {
-      const safeUrl = safeTornApiUrl(nextUrl, env);
-      const response = await fetch(safeUrl, {
-        headers: {
-          Authorization: `ApiKey ${env.TORN_API_KEY}`,
-          Accept: "application/json",
-          "User-Agent": "CAF-Auction-Dashboard/0.1"
-        }
-      });
-      const payload = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(payload?.error?.error || payload?.error?.message || `Torn API returned ${response.status}.`);
+    // Seed from Torn's newest page. Starting with `from=0` can yield an empty
+    // page, and an empty page must never be mistaken for a complete backfill.
+    if (!backfillStarted) {
+      const page = await fetchAuctionPage(env, recentAuctionUrl(env));
+      if (!page.rawCount) {
+        throw new Error("Torn returned an empty initial auction page; history was not marked caught up.");
       }
-      if (payload?.error) throw new Error(payload.error.error || payload.error.message || "Torn API error.");
-
-      const normalized = (payload?.auctionhouse || []).map(normalizeAuction).filter(Boolean);
-      const insertResult = normalized.length ? await insertAuctionBatch(env.DB, normalized) : { meta: { changes: 0 } };
-      received += normalized.length;
-      inserted += Number(insertResult.meta?.changes || 0);
-      newestTimestamp = Math.max(newestTimestamp, ...normalized.map(row => row.ended_at), 0);
+      const changes = await storeAuctionPage(env.DB, page.normalized);
       processedPages += 1;
-
-      const candidate = payload?._metadata?.links?.next;
-      nextUrl = candidate ? safeTornApiUrl(candidate, env) : "";
+      rawReceived += page.rawCount;
+      normalizedReceived += page.normalized.length;
+      inserted += changes;
+      newestTimestamp = Math.max(newestTimestamp, page.maxTimestamp);
+      backfillUrl = page.nextUrl;
+      forwardUrl = "";
       await setSyncStates(env.DB, {
-        cursor_url: nextUrl,
-        last_ended_at: newestTimestamp,
-        last_run_at: Math.floor(Date.now() / 1000),
-        last_inserted: inserted,
-        last_error: ""
+        backfill_started_at: Math.floor(Date.now() / 1000),
+        backfill_cursor_url: backfillUrl,
+        forward_cursor_url: "",
+        history_caught_up_at: backfillUrl ? "" : Math.floor(Date.now() / 1000)
       });
-      if (!normalized.length && !nextUrl) break;
+    } else {
+      // Always catch up newer sales before spending the remaining request
+      // budget on older history. Rewind one second and rely on the listing-id
+      // primary key so auctions sharing the boundary timestamp are not lost.
+      if (!forwardUrl) forwardUrl = incrementalAuctionUrl(env, newestTimestamp);
+      while (forwardUrl && processedPages < pageLimit) {
+        const page = await fetchAuctionPage(env, forwardUrl);
+        const changes = await storeAuctionPage(env.DB, page.normalized);
+        processedPages += 1;
+        rawReceived += page.rawCount;
+        normalizedReceived += page.normalized.length;
+        inserted += changes;
+        newestTimestamp = Math.max(newestTimestamp, page.maxTimestamp);
+        forwardUrl = page.nextUrl;
+        await setSyncStates(env.DB, { forward_cursor_url: forwardUrl });
+      }
     }
 
-    if (!nextUrl) {
-      await setSyncStates(env.DB, { history_caught_up_at: Math.floor(Date.now() / 1000) });
+    // The backward cursor is independent of the live cursor. That prevents a
+    // long historical fill from delaying current finished-auction updates.
+    while (!forwardUrl && backfillUrl && processedPages < pageLimit) {
+      const page = await fetchAuctionPage(env, backfillUrl);
+      const changes = await storeAuctionPage(env.DB, page.normalized);
+      processedPages += 1;
+      rawReceived += page.rawCount;
+      normalizedReceived += page.normalized.length;
+      inserted += changes;
+      newestTimestamp = Math.max(newestTimestamp, page.maxTimestamp);
+      backfillUrl = page.nextUrl;
+      await setSyncStates(env.DB, { backfill_cursor_url: backfillUrl });
     }
 
-    return { ok: true, processedPages, received, inserted, newestTimestamp, hasMore: Boolean(nextUrl) };
+    const now = Math.floor(Date.now() / 1000);
+    await setSyncStates(env.DB, {
+      cursor_url: "",
+      last_ended_at: newestTimestamp,
+      last_run_at: now,
+      last_raw_received: rawReceived,
+      last_normalized: normalizedReceived,
+      last_dropped: rawReceived - normalizedReceived,
+      last_inserted: inserted,
+      last_error: "",
+      history_caught_up_at: backfillUrl ? "" : (await getSyncState(env.DB, "history_caught_up_at") || now)
+    });
+
+    return {
+      ok: true,
+      processedPages,
+      rawReceived,
+      received: normalizedReceived,
+      dropped: rawReceived - normalizedReceived,
+      inserted,
+      newestTimestamp,
+      liveHasMore: Boolean(forwardUrl),
+      historyHasMore: Boolean(backfillUrl)
+    };
   } catch (error) {
     await setSyncStates(env.DB, {
       last_run_at: Math.floor(Date.now() / 1000),
@@ -489,6 +531,40 @@ async function runAuctionSync(env, pageLimit) {
   } finally {
     await releaseSyncLock(env.DB);
   }
+}
+
+async function fetchAuctionPage(env, candidate) {
+  const safeUrl = safeTornApiUrl(candidate, env);
+  const response = await fetch(safeUrl, {
+    headers: {
+      Authorization: `ApiKey ${env.TORN_API_KEY}`,
+      Accept: "application/json",
+      "User-Agent": "CAF-Auction-Dashboard/0.2"
+    }
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(payload?.error?.error || payload?.error?.message || `Torn API returned ${response.status}.`);
+  }
+  if (payload?.error) throw new Error(payload.error.error || payload.error.message || "Torn API error.");
+  if (!Array.isArray(payload?.auctionhouse)) {
+    throw new Error("Torn API response did not contain an auctionhouse array.");
+  }
+
+  const normalized = payload.auctionhouse.map(normalizeAuction).filter(Boolean);
+  const candidateNext = payload?._metadata?.links?.next;
+  return {
+    rawCount: payload.auctionhouse.length,
+    maxTimestamp: Math.max(0, ...payload.auctionhouse.map(listing => Number(listing?.timestamp) || 0)),
+    normalized,
+    nextUrl: candidateNext ? safeTornApiUrl(candidateNext, env) : ""
+  };
+}
+
+async function storeAuctionPage(db, normalized) {
+  if (!normalized.length) return 0;
+  const result = await insertAuctionBatch(db, normalized);
+  return Number(result.meta?.changes || 0);
 }
 
 export function normalizeAuction(listing) {
@@ -556,12 +632,23 @@ async function insertAuctionBatch(db, rows) {
   `).bind(JSON.stringify(rows)).run();
 }
 
-function initialAuctionUrl(env, newestTimestamp) {
+export function recentAuctionUrl(env = {}) {
+  const base = String(env.TORN_API_BASE_URL || "https://api.torn.com/v2").replace(/\/$/, "");
+  const url = new URL(`${base}/market/auctionhouse`);
+  url.searchParams.set("limit", "100");
+  url.searchParams.set("sort", "DESC");
+  url.searchParams.set("comment", "cafauction");
+  return url.toString();
+}
+
+export function incrementalAuctionUrl(env = {}, newestTimestamp = 0) {
   const base = String(env.TORN_API_BASE_URL || "https://api.torn.com/v2").replace(/\/$/, "");
   const url = new URL(`${base}/market/auctionhouse`);
   url.searchParams.set("limit", "100");
   url.searchParams.set("sort", "ASC");
-  url.searchParams.set("from", String(Math.max(0, Number(newestTimestamp || env.HISTORY_START_TS || 0))));
+  if (Number(newestTimestamp) > 0) {
+    url.searchParams.set("from", String(Math.max(0, Math.floor(Number(newestTimestamp)) - 1)));
+  }
   url.searchParams.set("comment", "cafauction");
   return url.toString();
 }

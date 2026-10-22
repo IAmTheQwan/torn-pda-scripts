@@ -2,9 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   bonusSignature,
+  incrementalAuctionUrl,
   normalizeAuction,
   normalizeSnapshotPayload,
   percentile,
+  recentAuctionUrl,
   safeTornApiUrl
 } from "../src/worker.js";
 
@@ -69,6 +71,20 @@ test("safeTornApiUrl accepts only the official auction endpoint", () => {
   assert.throws(() => safeTornApiUrl("https://example.com/v2/market/auctionhouse"), /unexpected pagination URL/);
   assert.throws(() => safeTornApiUrl("https://api.torn.com/v2/user/basic"), /unexpected pagination URL/);
   assert.throws(() => safeTornApiUrl("https://api.torn.com/v2/market/auctionhouse/extra"), /unexpected pagination URL/);
+});
+
+test("recentAuctionUrl starts at the newest page without an epoch-zero lower bound", () => {
+  const url = new URL(recentAuctionUrl());
+  assert.equal(url.pathname, "/v2/market/auctionhouse");
+  assert.equal(url.searchParams.get("sort"), "DESC");
+  assert.equal(url.searchParams.get("limit"), "100");
+  assert.equal(url.searchParams.has("from"), false);
+});
+
+test("incrementalAuctionUrl rewinds one second to retain timestamp-boundary auctions", () => {
+  const url = new URL(incrementalAuctionUrl({}, 1_790_000_000));
+  assert.equal(url.searchParams.get("sort"), "ASC");
+  assert.equal(url.searchParams.get("from"), "1789999999");
 });
 
 test("normalizeSnapshotPayload strips non-Torn URLs and deduplicates listing keys", () => {
