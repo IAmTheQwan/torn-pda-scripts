@@ -25,7 +25,7 @@ Protecting the entire Worker is the safe default. Native Worker Access supplies 
 
 ## Free-tier guardrails
 
-- Keep `SYNC_PAGES_PER_RUN=5` and `BACKFILL_DAILY_INSERT_LIMIT=40000` during initial backfill.
+- Keep `SYNC_PAGES_PER_RUN=5` and `BACKFILL_DAILY_INSERT_LIMIT=15000` during initial backfill. The UTC-day checkpoint resets automatically at midnight UTC, so the five-minute cron resumes historical ingestion within five minutes of Cloudflare's daily D1 reset.
 - Review D1 row-write metrics before increasing it.
 - Do not add redundant indexes without accounting for their row-write cost.
 - If the D1 database approaches 400 MB, archive old raw records or split them by year before reaching the 500 MB free per-database limit.

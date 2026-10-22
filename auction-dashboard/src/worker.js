@@ -454,7 +454,7 @@ async function runAuctionSync(env, pageLimit, options = {}) {
   let insertedToday = storedBudgetDay === today
     ? Number(await getSyncState(env.DB, "backfill_inserted_today") || 0)
     : 0;
-  const dailyInsertLimit = clampInteger(env.BACKFILL_DAILY_INSERT_LIMIT, 1_000, 90_000, 40_000);
+  const dailyInsertLimit = clampInteger(env.BACKFILL_DAILY_INSERT_LIMIT, 1_000, 90_000, 15_000);
   const forwardInterval = clampInteger(env.FORWARD_SYNC_INTERVAL_SECONDS, 300, 86_400, 3_600);
   let lastForwardCheckAt = Number(await getSyncState(env.DB, "last_forward_check_at") || 0);
 
