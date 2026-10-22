@@ -108,6 +108,53 @@ test("native Worker Access identity enforces an audience when configured", async
   }, ctx), false);
 });
 
+test("signed Access assertion is used when the native identity is unavailable", async () => {
+  const issuer = "https://fallback-test.cloudflareaccess.com";
+  const audience = "worker-audience";
+  const keyId = "fallback-key";
+  const keyPair = await crypto.subtle.generateKey({
+    name: "RSASSA-PKCS1-v1_5",
+    modulusLength: 2048,
+    publicExponent: new Uint8Array([1, 0, 1]),
+    hash: "SHA-256"
+  }, true, ["sign", "verify"]);
+  const publicJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+  const encode = value => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const now = Math.floor(Date.now() / 1000);
+  const unsigned = `${encode({ alg: "RS256", kid: keyId })}.${encode({
+    aud: audience,
+    email: "owner@example.com",
+    exp: now + 60,
+    iss: issuer,
+    nbf: now - 1
+  })}`;
+  const signature = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5",
+    keyPair.privateKey,
+    new TextEncoder().encode(unsigned)
+  );
+  const assertion = `${unsigned}.${Buffer.from(signature).toString("base64url")}`;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    keys: [{ ...publicJwk, kid: keyId }]
+  }), { headers: { "content-type": "application/json" } });
+
+  try {
+    const request = new Request("https://example.test/api/status", {
+      headers: { "Cf-Access-Jwt-Assertion": assertion }
+    });
+    assert.equal(await hasValidAccessIdentity(request, {
+      ADMIN_EMAIL: "owner@example.com",
+      CF_ACCESS_AUD: audience,
+      CF_ACCESS_TEAM_DOMAIN: issuer
+    }, {
+      access: { aud: audience, getIdentity: async () => { throw new Error("identity unavailable"); } }
+    }), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("normalizeSnapshotPayload strips non-Torn URLs and deduplicates listing keys", () => {
   const payload = normalizeSnapshotPayload({
     batchId: "f3fba8f5-7151-45c9-8d55-48824f7b46d8",

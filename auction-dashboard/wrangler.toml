@@ -12,6 +12,8 @@ ENVIRONMENT = "development"
 REQUIRE_ACCESS = "true"
 SYNC_PAGES_PER_RUN = "5"
 TORN_API_BASE_URL = "https://api.torn.com/v2"
+CF_ACCESS_TEAM_DOMAIN = "https://small-wave-b24c.cloudflareaccess.com"
+CF_ACCESS_AUD = "dddf25be5fb3978715e8759108da2e3fbca41103f0c1706ba461e3fe4ca3d09e"
 
 [[d1_databases]]
 binding = "DB"

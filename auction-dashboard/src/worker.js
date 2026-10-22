@@ -707,11 +707,12 @@ export async function hasValidAccessIdentity(request, env, ctx) {
   // request headers; a caller cannot manufacture ctx.access from the Internet.
   if (ctx?.access && typeof ctx.access.getIdentity === "function") {
     try {
-      if (expectedAudience && String(ctx.access.aud || "") !== expectedAudience) return false;
-      const identity = await ctx.access.getIdentity();
-      return String(identity?.email || "").trim().toLowerCase() === expectedEmail;
+      if (!expectedAudience || String(ctx.access.aud || "") === expectedAudience) {
+        const identity = await ctx.access.getIdentity();
+        if (String(identity?.email || "").trim().toLowerCase() === expectedEmail) return true;
+      }
     } catch {
-      return false;
+      // Some Access paths expose only the signed assertion. Verify that below.
     }
   }
 
