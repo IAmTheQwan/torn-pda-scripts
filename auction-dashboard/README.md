@@ -41,7 +41,12 @@ Do not put a Torn key, Access service token, or device token in Git.
 
 ## Backfill behavior
 
-The importer follows Torn's API-provided pagination link and checkpoints it in D1. `SYNC_PAGES_PER_RUN` defaults to five pages per hourly run to respect the D1 free-tier row-write allowance. A manual sync button invokes the same resumable process. Once caught up, each run requests only records at or after the newest saved ending timestamp; duplicate listing IDs are ignored.
+The importer begins with Torn's newest finished-auction page; it never starts from Unix time zero or treats an unexpectedly empty initial page as complete history. It then keeps two independent, API-provided pagination checkpoints in D1:
+
+- a forward cursor for current sales, processed first on every run;
+- a backward cursor for progressively filling older history with the remaining request budget.
+
+`SYNC_PAGES_PER_RUN` defaults to five pages per hourly run to respect the D1 free-tier row-write allowance. A manual sync button invokes the same resumable process. Forward requests rewind one second from the newest stored ending timestamp so auctions sharing that boundary are not lost; duplicate listing IDs are ignored. Status records include raw, normalized, dropped, and newly inserted counts so an upstream API or normalization problem is visible instead of appearing to be a successful empty sync.
 
 ## Local development
 
