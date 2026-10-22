@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   bonusSignature,
+  hasValidAccessIdentity,
   incrementalAuctionUrl,
   normalizeAuction,
   normalizeSnapshotPayload,
@@ -85,6 +86,26 @@ test("incrementalAuctionUrl rewinds one second to retain timestamp-boundary auct
   const url = new URL(incrementalAuctionUrl({}, 1_790_000_000));
   assert.equal(url.searchParams.get("sort"), "ASC");
   assert.equal(url.searchParams.get("from"), "1789999999");
+});
+
+test("native Worker Access identity accepts only the configured owner email", async () => {
+  const request = new Request("https://example.test/api/status");
+  const env = { ADMIN_EMAIL: "owner@example.com" };
+  assert.equal(await hasValidAccessIdentity(request, env, {
+    access: { aud: "worker-app", getIdentity: async () => ({ email: "OWNER@example.com" }) }
+  }), true);
+  assert.equal(await hasValidAccessIdentity(request, env, {
+    access: { aud: "worker-app", getIdentity: async () => ({ email: "other@example.com" }) }
+  }), false);
+});
+
+test("native Worker Access identity enforces an audience when configured", async () => {
+  const request = new Request("https://example.test/api/status");
+  const ctx = { access: { aud: "actual", getIdentity: async () => ({ email: "owner@example.com" }) } };
+  assert.equal(await hasValidAccessIdentity(request, {
+    ADMIN_EMAIL: "owner@example.com",
+    CF_ACCESS_AUD: "expected"
+  }, ctx), false);
 });
 
 test("normalizeSnapshotPayload strips non-Torn URLs and deduplicates listing keys", () => {

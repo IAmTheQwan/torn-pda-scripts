@@ -55,4 +55,4 @@ The importer begins with Torn's newest finished-auction page; it never starts fr
    - `npm run db:migrate:local`
 3. Run `npm run dev`.
 
-When `REQUIRE_ACCESS` is `true`, requests need either a valid, cryptographically verified Cloudflare Access JWT or the configured `ADMIN_TOKEN` bearer token. An email header by itself is never trusted. Access deployments must also configure `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD`; without both values, Access identity headers are rejected closed.
+When `REQUIRE_ACCESS` is `true`, requests need either the native, unforgeable Worker Access identity, a cryptographically verified Cloudflare Access JWT, or the configured `ADMIN_TOKEN` bearer token. In every Access case, the authenticated identity must exactly match `ADMIN_EMAIL`; an email header by itself is never trusted. Worker-level Access needs no extra identity secrets. Hostname-based deployments using the JWT fallback must also configure `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD`.

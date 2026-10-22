@@ -28,7 +28,7 @@ export default {
     }
 
     if (url.pathname.startsWith("/api/")) {
-      if (!(await isDashboardAuthorized(request, env))) {
+      if (!(await isDashboardAuthorized(request, env, ctx))) {
         return json({ error: "Dashboard authorization required." }, 401);
       }
       return routeApi(request, env, ctx, url);
@@ -691,19 +691,35 @@ async function setSyncStates(db, values) {
   if (statements.length) await db.batch(statements);
 }
 
-async function isDashboardAuthorized(request, env) {
+async function isDashboardAuthorized(request, env, ctx) {
   if (String(env.REQUIRE_ACCESS || "").toLowerCase() !== "true") return true;
-  if (await hasValidAccessIdentity(request, env)) return true;
+  if (await hasValidAccessIdentity(request, env, ctx)) return true;
   const token = bearerToken(request);
   return Boolean(token && env.ADMIN_TOKEN && constantTimeEqual(token, String(env.ADMIN_TOKEN)));
 }
 
-async function hasValidAccessIdentity(request, env) {
+export async function hasValidAccessIdentity(request, env, ctx) {
+  const expectedEmail = String(env.ADMIN_EMAIL || "").trim().toLowerCase();
+  const expectedAudience = String(env.CF_ACCESS_AUD || "").trim();
+  if (!expectedEmail) return false;
+
+  // Worker-level Access supplies an unforgeable runtime binding. Prefer it to
+  // request headers; a caller cannot manufacture ctx.access from the Internet.
+  if (ctx?.access && typeof ctx.access.getIdentity === "function") {
+    try {
+      if (expectedAudience && String(ctx.access.aud || "") !== expectedAudience) return false;
+      const identity = await ctx.access.getIdentity();
+      return String(identity?.email || "").trim().toLowerCase() === expectedEmail;
+    } catch {
+      return false;
+    }
+  }
+
+  // Retain signed-JWT verification for hostname-based Access deployments that
+  // do not expose the native Worker binding.
   const assertion = String(request.headers.get("Cf-Access-Jwt-Assertion") || "").trim();
   const teamDomain = normalizeAccessTeamDomain(env.CF_ACCESS_TEAM_DOMAIN);
-  const expectedAudience = String(env.CF_ACCESS_AUD || "").trim();
-  const expectedEmail = String(env.ADMIN_EMAIL || "").trim().toLowerCase();
-  if (!assertion || !teamDomain || !expectedAudience || !expectedEmail) return false;
+  if (!assertion || !teamDomain || !expectedAudience) return false;
 
   try {
     const parts = assertion.split(".");

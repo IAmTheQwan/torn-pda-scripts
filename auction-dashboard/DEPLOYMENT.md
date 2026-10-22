@@ -16,12 +16,12 @@
 | `TORN_API_KEY` | Custom Torn key restricted to the public `market -> auctionhouse` selection |
 | `ADMIN_EMAIL` | Email Cloudflare Access must assert for dashboard/API access |
 | `ADMIN_TOKEN` | Optional emergency/manual API bearer token; use a long random value |
-| `CF_ACCESS_TEAM_DOMAIN` | Access team domain, for example `your-team.cloudflareaccess.com` |
-| `CF_ACCESS_AUD` | Audience tag from the Access application |
+| `CF_ACCESS_TEAM_DOMAIN` | Optional JWT fallback: Access team domain, for example `your-team.cloudflareaccess.com` |
+| `CF_ACCESS_AUD` | Optional JWT fallback/audience pin for non-native hostname Access |
 
 ## Cloudflare Access
 
-Protecting the entire Worker is the safe default. The snapshot route needs a path-specific bypass because PDA userscripts cannot reliably complete an interactive Access redirect. The Worker independently rejects snapshot requests without a valid revocable device token.
+Protecting the entire Worker is the safe default. Native Worker Access supplies the authenticated identity directly to the runtime, and the Worker still compares it to `ADMIN_EMAIL`. The snapshot route needs a more-specific hostname/path bypass because PDA userscripts cannot reliably complete an interactive Access redirect. The Worker independently rejects snapshot requests without a valid revocable device token.
 
 ## Free-tier guardrails
 
