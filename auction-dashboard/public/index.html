@@ -25,6 +25,7 @@
 
     <nav class="tabs" aria-label="Dashboard sections">
       <button class="tab active" data-tab="overview" type="button">Overview</button>
+      <button class="tab" data-tab="traits" type="button">Trait intelligence</button>
       <button class="tab" data-tab="explorer" type="button">Item explorer</button>
       <button class="tab" data-tab="current" type="button">Current snapshots</button>
       <button class="tab" data-tab="setup" type="button">Setup</button>
@@ -99,6 +100,99 @@
             <div id="higher-list" class="rank-list skeleton-list"></div>
           </article>
         </div>
+      </section>
+
+      <section id="tab-traits" class="tab-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">BONUS MARKET INTELLIGENCE</p>
+            <h2>Trait premiums and momentum</h2>
+          </div>
+          <div class="inline-controls">
+            <label>Window
+              <select id="trait-days">
+                <option value="30">30 days</option>
+                <option value="90" selected>90 days</option>
+                <option value="180">180 days</option>
+                <option value="365">1 year</option>
+              </select>
+            </label>
+            <label>Minimum sales
+              <select id="trait-volume">
+                <option value="5">5</option>
+                <option value="10" selected>10</option>
+                <option value="20">20</option>
+                <option value="40">40</option>
+              </select>
+            </label>
+            <label>Bonus count
+              <select id="trait-bonus-count">
+                <option value="all" selected>All</option>
+                <option value="single">Single only</option>
+                <option value="double">Double only</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <p class="context-note">Adjusted premium compares each sale with the median for the same item, rarity, single/double-bonus count, and five-point quality band. It measures association—not guaranteed causal value or profit.</p>
+        <div id="trait-stat-grid" class="metric-grid compact"></div>
+
+        <div class="trend-grid trait-rank-grid">
+          <article class="panel">
+            <div class="panel-title"><h3>Highest adjusted premiums</h3><span class="legend positive">Like-for-like median</span></div>
+            <div id="trait-high-list" class="rank-list"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-title"><h3>Lowest adjusted premiums</h3><span class="legend negative">Like-for-like median</span></div>
+            <div id="trait-low-list" class="rank-list"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-title"><h3>Rising traits</h3><span class="legend positive">Premium change vs prior window</span></div>
+            <div id="trait-rising-list" class="rank-list"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-title"><h3>Falling traits</h3><span class="legend negative">Premium change vs prior window</span></div>
+            <div id="trait-falling-list" class="rank-list"></div>
+          </article>
+        </div>
+
+        <article class="panel table-panel trait-table-panel">
+          <div class="panel-title">
+            <div><h3>All qualifying traits</h3><span class="legend">Select a trait for strength and item breakdowns</span></div>
+            <span id="trait-table-caption" class="legend"></span>
+          </div>
+          <div class="table-scroll">
+            <table class="trait-table">
+              <thead><tr><th>Trait</th><th>Sales</th><th>Median price</th><th>Adjusted premium</th><th>Typical strength</th><th>Momentum</th><th>Confidence</th></tr></thead>
+              <tbody id="trait-table"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <section id="trait-detail" class="trait-detail hidden">
+          <div class="section-heading">
+            <div><p class="eyebrow">TRAIT DRILL-DOWN</p><h2 id="trait-detail-name">Selected trait</h2></div>
+          </div>
+          <div id="trait-detail-stats" class="metric-grid compact"></div>
+          <div class="trait-detail-grid">
+            <article class="panel table-panel">
+              <div class="panel-title"><h3>Premium by trait strength</h3><span class="legend">Five-point value bands</span></div>
+              <div class="table-scroll"><table><thead><tr><th>Strength</th><th>Sales</th><th>Median</th><th>Adjusted premium</th></tr></thead><tbody id="trait-strength-table"></tbody></table></div>
+            </article>
+            <article class="panel table-panel">
+              <div class="panel-title"><h3>Top contributing items</h3><span class="legend">Not a raw-price ranking</span></div>
+              <div class="table-scroll"><table><thead><tr><th>Item</th><th>Sales</th><th>Median</th><th>Adjusted premium</th></tr></thead><tbody id="trait-items-table"></tbody></table></div>
+            </article>
+          </div>
+        </section>
+
+        <article class="panel table-panel trait-pair-panel">
+          <div class="panel-title"><h3>Double-bonus combinations</h3><span id="trait-pair-caption" class="legend"></span></div>
+          <div class="table-scroll">
+            <table><thead><tr><th>Combination</th><th>Sales</th><th>Items</th><th>Median price</th><th>Adjusted premium</th><th>Confidence</th></tr></thead><tbody id="trait-pair-table"></tbody></table>
+          </div>
+        </article>
       </section>
 
       <section id="tab-explorer" class="tab-panel">

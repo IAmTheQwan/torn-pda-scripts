@@ -47,6 +47,12 @@ The importer keeps independent forward and backward checkpoints in D1. Forward r
 
 A manual sync button invokes the same resumable process and the same storage guardrail. Status records include raw, normalized, dropped, newly inserted, oldest stored, and completion values so an upstream API or normalization problem is visible instead of appearing to be a successful empty sync.
 
+## Trait intelligence
+
+The Trait Intelligence view ranks weapon and armor bonuses from finished sales. It does not compare raw prices across unlike equipment. For each sale, it first builds a comparable group from the same Torn item ID, rarity, single- or double-bonus count, and five-point quality band. Groups need at least four sales. The sale's adjusted premium is its percentage difference from that group's median; trait and double-bonus rankings use the median of those adjusted premiums.
+
+The dashboard reports sales count, comparable-data coverage, bonus-strength bands, contributing item types, and movement against the immediately preceding equal-length window. Traits are consolidated by normalized title because Torn can use different internal bonus IDs for the same named effect. When a period exceeds the Worker's analysis cap, a stable listing-ID sample is taken across the full period rather than truncating the period to only its newest records. Confidence labels depend on comparable sales, item breadth, and coverage. A trait's adjusted premium is an observed association, not a guaranteed causal bonus value or profit forecast. Finished-sale counts also are not sell-through rates because Torn's public Auction House API does not expose expired unsold listings.
+
 ## Local development
 
 1. Copy `.dev.vars.example` to `.dev.vars` and fill the local values.

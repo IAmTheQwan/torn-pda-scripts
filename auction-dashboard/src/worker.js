@@ -5,6 +5,7 @@ const JSON_HEADERS = {
 };
 
 const MAX_TREND_SAMPLE = 5000;
+const MAX_TRAIT_PERIOD_SAMPLE = 15000;
 const MAX_SNAPSHOT_ITEMS = 120;
 const SNAPSHOT_RETENTION_SECONDS = 7 * 24 * 60 * 60;
 const ACCESS_JWKS_TTL_MS = 60 * 60 * 1000;
@@ -49,6 +50,7 @@ async function routeApi(request, env, ctx, url) {
     if (request.method === "GET" && url.pathname === "/api/status") return getStatus(env);
     if (request.method === "GET" && url.pathname === "/api/items") return searchItems(env, url);
     if (request.method === "GET" && url.pathname === "/api/overview") return getOverview(env, url);
+    if (request.method === "GET" && url.pathname === "/api/traits") return getTraitIntelligence(env, url);
     if (request.method === "GET" && url.pathname === "/api/snapshots") return getSnapshots(env);
     if (request.method === "GET" && url.pathname === "/api/admin/device-tokens") return listDeviceTokens(env);
     if (request.method === "POST" && url.pathname === "/api/admin/device-tokens") return createDeviceToken(request, env);
@@ -196,6 +198,326 @@ async function getOverview(env, url) {
     lowerPriced: rows.slice().sort((a, b) => a.recentAverage - b.recentAverage).slice(0, 12),
     higherPriced: rows.slice().sort((a, b) => b.recentAverage - a.recentAverage).slice(0, 12)
   });
+}
+
+async function getTraitIntelligence(env, url) {
+  const days = clampInteger(url.searchParams.get("days"), 7, 365, 90);
+  const minSales = clampInteger(url.searchParams.get("minSales"), 3, 100, 10);
+  const requestedBonusCount = String(url.searchParams.get("bonusCount") || "all").toLowerCase();
+  const bonusCount = ["all", "single", "double"].includes(requestedBonusCount) ? requestedBonusCount : "all";
+  const now = Math.floor(Date.now() / 1000);
+  const recentStart = now - days * 24 * 60 * 60;
+  const priorStart = recentStart - days * 24 * 60 * 60;
+  const bonusCountClause = bonusCount === "single"
+    ? "AND bonus2_id IS NULL AND COALESCE(bonus2_title, '') = ''"
+    : bonusCount === "double"
+      ? "AND (bonus2_id IS NOT NULL OR COALESCE(bonus2_title, '') <> '')"
+      : "";
+  const countSql = `
+    SELECT COUNT(*) AS total
+    FROM auction_sales
+    WHERE ended_at >= ?1 AND ended_at < ?2
+      AND (bonus1_id IS NOT NULL OR COALESCE(bonus1_title, '') <> '')
+      ${bonusCountClause}
+  `;
+  const [recentCountResult, priorCountResult] = await env.DB.batch([
+    env.DB.prepare(countSql).bind(recentStart, now + 1),
+    env.DB.prepare(countSql).bind(priorStart, recentStart)
+  ]);
+  const recentAvailable = Number(recentCountResult.results?.[0]?.total || 0);
+  const priorAvailable = Number(priorCountResult.results?.[0]?.total || 0);
+  const select = `
+    SELECT listing_id, ended_at, item_id, item_name, rarity, quality, price,
+           bonus1_id, bonus1_title, bonus1_value,
+           bonus2_id, bonus2_title, bonus2_value
+    FROM auction_sales
+    WHERE ended_at >= ?1 AND ended_at < ?2
+      AND (bonus1_id IS NOT NULL OR COALESCE(bonus1_title, '') <> '')
+      ${bonusCountClause}
+    ORDER BY ABS((((listing_id % 2147483647) * 1103515245 + 12345) % 2147483647))
+    LIMIT ?3
+  `;
+  const [recentResult, priorResult] = await env.DB.batch([
+    env.DB.prepare(select).bind(recentStart, now + 1, MAX_TRAIT_PERIOD_SAMPLE),
+    env.DB.prepare(select).bind(priorStart, recentStart, MAX_TRAIT_PERIOD_SAMPLE)
+  ]);
+
+  return json(buildTraitIntelligence(
+    recentResult.results || [],
+    priorResult.results || [],
+    { days, minSales, bonusCount, sampleLimit: MAX_TRAIT_PERIOD_SAMPLE, recentAvailable, priorAvailable }
+  ));
+}
+
+export function buildTraitIntelligence(recentRows, priorRows, options = {}) {
+  const days = clampInteger(options.days, 1, 3650, 90);
+  const minSales = clampInteger(options.minSales, 1, 1000, 10);
+  const bonusCount = ["all", "single", "double"].includes(options.bonusCount) ? options.bonusCount : "all";
+  const sampleLimit = clampInteger(options.sampleLimit, 100, 100000, MAX_TRAIT_PERIOD_SAMPLE);
+  const recentAvailable = Math.max(recentRows.length, Number(options.recentAvailable) || 0);
+  const priorAvailable = Math.max(priorRows.length, Number(options.priorAvailable) || 0);
+  const recent = buildTraitPeriod(recentRows, bonusCount);
+  const prior = buildTraitPeriod(priorRows, bonusCount);
+  const traits = [];
+
+  for (const [key, current] of recent.traits) {
+    if (current.sales < minSales) continue;
+    const previous = prior.traits.get(key);
+    const trendChange = previous && previous.comparableSales >= minSales && current.adjustedPremium !== null && previous.adjustedPremium !== null
+      ? roundOne(current.adjustedPremium - previous.adjustedPremium)
+      : null;
+    traits.push({
+      ...current,
+      priorSales: previous?.sales || 0,
+      priorAdjustedPremium: previous?.adjustedPremium ?? null,
+      trendChange
+    });
+  }
+
+  const comparableTraits = traits.filter(row => row.adjustedPremium !== null && row.comparableSales >= minSales);
+  const risingTraits = comparableTraits.filter(row => row.trendChange !== null && row.trendChange > 0.05);
+  const fallingTraits = comparableTraits.filter(row => row.trendChange !== null && row.trendChange < -0.05);
+  const pairMinimum = Math.max(3, Math.ceil(minSales / 2));
+  const pairs = [...recent.pairs.values()]
+    .filter(row => row.sales >= pairMinimum && row.adjustedPremium !== null)
+    .sort((left, right) => right.adjustedPremium - left.adjustedPremium || right.sales - left.sales);
+
+  return {
+    days,
+    minSales,
+    pairMinimum,
+    bonusCount,
+    sampled: {
+      limit: sampleLimit,
+      recent: recentRows.length,
+      prior: priorRows.length,
+      recentAvailable,
+      priorAvailable,
+      recentLimitReached: recentAvailable > recentRows.length,
+      priorLimitReached: priorAvailable > priorRows.length,
+      eligibleRecentSales: recent.eligibleSales,
+      comparableRecentSales: recent.comparableSales,
+      coveragePercent: recent.eligibleSales ? roundOne(recent.comparableSales / recent.eligibleSales * 100) : 0
+    },
+    traits: traits.sort((left, right) => left.title.localeCompare(right.title)),
+    valuable: comparableTraits.slice().sort((left, right) => right.adjustedPremium - left.adjustedPremium || right.sales - left.sales).slice(0, 12),
+    discounted: comparableTraits.slice().sort((left, right) => left.adjustedPremium - right.adjustedPremium || right.sales - left.sales).slice(0, 12),
+    rising: risingTraits.sort((left, right) => right.trendChange - left.trendChange || right.sales - left.sales).slice(0, 12),
+    falling: fallingTraits.sort((left, right) => left.trendChange - right.trendChange || right.sales - left.sales).slice(0, 12),
+    pairs
+  };
+}
+
+function buildTraitPeriod(rows, bonusCountFilter) {
+  const normalized = (rows || []).map(normalizeTraitSale).filter(Boolean).filter(sale => {
+    if (bonusCountFilter === "single") return sale.bonuses.length === 1;
+    if (bonusCountFilter === "double") return sale.bonuses.length === 2;
+    return true;
+  });
+  const baselinePrices = new Map();
+
+  for (const sale of normalized) {
+    const key = traitComparableKey(sale);
+    if (!baselinePrices.has(key)) baselinePrices.set(key, []);
+    baselinePrices.get(key).push(sale.price);
+  }
+
+  const baselines = new Map();
+  for (const [key, prices] of baselinePrices) {
+    if (prices.length >= 4) baselines.set(key, percentile(prices, 0.5));
+  }
+
+  const traitAggregates = new Map();
+  const pairAggregates = new Map();
+  let comparableSales = 0;
+
+  for (const sale of normalized) {
+    const baseline = baselines.get(traitComparableKey(sale));
+    const premium = baseline > 0 ? (sale.price / baseline - 1) * 100 : null;
+    if (premium !== null) comparableSales += 1;
+
+    for (const bonus of sale.bonuses) {
+      const key = traitIdentity(bonus);
+      if (!traitAggregates.has(key)) traitAggregates.set(key, newTraitAggregate(key, bonus));
+      addTraitObservation(traitAggregates.get(key), sale, bonus, premium);
+    }
+
+    if (sale.bonuses.length === 2) {
+      const ordered = sale.bonuses.slice().sort((left, right) => traitIdentity(left).localeCompare(traitIdentity(right)));
+      const key = ordered.map(traitIdentity).join("+");
+      if (!pairAggregates.has(key)) pairAggregates.set(key, newPairAggregate(key, ordered));
+      addPairObservation(pairAggregates.get(key), sale, premium);
+    }
+  }
+
+  return {
+    eligibleSales: normalized.length,
+    comparableSales,
+    traits: new Map([...traitAggregates].map(([key, aggregate]) => [key, finalizeTraitAggregate(aggregate)])),
+    pairs: new Map([...pairAggregates].map(([key, aggregate]) => [key, finalizePairAggregate(aggregate)]))
+  };
+}
+
+function normalizeTraitSale(row) {
+  const price = Number(row?.price);
+  const itemId = optionalInteger(row?.item_id);
+  if (!Number.isFinite(price) || price <= 0 || itemId === null) return null;
+  const bonuses = [
+    { id: optionalInteger(row.bonus1_id), title: cleanText(row.bonus1_title, 60), value: optionalNumber(row.bonus1_value) },
+    { id: optionalInteger(row.bonus2_id), title: cleanText(row.bonus2_title, 60), value: optionalNumber(row.bonus2_value) }
+  ].filter(bonus => bonus.id !== null || bonus.title);
+  if (!bonuses.length) return null;
+  return {
+    listingId: optionalInteger(row.listing_id),
+    itemId,
+    itemName: cleanText(row.item_name, 100) || `Item ${itemId}`,
+    rarity: cleanText(row.rarity, 20).toLowerCase() || "unknown",
+    quality: optionalNumber(row.quality),
+    price,
+    bonuses
+  };
+}
+
+function traitComparableKey(sale) {
+  const qualityBand = sale.quality === null ? "unknown" : String(Math.floor(sale.quality / 5) * 5);
+  return `${sale.itemId}|${sale.rarity}|${sale.bonuses.length}|${qualityBand}`;
+}
+
+function traitIdentity(bonus) {
+  const title = cleanText(bonus.title, 60).toLowerCase();
+  return title ? `name:${title}` : `id:${bonus.id}`;
+}
+
+function newTraitAggregate(key, bonus) {
+  return {
+    key,
+    id: bonus.id,
+    title: bonus.title || `Bonus ${bonus.id}`,
+    prices: [],
+    premiums: [],
+    values: [],
+    items: new Map(),
+    valueBands: new Map()
+  };
+}
+
+function addTraitObservation(aggregate, sale, bonus, premium) {
+  aggregate.prices.push(sale.price);
+  if (premium !== null) aggregate.premiums.push(premium);
+  if (bonus.value !== null) aggregate.values.push(bonus.value);
+
+  if (!aggregate.items.has(sale.itemId)) {
+    aggregate.items.set(sale.itemId, { itemId: sale.itemId, itemName: sale.itemName, prices: [], premiums: [] });
+  }
+  const item = aggregate.items.get(sale.itemId);
+  item.prices.push(sale.price);
+  if (premium !== null) item.premiums.push(premium);
+
+  if (bonus.value !== null) {
+    const start = Math.floor(bonus.value / 5) * 5;
+    if (!aggregate.valueBands.has(start)) aggregate.valueBands.set(start, { start, prices: [], premiums: [], values: [] });
+    const band = aggregate.valueBands.get(start);
+    band.prices.push(sale.price);
+    band.values.push(bonus.value);
+    if (premium !== null) band.premiums.push(premium);
+  }
+}
+
+function finalizeTraitAggregate(aggregate) {
+  const sales = aggregate.prices.length;
+  const comparableSales = aggregate.premiums.length;
+  const coveragePercent = sales ? roundOne(comparableSales / sales * 100) : 0;
+  const itemRows = [...aggregate.items.values()].map(item => ({
+    itemId: item.itemId,
+    itemName: item.itemName,
+    sales: item.prices.length,
+    medianPrice: roundInteger(percentile(item.prices, 0.5)),
+    adjustedPremium: roundNullable(percentile(item.premiums, 0.5))
+  })).sort((left, right) => right.sales - left.sales || Math.abs(right.adjustedPremium || 0) - Math.abs(left.adjustedPremium || 0)).slice(0, 8);
+  const valueBands = [...aggregate.valueBands.values()].map(band => ({
+    start: band.start,
+    end: band.start + 4.99,
+    sales: band.prices.length,
+    typicalValue: roundNullable(percentile(band.values, 0.5)),
+    medianPrice: roundInteger(percentile(band.prices, 0.5)),
+    adjustedPremium: roundNullable(percentile(band.premiums, 0.5))
+  })).sort((left, right) => left.start - right.start);
+
+  return {
+    key: aggregate.key,
+    id: aggregate.id,
+    title: aggregate.title,
+    sales,
+    comparableSales,
+    itemCount: aggregate.items.size,
+    medianPrice: roundInteger(percentile(aggregate.prices, 0.5)),
+    adjustedPremium: roundNullable(percentile(aggregate.premiums, 0.5)),
+    premiumP25: roundNullable(percentile(aggregate.premiums, 0.25)),
+    premiumP75: roundNullable(percentile(aggregate.premiums, 0.75)),
+    typicalValue: roundNullable(percentile(aggregate.values, 0.5)),
+    minimumValue: roundNullable(percentile(aggregate.values, 0)),
+    maximumValue: roundNullable(percentile(aggregate.values, 1)),
+    coveragePercent,
+    confidence: traitConfidence(comparableSales, aggregate.items.size, coveragePercent),
+    valueBands,
+    topItems: itemRows
+  };
+}
+
+function newPairAggregate(key, bonuses) {
+  return {
+    key,
+    titles: bonuses.map(bonus => bonus.title || `Bonus ${bonus.id}`),
+    ids: bonuses.map(bonus => bonus.id),
+    prices: [],
+    premiums: [],
+    items: new Set()
+  };
+}
+
+function addPairObservation(aggregate, sale, premium) {
+  aggregate.prices.push(sale.price);
+  aggregate.items.add(sale.itemId);
+  if (premium !== null) aggregate.premiums.push(premium);
+}
+
+function finalizePairAggregate(aggregate) {
+  const sales = aggregate.prices.length;
+  const comparableSales = aggregate.premiums.length;
+  const coveragePercent = sales ? roundOne(comparableSales / sales * 100) : 0;
+  return {
+    key: aggregate.key,
+    titles: aggregate.titles,
+    ids: aggregate.ids,
+    label: aggregate.titles.join(" + "),
+    sales,
+    comparableSales,
+    itemCount: aggregate.items.size,
+    medianPrice: roundInteger(percentile(aggregate.prices, 0.5)),
+    adjustedPremium: roundNullable(percentile(aggregate.premiums, 0.5)),
+    premiumP25: roundNullable(percentile(aggregate.premiums, 0.25)),
+    premiumP75: roundNullable(percentile(aggregate.premiums, 0.75)),
+    coveragePercent,
+    confidence: traitConfidence(comparableSales, aggregate.items.size, coveragePercent)
+  };
+}
+
+function traitConfidence(comparableSales, itemCount, coveragePercent) {
+  if (comparableSales >= 40 && itemCount >= 5 && coveragePercent >= 80) return "high";
+  if (comparableSales >= 12 && itemCount >= 3 && coveragePercent >= 60) return "medium";
+  return "low";
+}
+
+function roundOne(value) {
+  return Math.round(Number(value) * 10) / 10;
+}
+
+function roundNullable(value) {
+  return value === null || !Number.isFinite(Number(value)) ? null : roundOne(value);
+}
+
+function roundInteger(value) {
+  return value === null || !Number.isFinite(Number(value)) ? null : Math.round(Number(value));
 }
 
 async function getItemTrends(env, url, itemId) {

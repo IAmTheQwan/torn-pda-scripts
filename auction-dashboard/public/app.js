@@ -1,6 +1,9 @@
 const state = {
   selectedItemId: null,
   selectedItemName: "",
+  selectedTraitKey: null,
+  traitData: null,
+  traitsLoaded: false,
   status: null
 };
 
@@ -28,12 +31,16 @@ function openTab(name) {
   document.querySelectorAll(".tab").forEach(button => button.classList.toggle("active", button.dataset.tab === name));
   document.querySelectorAll(".tab-panel").forEach(panel => panel.classList.toggle("active", panel.id === `tab-${name}`));
   if (name === "current") refreshSnapshots();
+  if (name === "traits" && !state.traitsLoaded) refreshTraits();
   if (name === "setup") refreshTokens();
 }
 
 function bindActions() {
   document.getElementById("overview-days").addEventListener("change", refreshOverview);
   document.getElementById("overview-volume").addEventListener("change", refreshOverview);
+  document.getElementById("trait-days").addEventListener("change", refreshTraits);
+  document.getElementById("trait-volume").addEventListener("change", refreshTraits);
+  document.getElementById("trait-bonus-count").addEventListener("change", refreshTraits);
   document.getElementById("sync-now").addEventListener("click", runSync);
   document.getElementById("refresh-snapshots").addEventListener("click", refreshSnapshots);
   document.getElementById("refresh-item").addEventListener("click", refreshSelectedItem);
@@ -100,6 +107,148 @@ async function refreshOverview() {
       document.getElementById(id).innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
     });
   }
+}
+
+async function refreshTraits() {
+  const days = document.getElementById("trait-days").value;
+  const minSales = document.getElementById("trait-volume").value;
+  const bonusCount = document.getElementById("trait-bonus-count").value;
+  const listIds = ["trait-high-list", "trait-low-list", "trait-rising-list", "trait-falling-list"];
+  listIds.forEach(id => { document.getElementById(id).innerHTML = '<div class="empty">Analyzing like-for-like sales…</div>'; });
+  document.getElementById("trait-table").innerHTML = '<tr><td colspan="7" class="empty">Loading trait intelligence…</td></tr>';
+  document.getElementById("trait-pair-table").innerHTML = '<tr><td colspan="6" class="empty">Loading combinations…</td></tr>';
+
+  try {
+    const data = await api(`/api/traits?days=${days}&minSales=${minSales}&bonusCount=${bonusCount}`);
+    state.traitData = data;
+    state.traitsLoaded = true;
+    renderTraitStats(data);
+    renderTraitRankList("trait-high-list", data.valuable, "premium");
+    renderTraitRankList("trait-low-list", data.discounted, "premium");
+    renderTraitRankList("trait-rising-list", data.rising, "trend");
+    renderTraitRankList("trait-falling-list", data.falling, "trend");
+    renderTraitTable(data);
+    renderTraitPairs(data);
+    if (state.selectedTraitKey) {
+      const selected = data.traits.find(row => row.key === state.selectedTraitKey);
+      if (selected) renderTraitDetail(selected);
+      else document.getElementById("trait-detail").classList.add("hidden");
+    }
+  } catch (error) {
+    state.traitsLoaded = false;
+    listIds.forEach(id => { document.getElementById(id).innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; });
+    document.getElementById("trait-table").innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(error.message)}</td></tr>`;
+    document.getElementById("trait-pair-table").innerHTML = `<tr><td colspan="6" class="empty">${escapeHtml(error.message)}</td></tr>`;
+  }
+}
+
+function renderTraitStats(data) {
+  const sampledWindow = data.sampled.recentLimitReached
+    ? `${number.format(data.sampled.recent)} of ${number.format(data.sampled.recentAvailable)} uniformly sampled`
+    : "complete window sample";
+  const stats = [
+    ["Qualifying traits", number.format(data.traits.length), `${number.format(data.sampled.eligibleRecentSales)} bonus sales analyzed`],
+    ["Comparable coverage", `${Number(data.sampled.coveragePercent).toFixed(1)}%`, `${number.format(data.sampled.comparableRecentSales)} sales with like-for-like baselines`],
+    ["Analysis window", `${data.days} days`, `Compared with the prior ${data.days} days`],
+    ["Sample status", number.format(data.sampled.recent), sampledWindow]
+  ];
+  document.getElementById("trait-stat-grid").innerHTML = stats.map(([label, value, note], index) => `
+    <article class="metric-card ${["accent-purple", "accent-green", "accent-blue", "accent-gold"][index]}">
+      <span>${label}</span><strong>${value}</strong><small>${note}</small>
+    </article>
+  `).join("");
+}
+
+function renderTraitRankList(id, rows, mode) {
+  const root = document.getElementById(id);
+  if (!rows?.length) {
+    root.innerHTML = '<div class="empty">No traits meet this confidence and volume threshold.</div>';
+    return;
+  }
+  root.innerHTML = rows.map(row => {
+    const metric = mode === "trend" ? row.trendChange : row.adjustedPremium;
+    const value = mode === "trend" ? signedPoints(metric) : signedPercent(metric);
+    return `<div class="rank-row trait-rank-row">
+      <button type="button" data-trait-key="${escapeAttr(row.key)}">${escapeHtml(row.title)}</button>
+      <span>${number.format(row.sales)} sales · ${escapeHtml(row.confidence)}</span>
+      <strong class="${Number(metric) >= 0 ? "positive" : "negative"}">${value}</strong>
+    </div>`;
+  }).join("");
+  root.querySelectorAll("button[data-trait-key]").forEach(button => button.addEventListener("click", () => selectTrait(button.dataset.traitKey)));
+}
+
+function renderTraitTable(data) {
+  const rows = data.traits.slice().sort((left, right) => (right.adjustedPremium ?? -Infinity) - (left.adjustedPremium ?? -Infinity) || right.sales - left.sales);
+  setText("trait-table-caption", `${rows.length} traits · minimum ${data.minSales} sales`);
+  document.getElementById("trait-table").innerHTML = rows.length ? rows.map(row => `
+    <tr>
+      <td><button class="table-link" type="button" data-trait-key="${escapeAttr(row.key)}"><strong>${escapeHtml(row.title)}</strong></button><small>${number.format(row.itemCount)} item types · ${Number(row.coveragePercent).toFixed(0)}% coverage</small></td>
+      <td>${number.format(row.sales)}</td>
+      <td>${formatMoney(row.medianPrice)}</td>
+      <td class="${Number(row.adjustedPremium) >= 0 ? "positive" : "negative"}"><strong>${signedPercent(row.adjustedPremium)}</strong><small>${formatPremiumRange(row)}</small></td>
+      <td>${formatTraitStrength(row)}</td>
+      <td class="${row.trendChange === null ? "" : Number(row.trendChange) >= 0 ? "positive" : "negative"}">${signedPoints(row.trendChange)}</td>
+      <td><span class="confidence ${escapeAttr(row.confidence)}">${escapeHtml(row.confidence)}</span></td>
+    </tr>
+  `).join("") : '<tr><td colspan="7" class="empty">No traits meet this sales threshold.</td></tr>';
+  document.querySelectorAll("#trait-table button[data-trait-key]").forEach(button => button.addEventListener("click", () => selectTrait(button.dataset.traitKey)));
+}
+
+function renderTraitPairs(data) {
+  const rows = (data.pairs || []).slice(0, 30);
+  setText("trait-pair-caption", `Minimum ${data.pairMinimum} sales · double-bonus listings only`);
+  document.getElementById("trait-pair-table").innerHTML = rows.length ? rows.map(row => `
+    <tr>
+      <td>${row.titles.map(title => `<span class="bonus-chip">${escapeHtml(title)}</span>`).join("")}</td>
+      <td>${number.format(row.sales)}</td>
+      <td>${number.format(row.itemCount)}</td>
+      <td>${formatMoney(row.medianPrice)}</td>
+      <td class="${Number(row.adjustedPremium) >= 0 ? "positive" : "negative"}"><strong>${signedPercent(row.adjustedPremium)}</strong><small>${formatPremiumRange(row)}</small></td>
+      <td><span class="confidence ${escapeAttr(row.confidence)}">${escapeHtml(row.confidence)}</span></td>
+    </tr>
+  `).join("") : '<tr><td colspan="6" class="empty">No double-bonus combinations meet this threshold.</td></tr>';
+}
+
+function selectTrait(key) {
+  const trait = state.traitData?.traits?.find(row => row.key === key);
+  if (!trait) return;
+  state.selectedTraitKey = key;
+  renderTraitDetail(trait);
+  document.getElementById("trait-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderTraitDetail(trait) {
+  setText("trait-detail-name", trait.title);
+  document.getElementById("trait-detail").classList.remove("hidden");
+  const stats = [
+    ["Finished sales", number.format(trait.sales), `${number.format(trait.itemCount)} item types`],
+    ["Median sale", formatMoney(trait.medianPrice), formatTraitStrength(trait)],
+    ["Adjusted premium", signedPercent(trait.adjustedPremium), formatPremiumRange(trait)],
+    ["Confidence", trait.confidence, `${Number(trait.coveragePercent).toFixed(0)}% comparable coverage`]
+  ];
+  document.getElementById("trait-detail-stats").innerHTML = stats.map(([label, value, note], index) => `
+    <article class="metric-card ${["accent-blue", "accent-gold", "accent-green", "accent-purple"][index]}"><span>${label}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(note)}</small></article>
+  `).join("");
+  document.getElementById("trait-strength-table").innerHTML = trait.valueBands?.length ? trait.valueBands.map(band => `
+    <tr><td>${band.start.toFixed(0)}–${band.end.toFixed(0)}%</td><td>${number.format(band.sales)}</td><td>${formatMoney(band.medianPrice)}</td><td class="${Number(band.adjustedPremium) >= 0 ? "positive" : "negative"}">${signedPercent(band.adjustedPremium)}</td></tr>
+  `).join("") : '<tr><td colspan="4" class="empty">No numeric trait-strength values in this sample.</td></tr>';
+  document.getElementById("trait-items-table").innerHTML = trait.topItems?.length ? trait.topItems.map(item => `
+    <tr><td><button class="table-link" type="button" data-item-id="${item.itemId}" data-item-name="${escapeAttr(item.itemName)}">${escapeHtml(item.itemName)}</button></td><td>${number.format(item.sales)}</td><td>${formatMoney(item.medianPrice)}</td><td class="${Number(item.adjustedPremium) >= 0 ? "positive" : "negative"}">${signedPercent(item.adjustedPremium)}</td></tr>
+  `).join("") : '<tr><td colspan="4" class="empty">No item breakdown is available.</td></tr>';
+  document.querySelectorAll("#trait-items-table button[data-item-id]").forEach(button => button.addEventListener("click", () => selectItem(button.dataset.itemId, button.dataset.itemName)));
+}
+
+function formatTraitStrength(row) {
+  if (row.typicalValue === null || row.typicalValue === undefined) return "—";
+  const range = row.minimumValue !== null && row.maximumValue !== null && row.minimumValue !== row.maximumValue
+    ? ` (${Number(row.minimumValue).toFixed(0)}–${Number(row.maximumValue).toFixed(0)}%)`
+    : "";
+  return `${Number(row.typicalValue).toFixed(1)}%${range}`;
+}
+
+function formatPremiumRange(row) {
+  if (row.premiumP25 === null || row.premiumP75 === null) return "No reliable spread";
+  return `middle 50%: ${signedPercent(row.premiumP25)} to ${signedPercent(row.premiumP75)}`;
 }
 
 function renderRankList(id, rows, mode) {
@@ -349,6 +498,12 @@ function signedPercent(value) {
   if (value === null || !Number.isFinite(Number(value))) return "—";
   const amount = Number(value);
   return `${amount >= 0 ? "+" : ""}${amount.toFixed(1)}%`;
+}
+
+function signedPoints(value) {
+  if (value === null || !Number.isFinite(Number(value))) return "—";
+  const amount = Number(value);
+  return `${amount >= 0 ? "+" : ""}${amount.toFixed(1)} pp`;
 }
 
 function formatStats(sale) {

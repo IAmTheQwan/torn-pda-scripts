@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   bonusSignature,
+  buildTraitIntelligence,
   hasValidAccessIdentity,
   historicalAuctionUrl,
   incrementalAuctionUrl,
@@ -67,6 +68,82 @@ test("bonusSignature is stable across bonus order", () => {
   const two = bonusSignature([{ id: 2, title: "A" }, { id: 9, title: "B" }]);
   assert.equal(one, "2+9");
   assert.equal(one, two);
+});
+
+test("trait intelligence normalizes premiums within comparable item and quality groups", () => {
+  const sale = (listingId, price, title, endedAt, value = 20) => ({
+    listing_id: listingId,
+    ended_at: endedAt,
+    item_id: 400,
+    item_name: "Test Rifle",
+    rarity: "yellow",
+    quality: 52,
+    price,
+    bonus1_id: title === "Power" ? 1 : 2,
+    bonus1_title: title,
+    bonus1_value: value,
+    bonus2_id: null,
+    bonus2_title: null,
+    bonus2_value: null
+  });
+  const recent = [
+    sale(1, 200, "Power", 2_000_000),
+    sale(2, 220, "Power", 1_999_900, 25),
+    sale(3, 100, "Steady", 1_999_800, 10),
+    sale(4, 110, "Steady", 1_999_700, 15)
+  ];
+  const prior = [
+    sale(5, 140, "Power", 1_900_000),
+    sale(6, 150, "Power", 1_899_900, 25),
+    sale(7, 100, "Steady", 1_899_800, 10),
+    sale(8, 110, "Steady", 1_899_700, 15)
+  ];
+  const result = buildTraitIntelligence(recent, prior, {
+    days: 30,
+    minSales: 2,
+    bonusCount: "single",
+    sampleLimit: 100
+  });
+
+  assert.equal(result.traits.length, 2);
+  assert.equal(result.valuable[0].title, "Power");
+  assert.equal(result.discounted[0].title, "Steady");
+  assert.ok(result.valuable[0].adjustedPremium > 0);
+  assert.ok(result.discounted[0].adjustedPremium < 0);
+  assert.ok(result.valuable[0].trendChange > 0);
+  assert.equal(result.rising[0].title, "Power");
+  assert.equal(result.falling[0].title, "Steady");
+  assert.equal(result.valuable[0].valueBands.length, 2);
+  assert.equal(result.sampled.coveragePercent, 100);
+});
+
+test("trait intelligence keeps double-bonus combinations separate", () => {
+  const rows = [1, 2, 3, 4].map(index => ({
+    listing_id: index,
+    ended_at: 2_000_000 - index,
+    item_id: 500,
+    item_name: "Test Blade",
+    rarity: "orange",
+    quality: 44,
+    price: 100 + index,
+    bonus1_id: index % 2 ? 10 : 11,
+    bonus1_title: "Bleed",
+    bonus1_value: 20,
+    bonus2_id: 20,
+    bonus2_title: "Warlord",
+    bonus2_value: 15
+  }));
+  const result = buildTraitIntelligence(rows, [], {
+    days: 30,
+    minSales: 3,
+    bonusCount: "double",
+    sampleLimit: 100
+  });
+
+  assert.equal(result.pairs.length, 1);
+  assert.equal(result.pairs[0].label, "Bleed + Warlord");
+  assert.equal(result.pairs[0].sales, 4);
+  assert.equal(result.traits.length, 2);
 });
 
 test("safeTornApiUrl accepts only the official auction endpoint", () => {
