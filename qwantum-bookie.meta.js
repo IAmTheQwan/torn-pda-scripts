@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.17.4
-// @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
+// @version      1.18.0
+// @description  Floating PDA panel for Torn bookie tracking plus an optional Chain Report goal assistant
 // @author       TheQwan
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest

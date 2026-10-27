@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.17.4
-// @description  Floating PDA panel for Torn bookie open bets, daily totals, net, and batch tracking
+// @version      1.18.0
+// @description  Floating PDA panel for Torn bookie tracking plus an optional Chain Report goal assistant
 // @author       TheQwan
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
@@ -46,6 +46,7 @@
     let batchFeatureEnabled = JSON.parse(localStorage.getItem('tbp_batch_feature_enabled') || 'false');
     let footballStatsExpanded = JSON.parse(localStorage.getItem('tbp_football_stats_expanded') ?? 'true');
     let hockeyStatsExpanded = JSON.parse(localStorage.getItem('tbp_hockey_stats_expanded') ?? 'false');
+    let chainAssistantEnabled = JSON.parse(localStorage.getItem('tbp_chain_assistant_enabled') || 'false');
 
     let batches = JSON.parse(localStorage.getItem('tbp_batches') || '[]');
     let selectedBatchId = localStorage.getItem('tbp_selected_batch_id') || '';
@@ -60,7 +61,7 @@
     let indexedLoanLedger = { version: 1, payments: [] };
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.17.4';
+    const SCRIPT_VERSION = '1.18.0';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -131,6 +132,17 @@
     const styles = `
         #tbp-container { position:fixed; top:20px; right:20px; width:390px; background:#1a1a1a; color:#eee; border:1px solid #444; z-index:999999!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
         #tbp-container.minimized { width:38px; height:38px; cursor:pointer; display:flex; align-items:center; justify-content:center; background:#007bff; border:1px solid #0056b3; border-radius:4px; font-weight:bold; font-size:20px; }
+        #tca-container { position:fixed; top:64px; right:20px; width:360px; max-width:calc(100vw - 40px); background:#1a1a1a; color:#eee; border:1px solid #444; z-index:999998!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
+        #tca-container.tca-minimized { width:38px; height:38px; cursor:pointer; display:flex; align-items:center; justify-content:center; border-radius:4px; font-weight:bold; font-size:20px; touch-action:manipulation; }
+        #tca-container.tca-gray { background:#666; border-color:#888; }
+        #tca-container.tca-red { background:#a83232; border-color:#df6262; }
+        #tca-container.tca-green { background:#238c45; border-color:#48c96c; }
+        .tca-header { background:#252525; padding:10px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #333; }
+        .tca-tabs { display:flex; background:#222; border-bottom:1px solid #333; }
+        .tca-tab { flex:1; padding:10px 3px; text-align:center; cursor:pointer; font-size:10px; text-transform:uppercase; color:#888; }
+        .tca-tab.active { background:#333; border-bottom:2px solid #4da3ff; color:#fff; font-weight:bold; }
+        .tca-content { padding:12px; max-height:420px; overflow-y:auto; scrollbar-width:thin; }
+        .tca-self-row { outline:3px solid #6ef7ff!important; outline-offset:-3px!important; box-shadow:inset 6px 0 0 #25a9c2, 0 0 12px rgba(110,247,255,.78)!important; background-color:rgba(37,169,194,.16)!important; }
         .tbp-header { background:#252525; padding:10px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #333; }
         .tbp-header-title { display:flex; align-items:center; gap:8px; }
         .tbp-scan-btn { padding:4px 7px; font-size:10px; background:#705b00; color:#fff; border:1px solid #a98a00; }
@@ -293,6 +305,7 @@
         localStorage.setItem('tbp_batch_feature_enabled', JSON.stringify(batchFeatureEnabled));
         localStorage.setItem('tbp_football_stats_expanded', JSON.stringify(footballStatsExpanded));
         localStorage.setItem('tbp_hockey_stats_expanded', JSON.stringify(hockeyStatsExpanded));
+        localStorage.setItem('tbp_chain_assistant_enabled', JSON.stringify(chainAssistantEnabled));
         localStorage.setItem('tbp_batches', JSON.stringify(batches));
         localStorage.setItem('tbp_selected_batch_id', selectedBatchId);
     }
@@ -4724,6 +4737,7 @@
             container.className = 'minimized';
             container.innerHTML = 'B';
             container.onclick = () => {
+                minimizeChainAssistant();
                 isMinimized = false;
                 container.onclick = null;
                 saveData();
@@ -5140,6 +5154,16 @@ ${safeJson(log.raw)}
                     <input type="checkbox" id="tbp-batch-feature-enabled" ${batchFeatureEnabled ? 'checked' : ''}>
                 </div>
                 <div class="tbp-muted" style="margin-top:7px;">Leave off to show green, yellow, orange, and all-other Football records from the configured scan date.</div>
+            </div>
+
+            <div class="tbp-card">
+                <div class="tbp-row">
+                    <span>Enable Chain Report assistant</span>
+                    <input type="checkbox" id="tbp-chain-assistant-enabled" ${chainAssistantEnabled ? 'checked' : ''}>
+                </div>
+                <div class="tbp-muted" style="margin-top:7px;">
+                    Shows a C below the Bookie button on Torn Chain Report pages. It reads only the report already loaded in the page, highlights your row, and compares your hits and score with your saved goals. One cached Torn basic-profile request may be used to identify your player ID; you can override it in Chain Settings.
+                </div>
             </div>
 
             <div class="tbp-card">
@@ -5647,7 +5671,9 @@ ${safeJson(log.raw)}
                 footballAutoScoreEnabled = document.getElementById('tbp-football-auto-score-enabled').checked;
                 footballScoreDayStartHour = Math.max(0, Math.min(23, Math.floor(Number(document.getElementById('tbp-football-score-day-start-hour').value || 8))));
                 batchFeatureEnabled = document.getElementById('tbp-batch-feature-enabled').checked;
+                chainAssistantEnabled = document.getElementById('tbp-chain-assistant-enabled').checked;
                 saveData();
+                syncChainAssistant();
                 scheduleFootballAutoScores();
                 if (!footballScanEnabled) clearFootballHighlights();
                 if (!footballOddsHistoryEnabled) {
@@ -5866,6 +5892,426 @@ document.addEventListener('click', async e => {
         scheduleVisibleFootballResultCapture();
     }
 
+    // Chain Assistant is intentionally isolated from Bookie data and scans. It reads
+    // only the Chain Report that Torn has already rendered in the current page.
+    const CHAIN_SETTINGS_KEY = 'tbp_chain_assistant_settings';
+    const CHAIN_MINIMIZED_KEY = 'tbp_chain_assistant_minimized';
+    const CHAIN_TAB_KEY = 'tbp_chain_assistant_tab';
+    const chainContainer = document.createElement('div');
+    chainContainer.id = 'tca-container';
+
+    function loadChainSettings() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(CHAIN_SETTINGS_KEY) || '{}');
+            return {
+                requiredHits: Math.max(0, Number(saved.requiredHits || 0)),
+                requiredScore: Math.max(0, Number(saved.requiredScore || 0)),
+                goalRule: saved.goalRule === 'either' ? 'either' : 'both',
+                playerId: String(saved.playerId || '').replace(/\D/g, ''),
+                playerName: String(saved.playerName || '').trim()
+            };
+        } catch {
+            return { requiredHits: 0, requiredScore: 0, goalRule: 'both', playerId: '', playerName: '' };
+        }
+    }
+
+    let chainSettings = loadChainSettings();
+    let chainMinimized = JSON.parse(localStorage.getItem(CHAIN_MINIMIZED_KEY) ?? 'true');
+    let chainActiveTab = localStorage.getItem(CHAIN_TAB_KEY) === 'settings' ? 'settings' : 'status';
+    let chainReportStats = { found: false, hits: 0, score: 0, name: '', error: 'Waiting for the Chain Report.' };
+    let chainObserver = null;
+    let chainScanTimer = null;
+    let chainIdentityAttempted = false;
+    let chainLastUrl = location.href;
+
+    function saveChainSettings() {
+        localStorage.setItem(CHAIN_SETTINGS_KEY, JSON.stringify(chainSettings));
+        localStorage.setItem(CHAIN_MINIMIZED_KEY, JSON.stringify(chainMinimized));
+        localStorage.setItem(CHAIN_TAB_KEY, chainActiveTab);
+    }
+
+    function isChainReportPage() {
+        const params = new URLSearchParams(location.search);
+        return /\/war\.php$/i.test(location.pathname) && params.get('step') === 'chainreport' && Boolean(params.get('chainID'));
+    }
+
+    function ensureChainContainerMounted() {
+        if (document.body && !chainContainer.isConnected) document.body.appendChild(chainContainer);
+    }
+
+    function clearChainHighlight() {
+        document.querySelectorAll('.tca-self-row').forEach(row => row.classList.remove('tca-self-row'));
+    }
+
+    function parseChainNumber(value) {
+        const text = String(value || '').replace(/\u00a0/g, ' ').trim();
+        const match = text.match(/([+-]?(?:\d[\d,]*\.?\d*|\.\d+))\s*([kmb])?/i);
+        if (!match) return NaN;
+        const multiplier = { k: 1e3, m: 1e6, b: 1e9 }[String(match[2] || '').toLowerCase()] || 1;
+        return Number(match[1].replace(/,/g, '')) * multiplier;
+    }
+
+    function normalizedChainLabel(value) {
+        return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    }
+
+    function findChainProfileLink() {
+        const links = Array.from(document.querySelectorAll('a[href*="profiles.php?XID="], a[href*="profiles.php?xid="]'));
+        if (chainSettings.playerId) {
+            const idPattern = new RegExp(`[?&]XID=${chainSettings.playerId}(?:&|$)`, 'i');
+            const exact = links.find(link => idPattern.test(link.getAttribute('href') || link.href || ''));
+            if (exact) return exact;
+        }
+
+        const targetName = normalizedChainLabel(chainSettings.playerName);
+        if (!targetName) return null;
+        return links.find(link => normalizedChainLabel(link.textContent) === targetName) || null;
+    }
+
+    function findChainReportRow(profileLink) {
+        if (!profileLink) return null;
+        const candidates = [];
+        let node = profileLink.parentElement;
+        for (let depth = 0; node && node !== document.body && depth < 9; depth += 1, node = node.parentElement) {
+            const profileCount = node.querySelectorAll('a[href*="profiles.php?XID="], a[href*="profiles.php?xid="]').length;
+            const text = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+            if (profileCount > 2 || text.length < 3 || text.length > 1500) continue;
+            const className = String(node.className || '').toLowerCase();
+            let score = 0;
+            if (node.tagName === 'TR') score += 100;
+            if (node.tagName === 'LI') score += 55;
+            if (/(?:^|[-_ ])(?:row|member|user|participant|report)(?:$|[-_ ])/i.test(className)) score += 45;
+            if (node.children.length >= 3) score += 25;
+            if (profileCount === 1) score += 20;
+            score -= depth * 2;
+            candidates.push({ node, score });
+        }
+        candidates.sort((a, b) => b.score - a.score);
+        return candidates[0]?.node || profileLink.closest('tr, li') || profileLink.parentElement;
+    }
+
+    function metricFromSemanticElements(row, labels) {
+        const labelPattern = new RegExp(`(?:^|[-_ ])(?:${labels.join('|')})(?:$|[-_ ])`, 'i');
+        const elements = Array.from(row.querySelectorAll('[data-label], [aria-label], [title], [class]'));
+        for (const element of elements) {
+            const descriptor = [
+                element.getAttribute('data-label'),
+                element.getAttribute('aria-label'),
+                element.getAttribute('title'),
+                element.className
+            ].filter(Boolean).join(' ');
+            if (!labelPattern.test(String(descriptor).replace(/[^a-z0-9]+/gi, ' '))) continue;
+            const value = parseChainNumber(element.textContent);
+            if (Number.isFinite(value)) return value;
+        }
+        return NaN;
+    }
+
+    function metricFromTableHeaders(row, labels) {
+        if (row.tagName !== 'TR') return NaN;
+        const table = row.closest('table');
+        const headers = Array.from(table?.querySelectorAll('thead th') || []);
+        if (!headers.length) return NaN;
+        const index = headers.findIndex(header => {
+            const label = normalizedChainLabel(header.textContent);
+            return labels.some(candidate => label === candidate || label.includes(candidate));
+        });
+        if (index < 0) return NaN;
+        const cells = Array.from(row.children);
+        return parseChainNumber(cells[index]?.textContent);
+    }
+
+    function metricFromLabeledText(row, labels) {
+        const text = String(row.textContent || '').replace(/\s+/g, ' ').trim();
+        for (const label of labels) {
+            const after = text.match(new RegExp(`${label}s?\\s*[:=-]?\\s*([\\d,.]+)`, 'i'));
+            if (after) return parseChainNumber(after[1]);
+            const before = text.match(new RegExp(`([\\d,.]+)\\s*${label}s?`, 'i'));
+            if (before) return parseChainNumber(before[1]);
+        }
+        return NaN;
+    }
+
+    function metricFromDirectCells(row, useLast) {
+        const values = Array.from(row.children)
+            .map(cell => ({ cell, value: parseChainNumber(cell.textContent) }))
+            .filter(item => Number.isFinite(item.value) && !item.cell.querySelector('a[href*="profiles.php?XID="], a[href*="profiles.php?xid="]'))
+            .map(item => item.value);
+        if (!values.length) return NaN;
+        return useLast ? values[values.length - 1] : values[0];
+    }
+
+    function readChainMetric(row, labels, useLastFallback) {
+        const semantic = metricFromSemanticElements(row, labels);
+        if (Number.isFinite(semantic)) return semantic;
+        const table = metricFromTableHeaders(row, labels);
+        if (Number.isFinite(table)) return table;
+        const labeled = metricFromLabeledText(row, labels);
+        if (Number.isFinite(labeled)) return labeled;
+        return metricFromDirectCells(row, useLastFallback);
+    }
+
+    function chainGoalState() {
+        const hasHitsGoal = chainSettings.requiredHits > 0;
+        const hasScoreGoal = chainSettings.requiredScore > 0;
+        if (!hasHitsGoal && !hasScoreGoal) return { state: 'gray', met: false, configured: false };
+        if (!chainReportStats.found) return { state: 'gray', met: false, configured: true };
+
+        const results = [];
+        if (hasHitsGoal) results.push(chainReportStats.hits >= chainSettings.requiredHits);
+        if (hasScoreGoal) results.push(chainReportStats.score >= chainSettings.requiredScore);
+        const met = chainSettings.goalRule === 'either' && results.length > 1
+            ? results.some(Boolean)
+            : results.every(Boolean);
+        return { state: met ? 'green' : 'red', met, configured: true };
+    }
+
+    function scanChainReport() {
+        if (!chainAssistantEnabled || !isChainReportPage()) return;
+        clearChainHighlight();
+        const profileLink = findChainProfileLink();
+        const row = findChainReportRow(profileLink);
+        let next;
+        if (!chainSettings.playerId && !chainSettings.playerName) {
+            next = { found: false, hits: 0, score: 0, name: '', error: 'Your Torn identity is not known yet. Add your Torn ID in Settings.' };
+        } else if (!profileLink || !row) {
+            next = { found: false, hits: 0, score: 0, name: chainSettings.playerName, error: 'Your row is not currently visible in this Chain Report.' };
+        } else {
+            const hits = readChainMetric(row, ['hits', 'hit', 'attacks', 'attack'], false);
+            const score = readChainMetric(row, ['score', 'respect', 'respect gained'], true);
+            row.classList.add('tca-self-row');
+            next = {
+                found: Number.isFinite(hits) && Number.isFinite(score),
+                hits: Number.isFinite(hits) ? hits : 0,
+                score: Number.isFinite(score) ? score : 0,
+                name: String(profileLink.textContent || chainSettings.playerName || '').replace(/\s+/g, ' ').trim(),
+                error: Number.isFinite(hits) && Number.isFinite(score)
+                    ? ''
+                    : 'Your row was highlighted, but the Hits/Score columns could not be read safely.'
+            };
+        }
+
+        const changed = JSON.stringify(next) !== JSON.stringify(chainReportStats);
+        chainReportStats = next;
+        if (changed || chainMinimized) renderChainAssistant();
+    }
+
+    function scheduleChainReportScan() {
+        if (chainScanTimer) clearTimeout(chainScanTimer);
+        chainScanTimer = setTimeout(() => {
+            chainScanTimer = null;
+            scanChainReport();
+        }, 300);
+    }
+
+    function ensureChainIdentity() {
+        if (chainSettings.playerId || chainIdentityAttempted) {
+            scheduleChainReportScan();
+            return;
+        }
+        chainIdentityAttempted = true;
+        if (!apiKey) {
+            scheduleChainReportScan();
+            return;
+        }
+
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: `https://api.torn.com/user/?selections=basic&key=${encodeURIComponent(apiKey)}`,
+            timeout: 15000,
+            onload: response => {
+                try {
+                    const data = JSON.parse(response.responseText || '{}');
+                    if (!data.error && data.player_id) {
+                        chainSettings.playerId = String(data.player_id);
+                        chainSettings.playerName = String(data.name || '').trim();
+                        saveChainSettings();
+                    }
+                } catch (error) {
+                    console.warn('Chain Assistant could not parse Torn identity.', error);
+                }
+                scheduleChainReportScan();
+            },
+            onerror: scheduleChainReportScan,
+            ontimeout: scheduleChainReportScan
+        });
+    }
+
+    function chainGoalRow(label, current, target) {
+        if (!(target > 0)) return `<div class="tbp-row"><span>${label}</span><span>${num(current)} · no goal</span></div>`;
+        const remaining = Math.max(0, target - current);
+        return `
+            <div class="tbp-row"><span>${label}</span><span>${num(current)} / ${num(target)}</span></div>
+            <div class="tbp-row"><span>${label} remaining</span><span class="${remaining ? 'tbp-loss' : 'tbp-win'}">${remaining ? num(remaining) : 'Met'}</span></div>
+        `;
+    }
+
+    function renderChainStatus() {
+        const goal = chainGoalState();
+        const ruleText = chainSettings.requiredHits > 0 && chainSettings.requiredScore > 0
+            ? (chainSettings.goalRule === 'either' ? 'Meet either goal' : 'Meet both goals')
+            : 'Meet the configured goal';
+        return `
+            <div class="tbp-card" style="border-left:6px solid ${goal.state === 'green' ? '#28a745' : goal.state === 'red' ? '#d9534f' : '#777'};">
+                <div style="font-weight:bold; font-size:14px; margin-bottom:4px;">${goal.configured ? (chainReportStats.found ? (goal.met ? 'Quota met' : 'Quota still due') : 'Report data unavailable') : 'No quota configured'}</div>
+                <div class="tbp-muted">${escapeHtml(chainReportStats.name || chainSettings.playerName || `Torn ID ${chainSettings.playerId || 'not set'}`)}</div>
+            </div>
+            ${chainReportStats.found ? `
+                <div class="tbp-card">
+                    ${chainGoalRow('Hits', chainReportStats.hits, chainSettings.requiredHits)}
+                    ${chainGoalRow('Score', chainReportStats.score, chainSettings.requiredScore)}
+                    <div class="tbp-muted" style="margin-top:8px;">${ruleText}</div>
+                </div>
+            ` : `<div class="tbp-card"><div class="tbp-muted">${escapeHtml(chainReportStats.error)}</div></div>`}
+            <button class="tbp-btn tbp-btn-primary" id="tca-refresh" style="width:100%;">Refresh From Report</button>
+            <div class="tbp-muted" style="margin-top:8px;">The assistant reads this loaded Chain Report only. It does not poll the chain API.</div>
+        `;
+    }
+
+    function renderChainSettings() {
+        return `
+            <label class="tbp-muted">HITS REQUIRED</label>
+            <input type="number" min="0" step="1" id="tca-required-hits" class="tbp-input" value="${chainSettings.requiredHits}">
+            <label class="tbp-muted">SCORE REQUIRED</label>
+            <input type="number" min="0" step="0.01" id="tca-required-score" class="tbp-input" value="${chainSettings.requiredScore}">
+            <label class="tbp-muted">WHEN BOTH GOALS ARE SET</label>
+            <select id="tca-goal-rule" class="tbp-select">
+                <option value="both" ${chainSettings.goalRule === 'both' ? 'selected' : ''}>Both must be met</option>
+                <option value="either" ${chainSettings.goalRule === 'either' ? 'selected' : ''}>Either may be met</option>
+            </select>
+            <label class="tbp-muted">YOUR TORN ID</label>
+            <input type="text" inputmode="numeric" id="tca-player-id" class="tbp-input" value="${escapeHtml(chainSettings.playerId)}" placeholder="Auto-detected from your Torn API key">
+            <div class="tbp-muted" style="margin-bottom:10px;">The ID is cached locally so your report row can be highlighted without repeated API calls. Enter it here if automatic detection cannot use your restricted API key. Score also recognizes Torn's Respect column.</div>
+            <button class="tbp-btn tbp-btn-success" id="tca-save-settings" style="width:100%;">Save Chain Settings</button>
+        `;
+    }
+
+    function attachChainEvents() {
+        document.querySelectorAll('.tca-tab').forEach(tab => {
+            tab.onclick = () => {
+                chainActiveTab = tab.dataset.tcaTab;
+                saveChainSettings();
+                renderChainAssistant();
+            };
+        });
+
+        const hideButton = document.getElementById('tca-hide');
+        if (hideButton) hideButton.onclick = event => {
+            event.stopPropagation();
+            chainMinimized = true;
+            saveChainSettings();
+            renderChainAssistant();
+        };
+
+        const refreshButton = document.getElementById('tca-refresh');
+        if (refreshButton) refreshButton.onclick = scanChainReport;
+
+        const saveButton = document.getElementById('tca-save-settings');
+        if (saveButton) saveButton.onclick = () => {
+            const hits = Number(document.getElementById('tca-required-hits')?.value || 0);
+            const score = Number(document.getElementById('tca-required-score')?.value || 0);
+            if (!Number.isFinite(hits) || hits < 0 || !Number.isFinite(score) || score < 0) {
+                alert('Hits and score goals must be 0 or greater. Use 0 to disable a goal.');
+                return;
+            }
+            const priorId = chainSettings.playerId;
+            chainSettings.requiredHits = Math.floor(hits);
+            chainSettings.requiredScore = score;
+            chainSettings.goalRule = document.getElementById('tca-goal-rule')?.value === 'either' ? 'either' : 'both';
+            chainSettings.playerId = String(document.getElementById('tca-player-id')?.value || '').replace(/\D/g, '');
+            if (chainSettings.playerId !== priorId) chainSettings.playerName = '';
+            saveChainSettings();
+            chainIdentityAttempted = false;
+            ensureChainIdentity();
+            renderChainAssistant();
+        };
+    }
+
+    function renderChainAssistant() {
+        if (!chainAssistantEnabled || !isChainReportPage()) {
+            clearChainHighlight();
+            chainContainer.remove();
+            return;
+        }
+        ensureChainContainerMounted();
+        const goal = chainGoalState();
+        if (chainMinimized) {
+            chainContainer.className = `tca-minimized tca-${goal.state}`;
+            chainContainer.textContent = 'C';
+            chainContainer.title = !goal.configured
+                ? 'Chain Assistant: no goals configured'
+                : chainReportStats.found
+                    ? `Chain Assistant: ${goal.met ? 'goal met' : 'goal not met'}`
+                    : 'Chain Assistant: report data unavailable';
+            chainContainer.onclick = () => {
+                chainMinimized = false;
+                if (!isMinimized) {
+                    isMinimized = true;
+                    saveData();
+                    render();
+                }
+                saveChainSettings();
+                renderChainAssistant();
+            };
+            return;
+        }
+
+        chainContainer.onclick = null;
+        chainContainer.className = '';
+        chainContainer.innerHTML = `
+            <div class="tca-header">
+                <div style="display:flex; align-items:center; gap:7px;"><strong>Chain Assistant</strong><span class="tbp-muted" style="font-size:9px;">v${SCRIPT_VERSION}</span></div>
+                <button class="tbp-btn" id="tca-hide" style="background:transparent; color:#888;">_</button>
+            </div>
+            <div class="tca-tabs">
+                <div class="tca-tab ${chainActiveTab === 'status' ? 'active' : ''}" data-tca-tab="status">Status</div>
+                <div class="tca-tab ${chainActiveTab === 'settings' ? 'active' : ''}" data-tca-tab="settings">Settings</div>
+            </div>
+            <div class="tca-content">${chainActiveTab === 'settings' ? renderChainSettings() : renderChainStatus()}</div>
+        `;
+        attachChainEvents();
+    }
+
+    function startChainObserver() {
+        if (chainObserver || !document.body) return;
+        chainObserver = new MutationObserver(mutations => {
+            if (!chainAssistantEnabled || !isChainReportPage()) return;
+            const pageChanged = mutations.some(mutation => {
+                const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+                return target && !target.closest('#tbp-container, #tca-container');
+            });
+            if (pageChanged) scheduleChainReportScan();
+        });
+        chainObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+    }
+
+    function syncChainAssistant() {
+        if (!chainAssistantEnabled || !isChainReportPage()) {
+            clearChainHighlight();
+            chainContainer.remove();
+            return;
+        }
+        ensureChainContainerMounted();
+        startChainObserver();
+        renderChainAssistant();
+        ensureChainIdentity();
+    }
+
+    function minimizeChainAssistant() {
+        if (!chainContainer.isConnected || chainMinimized) return;
+        chainMinimized = true;
+        saveChainSettings();
+        renderChainAssistant();
+    }
+
+    window.addEventListener('popstate', syncChainAssistant);
+    window.addEventListener('hashchange', syncChainAssistant);
+    setInterval(() => {
+        if (location.href === chainLastUrl) return;
+        chainLastUrl = location.href;
+        syncChainAssistant();
+    }, 1000);
+
     let panelStarted = false;
 
     function startBookiePanel() {
@@ -5883,6 +6329,7 @@ document.addEventListener('click', async e => {
             loadFootballBookmarks();
             scheduleFootballBookmarkRestore();
             if (footballOddsHistoryEnabled) scheduleFootballHistoryExpiry(loadFootballOddsHistory());
+            syncChainAssistant();
         } catch (error) {
             console.error('Bookie Panel failed to start.', error);
             isMinimized = true;
