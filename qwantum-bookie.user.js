@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.18.1
+// @version      1.18.2
 // @description  Floating PDA panel for Torn bookie tracking plus an optional Chain Report goal assistant
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -54,7 +54,7 @@ let lastLoadStatus = 'Not loaded yet.';
 let indexedManualBetLinks = {};
 let indexedLoanLedger = { version: 1, payments: [] };
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.18.1';
+const SCRIPT_VERSION = '1.18.2';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -133,9 +133,9 @@ const styles = `
 .tca-tab { flex:1; padding:10px 3px; text-align:center; cursor:pointer; font-size:10px; text-transform:uppercase; color:#888; }
 .tca-tab.active { background:#333; border-bottom:2px solid #4da3ff; color:#fff; font-weight:bold; }
 .tca-content { padding:12px; max-height:420px; overflow-y:auto; scrollbar-width:thin; }
-.tca-self-row { outline:4px solid #00e5ff!important; outline-offset:-4px!important; box-shadow:inset 7px 0 0 #00b8d4, 0 0 14px rgba(0,229,255,.9)!important; background-color:rgba(0,184,212,.22)!important; }
-.tca-self-row > * { background-color:rgba(0,184,212,.16)!important; }
-.tca-self-link { outline:3px solid #fff176!important; outline-offset:2px!important; filter:drop-shadow(0 0 5px rgba(255,241,118,.95)); }
+.tca-self-row { position:relative!important; outline:4px solid #00e5ff!important; outline-offset:-4px!important; box-shadow:inset 7px 0 0 #00b8d4, 0 0 14px rgba(0,229,255,.9)!important; background-color:rgba(0,184,212,.28)!important; }
+.tca-self-row > *, .tca-self-cell { background-color:rgba(0,184,212,.32)!important; box-shadow:inset 0 2px 0 #00e5ff, inset 0 -2px 0 #00e5ff!important; }
+.tca-self-link { outline:3px solid #fff176!important; outline-offset:2px!important; filter:drop-shadow(0 0 5px rgba(255,241,118,.95)); background-color:rgba(255,241,118,.2)!important; }
 .tbp-header { background:#252525; padding:10px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #333; }
 .tbp-header-title { display:flex; align-items:center; gap:8px; }
 .tbp-scan-btn { padding:4px 7px; font-size:10px; background:#705b00; color:#fff; border:1px solid #a98a00; }
@@ -5428,40 +5428,92 @@ if (document.body && !chainContainer.isConnected) document.body.appendChild(chai
 }
 function clearChainHighlight() {
 document.querySelectorAll('.tca-self-row').forEach(row => row.classList.remove('tca-self-row'));
+document.querySelectorAll('.tca-self-cell').forEach(cell => cell.classList.remove('tca-self-cell'));
 document.querySelectorAll('.tca-self-link').forEach(link => link.classList.remove('tca-self-link'));
 chainRowHighlighted = false;
 }
 function normalizedChainLabel(value) {
 return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
+const CHAIN_PROFILE_SELECTOR = [
+'a[href*="profiles.php"]',
+'a[href*="XID="]',
+'a[href*="xid="]',
+'[data-user-id]',
+'[data-userid]',
+'[data-player-id]',
+'[data-playerid]'
+].join(',');
+function chainElementPlayerId(element) {
+if (!(element instanceof Element)) return '';
+const attributes = [
+element.getAttribute('data-user-id'),
+element.getAttribute('data-userid'),
+element.getAttribute('data-player-id'),
+element.getAttribute('data-playerid')
+];
+const href = element.getAttribute('href') || '';
+try { attributes.push(decodeURIComponent(href)); } catch { attributes.push(href); }
+for (const value of attributes) {
+const plain = String(value || '').trim();
+if (/^\d+$/.test(plain)) return plain;
+const match = plain.match(/(?:XID|userID|user2ID|playerID)=([0-9]+)/i);
+if (match) return match[1];
+}
+return '';
+}
+function chainElementLabel(element) {
+if (!(element instanceof Element)) return '';
+const image = element.matches('img') ? element : element.querySelector('img');
+return normalizedChainLabel([
+element.textContent,
+element.getAttribute('aria-label'),
+element.getAttribute('title'),
+image?.getAttribute('alt'),
+image?.getAttribute('title')
+].filter(Boolean).join(' '));
+}
 function findChainProfileLink() {
-const links = Array.from(document.querySelectorAll('a[href*="profiles.php?XID="], a[href*="profiles.php?xid="]'));
+const candidates = Array.from(document.querySelectorAll(CHAIN_PROFILE_SELECTOR))
+.filter(element => !element.closest('#tbp-container, #tca-container'));
 if (chainSettings.playerId) {
-const idPattern = new RegExp(`[?&]XID=${chainSettings.playerId}(?:&|$)`, 'i');
-const exact = links.find(link => idPattern.test(link.getAttribute('href') || link.href || ''));
+const exact = candidates.find(element => chainElementPlayerId(element) === chainSettings.playerId);
 if (exact) return exact;
 }
-const targetName = normalizedChainLabel(chainSettings.playerName);
+const targetName = normalizedChainLabel(chainSettings.playerName || chainReportStats.name);
 if (!targetName) return null;
-return links.find(link => normalizedChainLabel(link.textContent) === targetName) || null;
+const namedCandidate = candidates.find(element => {
+const label = chainElementLabel(element);
+return label === targetName || label.startsWith(`${targetName} `) || label.endsWith(` ${targetName}`);
+});
+if (namedCandidate) return namedCandidate;
+return Array.from(document.querySelectorAll('a, [title], [aria-label], img[alt]'))
+.filter(element => !element.closest('#tbp-container, #tca-container'))
+.find(element => chainElementLabel(element) === targetName) || null;
 }
 function findChainReportRow(profileLink) {
 if (!profileLink) return null;
 const tableRow = profileLink.closest('tr');
 if (tableRow) return tableRow;
 const candidates = [];
-let node = profileLink.parentElement;
-for (let depth = 0; node && node !== document.body && depth < 9; depth += 1, node = node.parentElement) {
-const profileCount = node.querySelectorAll('a[href*="profiles.php?XID="], a[href*="profiles.php?xid="]').length;
+let node = profileLink;
+for (let depth = 0; node && node !== document.body && depth < 12; depth += 1, node = node.parentElement) {
+const profileCount = node.matches(CHAIN_PROFILE_SELECTOR) ? 1 : node.querySelectorAll(CHAIN_PROFILE_SELECTOR).length;
 const text = String(node.textContent || '').replace(/\s+/g, ' ').trim();
-if (profileCount > 2 || text.length < 3 || text.length > 1500) continue;
+if (profileCount > 2 || text.length > 2000) continue;
 const className = String(node.className || '').toLowerCase();
+const siblingRows = node.parentElement
+? Array.from(node.parentElement.children).filter(sibling => sibling.querySelector?.(CHAIN_PROFILE_SELECTOR)).length
+: 0;
 let score = 0;
 if (node.tagName === 'TR') score += 100;
-if (node.tagName === 'LI') score += 55;
+if (node.getAttribute('role') === 'row') score += 90;
+if (node.tagName === 'LI') score += 65;
 if (/(?:^|[-_ ])(?:row|member|user|participant|report)(?:$|[-_ ])/i.test(className)) score += 45;
-if (node.children.length >= 3) score += 25;
-if (profileCount === 1) score += 20;
+if (node.children.length >= 5) score += 35;
+else if (node.children.length >= 3) score += 20;
+if (profileCount === 1) score += 25;
+if (siblingRows >= 2) score += Math.min(100, 45 + siblingRows * 5);
 score -= depth * 2;
 candidates.push({ node, score });
 }
@@ -5497,6 +5549,8 @@ return;
 }
 profileLink.classList.add('tca-self-link');
 row.classList.add('tca-self-row');
+Array.from(row.children).forEach(cell => cell.classList.add('tca-self-cell'));
+row.querySelectorAll('td, [role="cell"], [class*="cell"]').forEach(cell => cell.classList.add('tca-self-cell'));
 chainRowHighlighted = true;
 if (!wasHighlighted && !chainMinimized) renderChainAssistant();
 }
