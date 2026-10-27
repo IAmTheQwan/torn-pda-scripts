@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.18.0
+// @version      1.18.1
 // @description  Floating PDA panel for Torn bookie tracking plus an optional Chain Report goal assistant
 // @author       TheQwan
 // @match        https://www.torn.com/*

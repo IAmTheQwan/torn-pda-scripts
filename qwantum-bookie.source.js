@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.18.0
+// @version      1.18.1
 // @description  Floating PDA panel for Torn bookie tracking plus an optional Chain Report goal assistant
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -61,7 +61,7 @@
     let indexedLoanLedger = { version: 1, payments: [] };
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.18.0';
+    const SCRIPT_VERSION = '1.18.1';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -142,7 +142,9 @@
         .tca-tab { flex:1; padding:10px 3px; text-align:center; cursor:pointer; font-size:10px; text-transform:uppercase; color:#888; }
         .tca-tab.active { background:#333; border-bottom:2px solid #4da3ff; color:#fff; font-weight:bold; }
         .tca-content { padding:12px; max-height:420px; overflow-y:auto; scrollbar-width:thin; }
-        .tca-self-row { outline:3px solid #6ef7ff!important; outline-offset:-3px!important; box-shadow:inset 6px 0 0 #25a9c2, 0 0 12px rgba(110,247,255,.78)!important; background-color:rgba(37,169,194,.16)!important; }
+        .tca-self-row { outline:4px solid #00e5ff!important; outline-offset:-4px!important; box-shadow:inset 7px 0 0 #00b8d4, 0 0 14px rgba(0,229,255,.9)!important; background-color:rgba(0,184,212,.22)!important; }
+        .tca-self-row > * { background-color:rgba(0,184,212,.16)!important; }
+        .tca-self-link { outline:3px solid #fff176!important; outline-offset:2px!important; filter:drop-shadow(0 0 5px rgba(255,241,118,.95)); }
         .tbp-header { background:#252525; padding:10px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #333; }
         .tbp-header-title { display:flex; align-items:center; gap:8px; }
         .tbp-scan-btn { padding:4px 7px; font-size:10px; background:#705b00; color:#fff; border:1px solid #a98a00; }
@@ -282,6 +284,7 @@
         if (panelMountObserver || !document.documentElement) return;
         panelMountObserver = new MutationObserver(() => {
             if (!styleSheet.isConnected || !container.isConnected) ensurePanelMounted();
+            if (chainAssistantEnabled && !chainContainer.isConnected) ensureChainContainerMounted();
         });
         panelMountObserver.observe(document.documentElement, { childList: true, subtree: true });
     }
@@ -5162,7 +5165,7 @@ ${safeJson(log.raw)}
                     <input type="checkbox" id="tbp-chain-assistant-enabled" ${chainAssistantEnabled ? 'checked' : ''}>
                 </div>
                 <div class="tbp-muted" style="margin-top:7px;">
-                    Shows a C below the Bookie button on Torn Chain Report pages. It reads only the report already loaded in the page, highlights your row, and compares your hits and score with your saved goals. One cached Torn basic-profile request may be used to identify your player ID; you can override it in Chain Settings.
+                    Shows a persistent C below the Bookie button on every Torn page. It uses Torn's chain-report API for your hits and respect score, while the loaded Chain Report page is used to highlight your row. Requests are manual or cache-limited; there is no repeating poll.
                 </div>
             </div>
 
@@ -5892,11 +5895,14 @@ document.addEventListener('click', async e => {
         scheduleVisibleFootballResultCapture();
     }
 
-    // Chain Assistant is intentionally isolated from Bookie data and scans. It reads
-    // only the Chain Report that Torn has already rendered in the current page.
+    // Chain Assistant is intentionally isolated from Bookie data and scans. Torn's
+    // API supplies the totals; the current Chain Report DOM is used only to highlight
+    // the user's row. This avoids guessing unlabeled table columns.
     const CHAIN_SETTINGS_KEY = 'tbp_chain_assistant_settings';
     const CHAIN_MINIMIZED_KEY = 'tbp_chain_assistant_minimized';
     const CHAIN_TAB_KEY = 'tbp_chain_assistant_tab';
+    const CHAIN_REPORT_CACHE_KEY = 'tbp_chain_assistant_report_cache';
+    const CHAIN_REPORT_CACHE_MS = 2 * 60 * 1000;
     const chainContainer = document.createElement('div');
     chainContainer.id = 'tca-container';
 
@@ -5908,20 +5914,25 @@ document.addEventListener('click', async e => {
                 requiredScore: Math.max(0, Number(saved.requiredScore || 0)),
                 goalRule: saved.goalRule === 'either' ? 'either' : 'both',
                 playerId: String(saved.playerId || '').replace(/\D/g, ''),
-                playerName: String(saved.playerName || '').trim()
+                playerName: String(saved.playerName || '').trim(),
+                apiKey: String(saved.apiKey || '').trim()
             };
         } catch {
-            return { requiredHits: 0, requiredScore: 0, goalRule: 'both', playerId: '', playerName: '' };
+            return { requiredHits: 0, requiredScore: 0, goalRule: 'both', playerId: '', playerName: '', apiKey: '' };
         }
     }
 
     let chainSettings = loadChainSettings();
     let chainMinimized = JSON.parse(localStorage.getItem(CHAIN_MINIMIZED_KEY) ?? 'true');
     let chainActiveTab = localStorage.getItem(CHAIN_TAB_KEY) === 'settings' ? 'settings' : 'status';
-    let chainReportStats = { found: false, hits: 0, score: 0, name: '', error: 'Waiting for the Chain Report.' };
+    let chainReportStats = { found: false, loading: false, hits: 0, score: 0, name: '', chainId: '', fetchedAt: 0, error: 'Waiting for the Chain API.' };
     let chainObserver = null;
     let chainScanTimer = null;
     let chainIdentityAttempted = false;
+    let chainIdentityPromise = null;
+    let chainApiPromise = null;
+    let chainApiRequestsThisPage = 0;
+    let chainRowHighlighted = false;
     let chainLastUrl = location.href;
 
     function saveChainSettings() {
@@ -5941,14 +5952,8 @@ document.addEventListener('click', async e => {
 
     function clearChainHighlight() {
         document.querySelectorAll('.tca-self-row').forEach(row => row.classList.remove('tca-self-row'));
-    }
-
-    function parseChainNumber(value) {
-        const text = String(value || '').replace(/\u00a0/g, ' ').trim();
-        const match = text.match(/([+-]?(?:\d[\d,]*\.?\d*|\.\d+))\s*([kmb])?/i);
-        if (!match) return NaN;
-        const multiplier = { k: 1e3, m: 1e6, b: 1e9 }[String(match[2] || '').toLowerCase()] || 1;
-        return Number(match[1].replace(/,/g, '')) * multiplier;
+        document.querySelectorAll('.tca-self-link').forEach(link => link.classList.remove('tca-self-link'));
+        chainRowHighlighted = false;
     }
 
     function normalizedChainLabel(value) {
@@ -5970,6 +5975,8 @@ document.addEventListener('click', async e => {
 
     function findChainReportRow(profileLink) {
         if (!profileLink) return null;
+        const tableRow = profileLink.closest('tr');
+        if (tableRow) return tableRow;
         const candidates = [];
         let node = profileLink.parentElement;
         for (let depth = 0; node && node !== document.body && depth < 9; depth += 1, node = node.parentElement) {
@@ -5990,67 +5997,6 @@ document.addEventListener('click', async e => {
         return candidates[0]?.node || profileLink.closest('tr, li') || profileLink.parentElement;
     }
 
-    function metricFromSemanticElements(row, labels) {
-        const labelPattern = new RegExp(`(?:^|[-_ ])(?:${labels.join('|')})(?:$|[-_ ])`, 'i');
-        const elements = Array.from(row.querySelectorAll('[data-label], [aria-label], [title], [class]'));
-        for (const element of elements) {
-            const descriptor = [
-                element.getAttribute('data-label'),
-                element.getAttribute('aria-label'),
-                element.getAttribute('title'),
-                element.className
-            ].filter(Boolean).join(' ');
-            if (!labelPattern.test(String(descriptor).replace(/[^a-z0-9]+/gi, ' '))) continue;
-            const value = parseChainNumber(element.textContent);
-            if (Number.isFinite(value)) return value;
-        }
-        return NaN;
-    }
-
-    function metricFromTableHeaders(row, labels) {
-        if (row.tagName !== 'TR') return NaN;
-        const table = row.closest('table');
-        const headers = Array.from(table?.querySelectorAll('thead th') || []);
-        if (!headers.length) return NaN;
-        const index = headers.findIndex(header => {
-            const label = normalizedChainLabel(header.textContent);
-            return labels.some(candidate => label === candidate || label.includes(candidate));
-        });
-        if (index < 0) return NaN;
-        const cells = Array.from(row.children);
-        return parseChainNumber(cells[index]?.textContent);
-    }
-
-    function metricFromLabeledText(row, labels) {
-        const text = String(row.textContent || '').replace(/\s+/g, ' ').trim();
-        for (const label of labels) {
-            const after = text.match(new RegExp(`${label}s?\\s*[:=-]?\\s*([\\d,.]+)`, 'i'));
-            if (after) return parseChainNumber(after[1]);
-            const before = text.match(new RegExp(`([\\d,.]+)\\s*${label}s?`, 'i'));
-            if (before) return parseChainNumber(before[1]);
-        }
-        return NaN;
-    }
-
-    function metricFromDirectCells(row, useLast) {
-        const values = Array.from(row.children)
-            .map(cell => ({ cell, value: parseChainNumber(cell.textContent) }))
-            .filter(item => Number.isFinite(item.value) && !item.cell.querySelector('a[href*="profiles.php?XID="], a[href*="profiles.php?xid="]'))
-            .map(item => item.value);
-        if (!values.length) return NaN;
-        return useLast ? values[values.length - 1] : values[0];
-    }
-
-    function readChainMetric(row, labels, useLastFallback) {
-        const semantic = metricFromSemanticElements(row, labels);
-        if (Number.isFinite(semantic)) return semantic;
-        const table = metricFromTableHeaders(row, labels);
-        if (Number.isFinite(table)) return table;
-        const labeled = metricFromLabeledText(row, labels);
-        if (Number.isFinite(labeled)) return labeled;
-        return metricFromDirectCells(row, useLastFallback);
-    }
-
     function chainGoalState() {
         const hasHitsGoal = chainSettings.requiredHits > 0;
         const hasScoreGoal = chainSettings.requiredScore > 0;
@@ -6067,33 +6013,23 @@ document.addEventListener('click', async e => {
     }
 
     function scanChainReport() {
-        if (!chainAssistantEnabled || !isChainReportPage()) return;
+        if (!chainAssistantEnabled) return;
+        const wasHighlighted = chainRowHighlighted;
         clearChainHighlight();
+        if (!isChainReportPage()) {
+            if (wasHighlighted && !chainMinimized) renderChainAssistant();
+            return;
+        }
         const profileLink = findChainProfileLink();
         const row = findChainReportRow(profileLink);
-        let next;
-        if (!chainSettings.playerId && !chainSettings.playerName) {
-            next = { found: false, hits: 0, score: 0, name: '', error: 'Your Torn identity is not known yet. Add your Torn ID in Settings.' };
-        } else if (!profileLink || !row) {
-            next = { found: false, hits: 0, score: 0, name: chainSettings.playerName, error: 'Your row is not currently visible in this Chain Report.' };
-        } else {
-            const hits = readChainMetric(row, ['hits', 'hit', 'attacks', 'attack'], false);
-            const score = readChainMetric(row, ['score', 'respect', 'respect gained'], true);
-            row.classList.add('tca-self-row');
-            next = {
-                found: Number.isFinite(hits) && Number.isFinite(score),
-                hits: Number.isFinite(hits) ? hits : 0,
-                score: Number.isFinite(score) ? score : 0,
-                name: String(profileLink.textContent || chainSettings.playerName || '').replace(/\s+/g, ' ').trim(),
-                error: Number.isFinite(hits) && Number.isFinite(score)
-                    ? ''
-                    : 'Your row was highlighted, but the Hits/Score columns could not be read safely.'
-            };
+        if (!profileLink || !row) {
+            if (wasHighlighted && !chainMinimized) renderChainAssistant();
+            return;
         }
-
-        const changed = JSON.stringify(next) !== JSON.stringify(chainReportStats);
-        chainReportStats = next;
-        if (changed || chainMinimized) renderChainAssistant();
+        profileLink.classList.add('tca-self-link');
+        row.classList.add('tca-self-row');
+        chainRowHighlighted = true;
+        if (!wasHighlighted && !chainMinimized) renderChainAssistant();
     }
 
     function scheduleChainReportScan() {
@@ -6104,37 +6040,186 @@ document.addEventListener('click', async e => {
         }, 300);
     }
 
-    function ensureChainIdentity() {
-        if (chainSettings.playerId || chainIdentityAttempted) {
-            scheduleChainReportScan();
-            return;
+    function chainApiKey() {
+        return chainSettings.apiKey || apiKey;
+    }
+
+    function currentChainId() {
+        if (!isChainReportPage()) return '';
+        return String(new URLSearchParams(location.search).get('chainID') || '').replace(/\D/g, '');
+    }
+
+    function chainApiError(data, fallback) {
+        const error = data?.error;
+        if (!error) return fallback;
+        if (typeof error === 'string') return error;
+        return String(error.error || error.message || fallback);
+    }
+
+    function requestTornV2(path, key) {
+        chainApiRequestsThisPage += 1;
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `https://api.torn.com/v2/${path}${path.includes('?') ? '&' : '?'}comment=BookieChain`,
+                headers: { Authorization: `ApiKey ${key}` },
+                timeout: 15000,
+                onload: response => {
+                    let data;
+                    try {
+                        data = JSON.parse(response.responseText || '{}');
+                    } catch {
+                        reject(new Error('Torn returned an unreadable API response.'));
+                        return;
+                    }
+                    if (response.status < 200 || response.status >= 300 || data.error) {
+                        reject(new Error(chainApiError(data, `Torn API request failed (${response.status || 'unknown status'}).`)));
+                        return;
+                    }
+                    resolve(data);
+                },
+                onerror: () => reject(new Error('Could not reach the Torn API.')),
+                ontimeout: () => reject(new Error('The Torn API request timed out.'))
+            });
+        });
+    }
+
+    function readChainCache() {
+        try {
+            const cached = JSON.parse(localStorage.getItem(CHAIN_REPORT_CACHE_KEY) || 'null');
+            if (!cached || String(cached.playerId || '') !== chainSettings.playerId) return null;
+            const requestedChainId = currentChainId();
+            if (requestedChainId && String(cached.chainId || '') !== requestedChainId) return null;
+            return cached;
+        } catch {
+            return null;
         }
+    }
+
+    function applyChainCache(cached) {
+        if (!cached) return false;
+        chainReportStats = {
+            found: true,
+            loading: false,
+            hits: Number(cached.hits || 0),
+            score: Number(cached.score || 0),
+            name: String(cached.name || chainSettings.playerName || ''),
+            chainId: String(cached.chainId || ''),
+            fetchedAt: Number(cached.fetchedAt || 0),
+            error: '',
+            warning: ''
+        };
+        return true;
+    }
+
+    async function ensureChainIdentity(force = false) {
+        if (chainSettings.playerId) return true;
+        if (chainIdentityPromise) return chainIdentityPromise;
+        if (chainIdentityAttempted && !force) return false;
+        const key = chainApiKey();
+        if (!key) return false;
+
         chainIdentityAttempted = true;
-        if (!apiKey) {
-            scheduleChainReportScan();
-            return;
+        chainIdentityPromise = requestTornV2('user/basic', key)
+            .then(data => {
+                const profile = data?.profile;
+                if (!profile?.id) throw new Error('Torn did not return your player identity.');
+                chainSettings.playerId = String(profile.id);
+                chainSettings.playerName = String(profile.name || '').trim();
+                saveChainSettings();
+                scheduleChainReportScan();
+                return true;
+            })
+            .catch(error => {
+                chainReportStats = {
+                    ...chainReportStats,
+                    loading: false,
+                    error: `Identity lookup failed: ${String(error?.message || error)}`
+                };
+                return false;
+            })
+            .finally(() => {
+                chainIdentityPromise = null;
+            });
+        return chainIdentityPromise;
+    }
+
+    async function fetchChainReport(force = false) {
+        if (!chainAssistantEnabled || chainApiPromise) return chainApiPromise;
+        const key = chainApiKey();
+        if (!key) {
+            chainReportStats = { ...chainReportStats, loading: false, error: 'Add a Chain API key in Chain Settings, or configure a compatible Torn key in Bookie Settings.' };
+            renderChainAssistant();
+            return null;
         }
 
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: `https://api.torn.com/user/?selections=basic&key=${encodeURIComponent(apiKey)}`,
-            timeout: 15000,
-            onload: response => {
-                try {
-                    const data = JSON.parse(response.responseText || '{}');
-                    if (!data.error && data.player_id) {
-                        chainSettings.playerId = String(data.player_id);
-                        chainSettings.playerName = String(data.name || '').trim();
-                        saveChainSettings();
-                    }
-                } catch (error) {
-                    console.warn('Chain Assistant could not parse Torn identity.', error);
+        chainApiPromise = (async () => {
+            const identified = await ensureChainIdentity(force);
+            if (!identified || !chainSettings.playerId) {
+                if (!chainReportStats.error) chainReportStats.error = 'Your Torn ID could not be identified. Enter it in Chain Settings.';
+                renderChainAssistant();
+                return;
+            }
+
+            const cached = readChainCache();
+            if (cached) {
+                applyChainCache(cached);
+                if (!force && Date.now() - Number(cached.fetchedAt || 0) < CHAIN_REPORT_CACHE_MS) {
+                    scanChainReport();
+                    renderChainAssistant();
+                    return;
                 }
-                scheduleChainReportScan();
-            },
-            onerror: scheduleChainReportScan,
-            ontimeout: scheduleChainReportScan
+            }
+
+            chainReportStats = { ...chainReportStats, loading: true, error: '' };
+            renderChainAssistant();
+            const requestedChainId = currentChainId();
+            const path = requestedChainId
+                ? `faction/${requestedChainId}/chainreport`
+                : 'faction/chainreport';
+
+            try {
+                const data = await requestTornV2(path, key);
+                const report = data?.chainreport;
+                if (!report || !Array.isArray(report.attackers)) throw new Error('Torn returned no usable chain report.');
+                const playerId = Number(chainSettings.playerId);
+                const attacker = report.attackers.find(item => Number(item?.id) === playerId);
+                const listedAsNonAttacker = Array.isArray(report.non_attackers)
+                    && report.non_attackers.some(id => Number(id) === playerId);
+                if (!attacker && !listedAsNonAttacker) throw new Error('Your player ID was not present in this chain report.');
+
+                const next = {
+                    found: true,
+                    loading: false,
+                    hits: Number(attacker?.attacks?.total || 0),
+                    score: Number(attacker?.respect?.total || 0),
+                    name: chainSettings.playerName,
+                    chainId: String(report.id || requestedChainId || ''),
+                    fetchedAt: Date.now(),
+                    error: '',
+                    warning: ''
+                };
+                chainReportStats = next;
+                localStorage.setItem(CHAIN_REPORT_CACHE_KEY, JSON.stringify({
+                    playerId: chainSettings.playerId,
+                    chainId: next.chainId,
+                    hits: next.hits,
+                    score: next.score,
+                    name: next.name,
+                    fetchedAt: next.fetchedAt
+                }));
+                scanChainReport();
+            } catch (error) {
+                const message = String(error?.message || error);
+                chainReportStats = chainReportStats.found
+                    ? { ...chainReportStats, loading: false, warning: `Refresh failed: ${message}` }
+                    : { ...chainReportStats, loading: false, error: `Chain API failed: ${message}` };
+            }
+            renderChainAssistant();
+        })().finally(() => {
+            chainApiPromise = null;
         });
+        return chainApiPromise;
     }
 
     function chainGoalRow(label, current, target) {
@@ -6151,6 +6236,9 @@ document.addEventListener('click', async e => {
         const ruleText = chainSettings.requiredHits > 0 && chainSettings.requiredScore > 0
             ? (chainSettings.goalRule === 'either' ? 'Meet either goal' : 'Meet both goals')
             : 'Meet the configured goal';
+        const updatedText = chainReportStats.fetchedAt
+            ? new Date(chainReportStats.fetchedAt).toLocaleString()
+            : 'Not loaded';
         return `
             <div class="tbp-card" style="border-left:6px solid ${goal.state === 'green' ? '#28a745' : goal.state === 'red' ? '#d9534f' : '#777'};">
                 <div style="font-weight:bold; font-size:14px; margin-bottom:4px;">${goal.configured ? (chainReportStats.found ? (goal.met ? 'Quota met' : 'Quota still due') : 'Report data unavailable') : 'No quota configured'}</div>
@@ -6159,12 +6247,18 @@ document.addEventListener('click', async e => {
             ${chainReportStats.found ? `
                 <div class="tbp-card">
                     ${chainGoalRow('Hits', chainReportStats.hits, chainSettings.requiredHits)}
-                    ${chainGoalRow('Score', chainReportStats.score, chainSettings.requiredScore)}
+                    ${chainGoalRow('Score (respect)', chainReportStats.score, chainSettings.requiredScore)}
                     <div class="tbp-muted" style="margin-top:8px;">${ruleText}</div>
                 </div>
             ` : `<div class="tbp-card"><div class="tbp-muted">${escapeHtml(chainReportStats.error)}</div></div>`}
-            <button class="tbp-btn tbp-btn-primary" id="tca-refresh" style="width:100%;">Refresh From Report</button>
-            <div class="tbp-muted" style="margin-top:8px;">The assistant reads this loaded Chain Report only. It does not poll the chain API.</div>
+            ${chainReportStats.warning ? `<div class="tbp-card" style="border-left:5px solid #d4ad00;"><div class="tbp-muted">${escapeHtml(chainReportStats.warning)}</div></div>` : ''}
+            <button class="tbp-btn tbp-btn-primary" id="tca-refresh" style="width:100%;" ${chainReportStats.loading ? 'disabled' : ''}>${chainReportStats.loading ? 'Checking Torn API…' : 'Refresh Chain API'}</button>
+            <div class="tbp-muted" style="margin-top:8px;">
+                Chain ${escapeHtml(chainReportStats.chainId || 'latest')} · updated ${escapeHtml(updatedText)} · ${chainApiRequestsThisPage} API request${chainApiRequestsThisPage === 1 ? '' : 's'} this page.<br>
+                ${isChainReportPage()
+                    ? (chainRowHighlighted ? 'Your row is highlighted in this report.' : 'Your row has not been located in the loaded report yet.')
+                    : 'Open a Chain Report to highlight your row.'}
+            </div>
         `;
     }
 
@@ -6181,7 +6275,9 @@ document.addEventListener('click', async e => {
             </select>
             <label class="tbp-muted">YOUR TORN ID</label>
             <input type="text" inputmode="numeric" id="tca-player-id" class="tbp-input" value="${escapeHtml(chainSettings.playerId)}" placeholder="Auto-detected from your Torn API key">
-            <div class="tbp-muted" style="margin-bottom:10px;">The ID is cached locally so your report row can be highlighted without repeated API calls. Enter it here if automatic detection cannot use your restricted API key. Score also recognizes Torn's Respect column.</div>
+            <label class="tbp-muted">CHAIN API KEY</label>
+            <input type="password" id="tca-api-key" class="tbp-input" value="${escapeHtml(chainSettings.apiKey)}" placeholder="Leave blank to try the Bookie Torn key">
+            <div class="tbp-muted" style="margin-bottom:10px;">The chain endpoint requires a Public key with Faction → chainreport permission. Your Bookie key is tried when this is blank, but a Bookie-only custom key may not have that permission. Totals are cached for two minutes and refresh only on load/navigation or when you press Refresh; there is no timer polling.</div>
             <button class="tbp-btn tbp-btn-success" id="tca-save-settings" style="width:100%;">Save Chain Settings</button>
         `;
     }
@@ -6204,7 +6300,7 @@ document.addEventListener('click', async e => {
         };
 
         const refreshButton = document.getElementById('tca-refresh');
-        if (refreshButton) refreshButton.onclick = scanChainReport;
+        if (refreshButton) refreshButton.onclick = () => fetchChainReport(true);
 
         const saveButton = document.getElementById('tca-save-settings');
         if (saveButton) saveButton.onclick = () => {
@@ -6215,20 +6311,26 @@ document.addEventListener('click', async e => {
                 return;
             }
             const priorId = chainSettings.playerId;
+            const priorApiKey = chainSettings.apiKey;
             chainSettings.requiredHits = Math.floor(hits);
             chainSettings.requiredScore = score;
             chainSettings.goalRule = document.getElementById('tca-goal-rule')?.value === 'either' ? 'either' : 'both';
             chainSettings.playerId = String(document.getElementById('tca-player-id')?.value || '').replace(/\D/g, '');
+            chainSettings.apiKey = String(document.getElementById('tca-api-key')?.value || '').trim();
             if (chainSettings.playerId !== priorId) chainSettings.playerName = '';
+            if (chainSettings.playerId !== priorId || chainSettings.apiKey !== priorApiKey) {
+                localStorage.removeItem(CHAIN_REPORT_CACHE_KEY);
+                chainReportStats = { found: false, loading: false, hits: 0, score: 0, name: '', chainId: '', fetchedAt: 0, error: 'Waiting for the Chain API.' };
+            }
             saveChainSettings();
             chainIdentityAttempted = false;
-            ensureChainIdentity();
             renderChainAssistant();
+            fetchChainReport(true);
         };
     }
 
     function renderChainAssistant() {
-        if (!chainAssistantEnabled || !isChainReportPage()) {
+        if (!chainAssistantEnabled) {
             clearChainHighlight();
             chainContainer.remove();
             return;
@@ -6286,15 +6388,17 @@ document.addEventListener('click', async e => {
     }
 
     function syncChainAssistant() {
-        if (!chainAssistantEnabled || !isChainReportPage()) {
+        if (!chainAssistantEnabled) {
             clearChainHighlight();
             chainContainer.remove();
             return;
         }
         ensureChainContainerMounted();
         startChainObserver();
+        if (isChainReportPage()) scheduleChainReportScan();
+        else clearChainHighlight();
         renderChainAssistant();
-        ensureChainIdentity();
+        fetchChainReport(false);
     }
 
     function minimizeChainAssistant() {
