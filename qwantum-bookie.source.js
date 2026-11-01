@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.21.2
+// @version      1.21.3
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -61,12 +61,12 @@
     let overallBookieNet = 0;
     let lastLoadStatus = 'Not loaded yet.';
     let indexedManualBetLinks = {};
-    let indexedLoanLedger = { version: 4, loans: [], payments: [] };
+    let indexedLoanLedger = { version: 5, loans: [], payments: [] };
     let pendingLoanDraft = null;
     let loanLedgerNeedsMigration = false;
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.21.2';
+    const SCRIPT_VERSION = '1.21.3';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -129,6 +129,15 @@
     const LOAN_FIRST_PERIOD_START = '2026-09-02';
     const LOAN_FIRST_PERIOD_END = '2026-09-05';
     const LEGACY_LOAN_ID = 'bookie-loan-2026';
+    const JEFF_VERIFIED_PAYMENTS = [
+        { id: 'jeff-verified-2026-11-01-98000000', amount: 98000000, paymentDate: '2026-11-01', label: 'Verified · 11/1/2026' },
+        { id: 'jeff-verified-2026-10-22-24500000', amount: 24500000, paymentDate: '2026-10-22', label: 'Verified · 10/22/2026' },
+        { id: 'jeff-verified-2026-10-12-22000000', amount: 22000000, paymentDate: '2026-10-12', label: 'Verified · 10/12/2026' },
+        { id: 'jeff-verified-legacy-51185000', amount: 51185000, label: 'Verified · about 1 month ago' },
+        { id: 'jeff-verified-legacy-85100000', amount: 85100000, label: 'Verified · about 1 month ago' },
+        { id: 'jeff-verified-legacy-15432400', amount: 15432400, label: 'Verified · about 1 month ago' },
+        { id: 'jeff-verified-legacy-53829090', amount: 53829090, label: 'Verified · about 1 month ago' }
+    ];
 
     let footballAutoScoreTimer = null;
     let footballAutoScoreRunning = false;
@@ -5167,33 +5176,24 @@ ${safeJson(log.raw)}
             ...payment,
             id: payment.id || `legacy-payment-${Number(payment.paidAt || 0)}-${index}`
         });
-        const paymentDay = payment => {
-            if (/^\d{4}-\d{2}-\d{2}$/.test(String(payment.paymentDate || ''))) return payment.paymentDate;
-            if (Number(payment.paidAt || 0) > 0) return localDateKey(new Date(Number(payment.paidAt)));
-            return '';
-        };
-        const dedupeLegacyPayments = payments => {
-            const seen = new Set();
-            return payments.filter(payment => {
-                if (String(payment.loanId || LEGACY_LOAN_ID) !== LEGACY_LOAN_ID) return true;
-                const scheduleKey = payment.type === 'weekly'
-                    ? `${payment.startDate || ''}|${payment.endDate || ''}`
-                    : paymentDay(payment);
-                const fingerprint = `${payment.type || 'extra'}|${Math.floor(Number(payment.amount || 0))}|${scheduleKey}`;
-                if (!scheduleKey || seen.has(fingerprint)) return !scheduleKey;
-                seen.add(fingerprint);
-                return true;
-            });
-        };
+        const verifiedJeffPayments = () => JEFF_VERIFIED_PAYMENTS.map(payment => ({
+            ...payment,
+            loanId: LEGACY_LOAN_ID,
+            type: 'verified'
+        }));
+        const reconcileJeffPayments = payments => [
+            ...payments.filter(payment => String(payment.loanId || LEGACY_LOAN_ID) !== LEGACY_LOAN_ID),
+            ...verifiedJeffPayments()
+        ];
         if (sourceVersion >= 2 && Array.isArray(source.loans)) {
             const migratingToCaughtUpSchedule = sourceVersion < 3;
             const normalizedPayments = oldPayments.map(normalizePayment);
-            const reconciledPayments = sourceVersion < 4
-                ? dedupeLegacyPayments(normalizedPayments)
+            const reconciledPayments = sourceVersion < 5
+                ? reconcileJeffPayments(normalizedPayments)
                 : normalizedPayments;
-            if (sourceVersion < 4 || oldPayments.some(payment => !payment?.id)) loanLedgerNeedsMigration = true;
+            if (sourceVersion < 5 || oldPayments.some(payment => !payment?.id)) loanLedgerNeedsMigration = true;
             return {
-                version: 4,
+                version: 5,
                 loans: source.loans.filter(loan => loan && loan.id).map(loan => ({
                     ...loan,
                     name: loan.id === LEGACY_LOAN_ID && (!loan.name || loan.name === 'Bookie Loan') ? 'Jeff Loan' : loan.name,
@@ -5212,9 +5212,9 @@ ${safeJson(log.raw)}
             loanId: payment.loanId || LEGACY_LOAN_ID
         }, index));
         return {
-            version: 4,
+            version: 5,
             loans: [defaultLegacyLoan()],
-            payments: dedupeLegacyPayments(normalizedLegacyPayments)
+            payments: reconcileJeffPayments(normalizedLegacyPayments)
         };
     }
 
@@ -5305,6 +5305,7 @@ ${safeJson(log.raw)}
     }
 
     function loanPaymentDateLabel(payment) {
+        if (payment.label) return String(payment.label);
         if (/^\d{4}-\d{2}-\d{2}$/.test(String(payment.paymentDate || ''))) {
             return displayDateKey(payment.paymentDate);
         }
@@ -5404,7 +5405,7 @@ ${safeJson(log.raw)}
 
                 <div class="tbp-card">
                     <strong>Payment history</strong>
-                    ${recent.length ? recent.map(item => `<div class="tbp-row"><span>${loanPaymentDateLabel(item)} · ${item.type === 'weekly' ? 'Weekly' : 'Extra'}</span><span style="display:flex; align-items:center; gap:7px;"><span class="tbp-win">${money(item.amount)}</span><button class="tbp-btn tbp-btn-danger tbp-delete-loan-payment" data-payment-id="${escapeHtml(item.id)}" style="padding:2px 7px; min-width:0;">×</button></span></div>`).join('') : '<div class="tbp-muted" style="margin-top:7px;">No payments recorded.</div>'}
+                    ${recent.length ? recent.map(item => `<div class="tbp-row"><span>${escapeHtml(loanPaymentDateLabel(item))} · ${item.type === 'weekly' ? 'Weekly' : item.type === 'verified' ? 'Verified' : 'Extra'}</span><span style="display:flex; align-items:center; gap:7px;"><span class="tbp-win">${money(item.amount)}</span><button class="tbp-btn tbp-btn-danger tbp-delete-loan-payment" data-payment-id="${escapeHtml(item.id)}" style="padding:2px 7px; min-width:0;">×</button></span></div>`).join('') : '<div class="tbp-muted" style="margin-top:7px;">No payments recorded.</div>'}
                 </div>
             ` : '<div class="tbp-muted">Create a loan to begin tracking it.</div>'}
         `;
