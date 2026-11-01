@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.19.0
+// @version      1.19.1
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -55,7 +55,7 @@ let lastLoadStatus = 'Not loaded yet.';
 let indexedManualBetLinks = {};
 let indexedLoanLedger = { version: 1, payments: [] };
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.19.0';
+const SCRIPT_VERSION = '1.19.1';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -5946,7 +5946,10 @@ return { apiKey: '' };
 }
 function emptyTrainingData() {
 return {
+dataVersion: 2,
 bonuses: { strength: 0, speed: 0, defense: 0, dexterity: 0 },
+factionPerkCount: 0,
+steadfastMatchCount: 0,
 activeGym: null,
 gyms: [],
 accessibleGymIds: [],
@@ -5958,13 +5961,15 @@ function loadTrainingCache() {
 try {
 const saved = JSON.parse(localStorage.getItem(TRAINING_CACHE_KEY) || 'null');
 if (!saved || typeof saved !== 'object') return emptyTrainingData();
-return {
+const loaded = {
 ...emptyTrainingData(),
 ...saved,
 bonuses: { ...emptyTrainingData().bonuses, ...(saved.bonuses || {}) },
 gyms: Array.isArray(saved.gyms) ? saved.gyms : [],
 accessibleGymIds: Array.isArray(saved.accessibleGymIds) ? saved.accessibleGymIds.map(Number).filter(Number.isFinite) : []
 };
+if (Number(saved.dataVersion || 0) < 2) loaded.fetchedAt = 0;
+return loaded;
 } catch {
 return emptyTrainingData();
 }
@@ -6040,12 +6045,30 @@ return ` ${pieces.join(' ')} `;
 function captureAccessibleGymsFromPage() {
 if (!trainingAssistantEnabled || !isGymPage() || !trainingData.gyms.length) return false;
 const pageText = gymPageSearchText();
-const accessible = new Set(trainingData.accessibleGymIds.map(Number));
+const buttonGymIds = [];
+document.querySelectorAll('[class*="gymButton"]').forEach(button => {
+const buttonClass = String(button.className || '');
+if (/(?:^|\s)(?:locked|inProgress)(?:___|\s|$)/.test(buttonClass)) return;
+const icon = button.querySelector('[class*="gymIcon"], [class*="gym-"]');
+const match = String(icon?.className || '').match(/(?:^|\s)gym-(\d+)(?:___|\s|$)/);
+if (match) buttonGymIds.push(Number(match[1]));
+});
+const accessible = new Set();
+if (buttonGymIds.length) buttonGymIds.forEach(id => accessible.add(id));
+else {
+const activeId = Number(trainingData.activeGym?.id || 0);
+trainingData.gyms.forEach(gym => {
+const id = Number(gym?.id);
+if (id > 0 && id <= Math.min(activeId, 24)) accessible.add(id);
+});
+}
 if (trainingData.activeGym?.id) accessible.add(Number(trainingData.activeGym.id));
+if (!buttonGymIds.length) {
 trainingData.gyms.forEach(gym => {
 const name = normalizedTrainingText(gym?.name);
 if (name && pageText.includes(` ${name} `)) accessible.add(Number(gym.id));
 });
+}
 const next = Array.from(accessible).filter(Number.isFinite).sort((a, b) => a - b);
 if (JSON.stringify(next) === JSON.stringify(trainingData.accessibleGymIds)) return false;
 trainingData.accessibleGymIds = next;
@@ -6074,17 +6097,26 @@ trainingObserver.observe(document.body, { childList: true, subtree: true, charac
 }
 function extractSteadfastBonuses(factionPerks) {
 const bonuses = { strength: 0, speed: 0, defense: 0, dexterity: 0 };
+let matched = 0;
 (Array.isArray(factionPerks) ? factionPerks : []).forEach(perk => {
-const text = String(perk || '');
-if (!/gym\s+gains?|gains?.*gym/i.test(text)) return;
-const percentValues = Array.from(text.matchAll(/([0-9]+(?:\.[0-9]+)?)\s*%/g), match => Number(match[1]));
-if (!percentValues.length) return;
-const percent = Math.max(...percentValues.filter(Number.isFinite));
-TRAINING_STATS.forEach(stat => {
-if (new RegExp(`\\b${stat}\\b`, 'i').test(text)) bonuses[stat] = Math.max(bonuses[stat], percent);
+const text = typeof perk === 'string'
+? perk
+: String(perk?.ability || perk?.description || perk?.name || '');
+const percentFirst = text.match(/\+?\s*(\d+(?:\.\d+)?)\s*%\s+(strength|speed|dexterity|defen[sc]e)\s+gym\s+gains?/i);
+const statFirst = text.match(/(?:increases?\s+)?(strength|speed|dexterity|defen[sc]e)\s+gym\s+gains?\s+by\s+(\d+(?:\.\d+)?)\s*%/i);
+if (!percentFirst && !statFirst) return;
+const rawStat = String(percentFirst?.[2] || statFirst?.[1] || '').toLowerCase();
+const stat = rawStat === 'defence' ? 'defense' : rawStat;
+const percent = Number(percentFirst?.[1] || statFirst?.[2]);
+if (!TRAINING_STATS.includes(stat) || !Number.isFinite(percent)) return;
+bonuses[stat] += percent;
+matched += 1;
 });
-});
-return bonuses;
+return {
+bonuses,
+factionPerkCount: Array.isArray(factionPerks) ? factionPerks.length : 0,
+steadfastMatchCount: matched
+};
 }
 function requestTrainingTornV2(path, key) {
 trainingApiRequestsThisPage += 1;
@@ -6131,7 +6163,12 @@ trainingWarning = '';
 renderTrainingAssistant();
 try {
 const userData = await requestTrainingTornV2('user?selections=perks,gym', key);
-trainingData.bonuses = extractSteadfastBonuses(userData?.perks?.faction);
+if (!userData?.gym?.id) throw new Error('Torn returned no active gym information.');
+const steadfast = extractSteadfastBonuses(userData?.perks?.faction);
+trainingData.dataVersion = 2;
+trainingData.bonuses = steadfast.bonuses;
+trainingData.factionPerkCount = steadfast.factionPerkCount;
+trainingData.steadfastMatchCount = steadfast.steadfastMatchCount;
 trainingData.activeGym = userData?.gym?.id ? { id: Number(userData.gym.id), name: String(userData.gym.name || '') } : null;
 trainingData.fetchedAt = Date.now();
 if (trainingData.activeGym?.id) {
@@ -6177,11 +6214,12 @@ return trainingData.gyms
 function trainingStatCard(stat) {
 const label = stat.charAt(0).toUpperCase() + stat.slice(1);
 const bonus = Number(trainingData.bonuses?.[stat] || 0);
+const steadfastValue = trainingData.steadfastMatchCount > 0 ? `+${num(bonus)}%` : 'Not returned';
 const gym = bestConfirmedGym(stat);
 const modifier = gym ? trainingGymModifier(gym, stat) : null;
 return `
 <div class="tbp-card tta-stat-card">
-<div class="tbp-row" style="margin-top:0;"><strong>${label}</strong><strong class="tbp-win">+${num(bonus)}%</strong></div>
+<div class="tbp-row" style="margin-top:0;"><strong>${label}</strong><strong class="${trainingData.steadfastMatchCount > 0 ? 'tbp-win' : 'tbp-muted'}">${steadfastValue}</strong></div>
 <div class="tbp-row"><span>Best confirmed gym</span><span style="text-align:right;">${gym ? escapeHtml(gym.name) : 'Not learned yet'}</span></div>
 <div class="tbp-row"><span>Gym rating</span><span>${gym ? `${num(modifier)} dots` : '—'}</span></div>
 </div>
@@ -6196,6 +6234,7 @@ ${trainingWarning ? `<div class="tbp-card" style="border-left:5px solid #d4ad00;
 <div class="tbp-card">
 <div class="tbp-row" style="margin-top:0;"><span>Current gym</span><strong>${escapeHtml(trainingData.activeGym?.name || 'Unknown')}</strong></div>
 <div class="tbp-row"><span>Confirmed available gyms</span><span>${confirmedCount}</span></div>
+<div class="tbp-row"><span>Steadfast perks recognized</span><span>${trainingData.steadfastMatchCount} / ${trainingData.factionPerkCount}</span></div>
 <div class="tbp-muted" style="margin-top:7px;">Steadfast shows the faction gym-gain perk currently applying to your account. Recommendations use only gyms confirmed from your active gym or a loaded Gym page.</div>
 </div>
 ${TRAINING_STATS.map(trainingStatCard).join('')}
