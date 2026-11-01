@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.20.0
+// @version      1.20.1
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -6513,7 +6513,7 @@ document.addEventListener('click', async e => {
 
     function emptyTrainingData() {
         return {
-            dataVersion: 4,
+            dataVersion: 5,
             bonuses: { strength: 0, speed: 0, defense: 0, dexterity: 0 },
             bonusSources: { strength: [], speed: [], defense: [], dexterity: [] },
             totalPerkCount: 0,
@@ -6541,7 +6541,10 @@ document.addEventListener('click', async e => {
                 gyms: Array.isArray(saved.gyms) ? saved.gyms : [],
                 accessibleGymIds: Array.isArray(saved.accessibleGymIds) ? saved.accessibleGymIds.map(Number).filter(Number.isFinite) : []
             };
-            if (Number(saved.dataVersion || 0) < 4) loaded.fetchedAt = 0;
+            if (Number(saved.dataVersion || 0) < 5) {
+                loaded.fetchedAt = 0;
+                loaded.accessibleGymIds = [];
+            }
             return loaded;
         } catch {
             return emptyTrainingData();
@@ -6596,7 +6599,7 @@ document.addEventListener('click', async e => {
         for (let depth = 0; node && node !== document.body && depth < 6; depth += 1, node = node.parentElement) {
             if (node.matches?.('[disabled], [aria-disabled="true"]')) return true;
             const className = String(node.className || '').toLowerCase();
-            if (/(?:^|[\s_-])locked(?:$|[\s_-])/.test(className)) return true;
+            if (/(?:^|\s)locked(?:purchased)?(?:___|\s|$)/i.test(className)) return true;
         }
         return false;
     }
@@ -6631,7 +6634,8 @@ document.addEventListener('click', async e => {
         const buttonGymIds = [];
         document.querySelectorAll('[class*="gymButton"]').forEach(button => {
             const buttonClass = String(button.className || '');
-            if (/(?:^|\s)(?:locked|inProgress)(?:___|\s|$)/.test(buttonClass)) return;
+            if (/(?:^|\s)(?:locked(?:purchased)?|inProgress)(?:___|\s|$)/i.test(buttonClass)) return;
+            if (button.matches('[disabled], [aria-disabled="true"]') || button.querySelector('[disabled], [aria-disabled="true"], [class*="locked___"], [class*="lockedPurchased___"]')) return;
             const icon = button.querySelector('[class*="gymIcon"], [class*="gym-"]');
             const match = String(icon?.className || '').match(/(?:^|\s)gym-(\d+)(?:___|\s|$)/);
             if (match) buttonGymIds.push(Number(match[1]));
@@ -6849,7 +6853,7 @@ document.addEventListener('click', async e => {
                 const userData = await requestTrainingTornV2('user?selections=perks,gym', key);
                 if (!userData?.gym?.id) throw new Error('Torn returned no active gym information.');
                 const trainingBonuses = extractTrainingBonuses(userData?.perks);
-                trainingData.dataVersion = 4;
+                trainingData.dataVersion = 5;
                 trainingData.bonuses = trainingBonuses.bonuses;
                 trainingData.bonusSources = trainingBonuses.bonusSources;
                 trainingData.totalPerkCount = trainingBonuses.totalPerkCount;
