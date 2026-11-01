@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.21.0
+// @version      1.21.1
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -61,11 +61,12 @@
     let overallBookieNet = 0;
     let lastLoadStatus = 'Not loaded yet.';
     let indexedManualBetLinks = {};
-    let indexedLoanLedger = { version: 2, loans: [], payments: [] };
+    let indexedLoanLedger = { version: 3, loans: [], payments: [] };
     let pendingLoanDraft = null;
+    let loanLedgerNeedsMigration = false;
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.21.0';
+    const SCRIPT_VERSION = '1.21.1';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -1802,6 +1803,15 @@
             ]);
             rawLogs = (await loadCachedLogs()).sort((a, b) => b.timestamp - a.timestamp);
             buildBookieData();
+
+            if (loanLedgerNeedsMigration) {
+                loanLedgerNeedsMigration = false;
+                try {
+                    await storeIndexedLoanLedger(indexedLoanLedger);
+                } catch (migrationError) {
+                    console.warn('Could not persist the upgraded loan ledger.', migrationError);
+                }
+            }
 
             if (rawLogs.length) {
                 const oldest = Math.min(...rawLogs.map(log => log.timestamp));
@@ -5136,7 +5146,7 @@ ${safeJson(log.raw)}
     function defaultLegacyLoan() {
         return {
             id: LEGACY_LOAN_ID,
-            name: 'Bookie Loan',
+            name: 'Jeff Loan',
             originalBalance: LOAN_ORIGINAL_BALANCE,
             recipientId: LOAN_RECIPIENT_ID,
             paymentMode: 'bookie-net',
@@ -5144,6 +5154,7 @@ ${safeJson(log.raw)}
             startDate: LOAN_FIRST_PERIOD_START,
             firstPeriodEnd: LOAN_FIRST_PERIOD_END,
             nextDueDate: '',
+            paidThroughDate: localDateKey(new Date()),
             createdAt: Date.parse(`${LOAN_FIRST_PERIOD_START}T12:00:00`) || Date.now()
         };
     }
@@ -5151,21 +5162,36 @@ ${safeJson(log.raw)}
     function normalizeLoanLedger(ledger) {
         const source = ledger && typeof ledger === 'object' ? ledger : {};
         const oldPayments = Array.isArray(source.payments) ? source.payments : [];
-        if (Number(source.version || 0) >= 2 && Array.isArray(source.loans)) {
+        const sourceVersion = Number(source.version || 0);
+        const normalizePayment = (payment, index) => ({
+            ...payment,
+            id: payment.id || `legacy-payment-${Number(payment.paidAt || 0)}-${index}`
+        });
+        if (sourceVersion >= 2 && Array.isArray(source.loans)) {
+            const migratingToCaughtUpSchedule = sourceVersion < 3;
+            if (migratingToCaughtUpSchedule || oldPayments.some(payment => !payment?.id)) loanLedgerNeedsMigration = true;
             return {
-                version: 2,
+                version: 3,
                 loans: source.loans.filter(loan => loan && loan.id).map(loan => ({
                     ...loan,
+                    name: loan.id === LEGACY_LOAN_ID && (!loan.name || loan.name === 'Bookie Loan') ? 'Jeff Loan' : loan.name,
                     originalBalance: Math.max(0, Number(loan.originalBalance || 0)),
-                    regularAmount: Math.max(0, Number(loan.regularAmount || 0))
+                    regularAmount: Math.max(0, Number(loan.regularAmount || 0)),
+                    paidThroughDate: loan.id === LEGACY_LOAN_ID && migratingToCaughtUpSchedule
+                        ? localDateKey(new Date())
+                        : String(loan.paidThroughDate || '')
                 })),
-                payments: oldPayments
+                payments: oldPayments.map(normalizePayment)
             };
         }
+        loanLedgerNeedsMigration = true;
         return {
-            version: 2,
+            version: 3,
             loans: [defaultLegacyLoan()],
-            payments: oldPayments.map(payment => ({ ...payment, loanId: payment.loanId || LEGACY_LOAN_ID }))
+            payments: oldPayments.map((payment, index) => normalizePayment({
+                ...payment,
+                loanId: payment.loanId || LEGACY_LOAN_ID
+            }, index))
         };
     }
 
@@ -5226,9 +5252,13 @@ ${safeJson(log.raw)}
         if (loan.paymentMode === 'bookie-net') {
             const paidPeriods = new Set(payments.filter(payment => payment.type === 'weekly').map(payment => `${payment.startDate}|${payment.endDate}`));
             const periods = getBookieLoanPeriods(loan);
-            const duePeriod = periods.find(period => period.closed && period.calculatedPayment > 0 && !paidPeriods.has(`${period.startDate}|${period.endDate}`)) || null;
+            const paidThroughDate = String(loan.paidThroughDate || '');
+            const duePeriod = periods.find(period => period.closed
+                && period.calculatedPayment > 0
+                && (!paidThroughDate || period.dueDate > paidThroughDate)
+                && !paidPeriods.has(`${period.startDate}|${period.endDate}`)) || null;
             const currentPeriod = [...periods].reverse().find(period => !period.closed) || null;
-            return { loan, payments, totalPaid, remainingBalance, duePeriod, currentPeriod, paymentDue: duePeriod ? Math.min(duePeriod.calculatedPayment, remainingBalance) : 0 };
+            return { loan, payments, totalPaid, remainingBalance, paidThroughDate, duePeriod, currentPeriod, paymentDue: duePeriod ? Math.min(duePeriod.calculatedPayment, remainingBalance) : 0 };
         }
         const nextDueDate = loan.nextDueDate || nextSundayAfter(loan.startDate || localDateKey(new Date()));
         const isDue = remainingBalance > 0 && localDateKey(new Date()) >= nextDueDate;
@@ -5248,7 +5278,21 @@ ${safeJson(log.raw)}
             const bDate = b.paymentDate ? Date.parse(`${b.paymentDate}T12:00:00`) : Number(b.paidAt || 0);
             const aDate = a.paymentDate ? Date.parse(`${a.paymentDate}T12:00:00`) : Number(a.paidAt || 0);
             return Number(bDate || 0) - Number(aDate || 0);
-        }).slice(0, 8);
+        });
+    }
+
+    function loanPaymentDateLabel(payment) {
+        if (/^\d{4}-\d{2}-\d{2}$/.test(String(payment.paymentDate || ''))) {
+            return displayDateKey(payment.paymentDate);
+        }
+        if (Number.isFinite(Number(payment.paidAt)) && Number(payment.paidAt) > 0) {
+            return new Date(Number(payment.paidAt)).toLocaleDateString();
+        }
+        if (/^\d{4}-\d{2}-\d{2}$/.test(String(payment.startDate || ''))
+            && /^\d{4}-\d{2}-\d{2}$/.test(String(payment.endDate || ''))) {
+            return `${displayDateKey(payment.startDate)}–${displayDateKey(payment.endDate)}`;
+        }
+        return 'Legacy record';
     }
 
     function loanModeLabel(mode) {
@@ -5291,10 +5335,12 @@ ${safeJson(log.raw)}
                     </div>
                     <div class="tbp-row"><span>Schedule</span><span>${escapeHtml(loanModeLabel(loan.paymentMode))}</span></div>
                     ${loan.recipientId ? `<div class="tbp-row"><span>Recipient</span><span>${escapeHtml(loan.recipientId)}</span></div>` : ''}
+                    ${state.paidThroughDate ? `<div class="tbp-row"><span>Schedule caught up through</span><span>${displayDateKey(state.paidThroughDate)}</span></div>` : ''}
                     ${period ? `<div class="tbp-row"><span>Period</span><span>${displayDateKey(period.startDate)}–${displayDateKey(period.endDate)}</span></div>${loan.paymentMode === 'bookie-net' ? `<div class="tbp-row"><span>Weekly net</span><span class="${period.weeklyNet >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(period.weeklyNet)}</span></div>` : ''}` : ''}
                     ${isDue ? `
                         ${loan.paymentMode === 'manual' ? `<input type="text" inputmode="numeric" id="tbp-weekly-loan-payment-amount" class="tbp-input" placeholder="Amount paid this week" style="margin-top:9px;">` : ''}
                         <button class="tbp-btn tbp-btn-success" id="tbp-mark-loan-paid" style="width:100%; margin-top:7px;">Record Weekly Payment${loan.paymentMode === 'manual' ? '' : ` · ${money(scheduledAmount)}`}</button>
+                        ${loan.paymentMode === 'bookie-net' ? `<button class="tbp-btn" id="tbp-mark-loan-caught-up" style="width:100%; margin-top:7px;">Clear Old Weekly Reminders</button>` : ''}
                     ` : ''}
                 </div>
 
@@ -5335,7 +5381,7 @@ ${safeJson(log.raw)}
 
                 <div class="tbp-card">
                     <strong>Payment history</strong>
-                    ${recent.length ? recent.map(item => `<div class="tbp-row"><span>${displayDateKey(item.paymentDate)} · ${item.type === 'weekly' ? 'Weekly' : 'Extra'}</span><span class="tbp-win">${money(item.amount)}</span></div>`).join('') : '<div class="tbp-muted" style="margin-top:7px;">No payments recorded.</div>'}
+                    ${recent.length ? recent.map(item => `<div class="tbp-row"><span>${loanPaymentDateLabel(item)} · ${item.type === 'weekly' ? 'Weekly' : 'Extra'}</span><span style="display:flex; align-items:center; gap:7px;"><span class="tbp-win">${money(item.amount)}</span><button class="tbp-btn tbp-btn-danger tbp-delete-loan-payment" data-payment-id="${escapeHtml(item.id)}" style="padding:2px 7px; min-width:0;">×</button></span></div>`).join('') : '<div class="tbp-muted" style="margin-top:7px;">No payments recorded.</div>'}
                 </div>
             ` : '<div class="tbp-muted">Create a loan to begin tracking it.</div>'}
         `;
@@ -5561,6 +5607,7 @@ ${safeJson(log.raw)}
                 markLoanPaidBtn.textContent = 'Saving payment...';
                 const previous = JSON.parse(JSON.stringify(indexedLoanLedger));
                 indexedLoanLedger.payments.push({
+                    id: `payment-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                     loanId: loan.id,
                     type: 'weekly',
                     ...(period ? {
@@ -5615,6 +5662,7 @@ ${safeJson(log.raw)}
                 manualLoanPaymentBtn.textContent = 'Saving payment...';
                 const previous = JSON.parse(JSON.stringify(indexedLoanLedger));
                 indexedLoanLedger.payments.push({
+                    id: `payment-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                     loanId: loan.id,
                     type: 'extra',
                     paymentDate,
@@ -5632,6 +5680,43 @@ ${safeJson(log.raw)}
                 render();
             };
         }
+
+        const markLoanCaughtUpBtn = document.getElementById('tbp-mark-loan-caught-up');
+        if (markLoanCaughtUpBtn) markLoanCaughtUpBtn.onclick = async () => {
+            const loan = selectedLoan();
+            if (!loan || loan.paymentMode !== 'bookie-net') return;
+            const throughDate = localDateKey(new Date());
+            if (!confirm(`Clear overdue weekly reminders for ${loan.name} through ${displayDateKey(throughDate)}? This does not add or remove money paid.`)) return;
+            const previous = JSON.parse(JSON.stringify(indexedLoanLedger));
+            loan.paidThroughDate = throughDate;
+            try {
+                await storeIndexedLoanLedger(indexedLoanLedger);
+                lastLoadStatus = `${loan.name} is caught up through ${displayDateKey(throughDate)}.`;
+            } catch (error) {
+                indexedLoanLedger = previous;
+                alert(`Could not update the loan schedule: ${String(error?.message || error)}`);
+            }
+            render();
+        };
+
+        document.querySelectorAll('.tbp-delete-loan-payment').forEach(button => {
+            button.onclick = async () => {
+                const loan = selectedLoan();
+                const paymentId = String(button.dataset.paymentId || '');
+                const payment = indexedLoanLedger.payments.find(item => item.id === paymentId && String(item.loanId || LEGACY_LOAN_ID) === String(loan?.id || ''));
+                if (!loan || !payment || !confirm(`Remove the ${money(payment.amount)} payment record from ${loan.name}?`)) return;
+                const previous = JSON.parse(JSON.stringify(indexedLoanLedger));
+                indexedLoanLedger.payments = indexedLoanLedger.payments.filter(item => item.id !== paymentId);
+                try {
+                    await storeIndexedLoanLedger(indexedLoanLedger);
+                    lastLoadStatus = `Removed the ${money(payment.amount)} payment record from ${loan.name}.`;
+                } catch (error) {
+                    indexedLoanLedger = previous;
+                    alert(`Could not remove the payment: ${String(error?.message || error)}`);
+                }
+                render();
+            };
+        });
 
         const loanSelect = document.getElementById('tbp-loan-select');
         if (loanSelect) loanSelect.onchange = () => {
