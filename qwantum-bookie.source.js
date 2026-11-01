@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.21.1
+// @version      1.21.2
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -61,12 +61,12 @@
     let overallBookieNet = 0;
     let lastLoadStatus = 'Not loaded yet.';
     let indexedManualBetLinks = {};
-    let indexedLoanLedger = { version: 3, loans: [], payments: [] };
+    let indexedLoanLedger = { version: 4, loans: [], payments: [] };
     let pendingLoanDraft = null;
     let loanLedgerNeedsMigration = false;
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.21.1';
+    const SCRIPT_VERSION = '1.21.2';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -5167,11 +5167,33 @@ ${safeJson(log.raw)}
             ...payment,
             id: payment.id || `legacy-payment-${Number(payment.paidAt || 0)}-${index}`
         });
+        const paymentDay = payment => {
+            if (/^\d{4}-\d{2}-\d{2}$/.test(String(payment.paymentDate || ''))) return payment.paymentDate;
+            if (Number(payment.paidAt || 0) > 0) return localDateKey(new Date(Number(payment.paidAt)));
+            return '';
+        };
+        const dedupeLegacyPayments = payments => {
+            const seen = new Set();
+            return payments.filter(payment => {
+                if (String(payment.loanId || LEGACY_LOAN_ID) !== LEGACY_LOAN_ID) return true;
+                const scheduleKey = payment.type === 'weekly'
+                    ? `${payment.startDate || ''}|${payment.endDate || ''}`
+                    : paymentDay(payment);
+                const fingerprint = `${payment.type || 'extra'}|${Math.floor(Number(payment.amount || 0))}|${scheduleKey}`;
+                if (!scheduleKey || seen.has(fingerprint)) return !scheduleKey;
+                seen.add(fingerprint);
+                return true;
+            });
+        };
         if (sourceVersion >= 2 && Array.isArray(source.loans)) {
             const migratingToCaughtUpSchedule = sourceVersion < 3;
-            if (migratingToCaughtUpSchedule || oldPayments.some(payment => !payment?.id)) loanLedgerNeedsMigration = true;
+            const normalizedPayments = oldPayments.map(normalizePayment);
+            const reconciledPayments = sourceVersion < 4
+                ? dedupeLegacyPayments(normalizedPayments)
+                : normalizedPayments;
+            if (sourceVersion < 4 || oldPayments.some(payment => !payment?.id)) loanLedgerNeedsMigration = true;
             return {
-                version: 3,
+                version: 4,
                 loans: source.loans.filter(loan => loan && loan.id).map(loan => ({
                     ...loan,
                     name: loan.id === LEGACY_LOAN_ID && (!loan.name || loan.name === 'Bookie Loan') ? 'Jeff Loan' : loan.name,
@@ -5181,17 +5203,18 @@ ${safeJson(log.raw)}
                         ? localDateKey(new Date())
                         : String(loan.paidThroughDate || '')
                 })),
-                payments: oldPayments.map(normalizePayment)
+                payments: reconciledPayments
             };
         }
         loanLedgerNeedsMigration = true;
+        const normalizedLegacyPayments = oldPayments.map((payment, index) => normalizePayment({
+            ...payment,
+            loanId: payment.loanId || LEGACY_LOAN_ID
+        }, index));
         return {
-            version: 3,
+            version: 4,
             loans: [defaultLegacyLoan()],
-            payments: oldPayments.map((payment, index) => normalizePayment({
-                ...payment,
-                loanId: payment.loanId || LEGACY_LOAN_ID
-            }, index))
+            payments: dedupeLegacyPayments(normalizedLegacyPayments)
         };
     }
 
