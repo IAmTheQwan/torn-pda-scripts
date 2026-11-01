@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.19.2
+// @version      1.19.3
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -62,7 +62,7 @@
     let indexedLoanLedger = { version: 1, payments: [] };
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.19.2';
+    const SCRIPT_VERSION = '1.19.3';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -6721,23 +6721,74 @@ document.addEventListener('click', async e => {
         };
     }
 
-    function requestTrainingTornV2(path, key) {
+    function decodeTrainingApiResponse(response) {
+        const candidates = [
+            response?.responseText,
+            response?.response,
+            response?.body,
+            response?.data,
+            response?.result,
+            response
+        ];
+        for (let candidate of candidates) {
+            if (candidate instanceof ArrayBuffer) {
+                try { candidate = new TextDecoder().decode(candidate); } catch { continue; }
+            }
+            for (let depth = 0; depth < 2; depth += 1) {
+                if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+                    const looksLikeApiData = candidate.error || candidate.gym || candidate.perks || candidate.gyms;
+                    if (looksLikeApiData) return candidate;
+                    break;
+                }
+                if (typeof candidate !== 'string' || !candidate.trim()) break;
+                try { candidate = JSON.parse(candidate); }
+                catch { break; }
+            }
+        }
+        throw new Error('Torn returned an unreadable API response.');
+    }
+
+    function validateTrainingApiResponse(data, status = 200) {
+        if ((status && (status < 200 || status >= 300)) || data?.error) {
+            throw new Error(chainApiError(data, `Torn API request failed (${status || 'unknown status'}).`));
+        }
+        return data;
+    }
+
+    async function requestTrainingTornV2(path, key) {
+        const separator = path.includes('?') ? '&' : '?';
+        const baseUrl = `https://api.torn.com/v2/${path}${separator}comment=TrainingAssist`;
+        const pdaUrl = `${baseUrl}&key=${encodeURIComponent(key)}`;
+        const pdaBridge = window.flutter_inappwebview;
+        if (pdaBridge && typeof pdaBridge.callHandler === 'function') {
+            trainingApiRequestsThisPage += 1;
+            try {
+                const response = await pdaBridge.callHandler('PDA_httpGet', pdaUrl, {});
+                return validateTrainingApiResponse(decodeTrainingApiResponse(response));
+            } catch (error) {
+                throw new Error(`Torn PDA API request failed: ${String(error?.message || error)}`);
+            }
+        }
+        if (typeof window.PDA_httpGet === 'function') {
+            trainingApiRequestsThisPage += 1;
+            try {
+                const response = await window.PDA_httpGet(pdaUrl, {});
+                return validateTrainingApiResponse(decodeTrainingApiResponse(response));
+            } catch (error) {
+                throw new Error(`Torn PDA API request failed: ${String(error?.message || error)}`);
+            }
+        }
+
         trainingApiRequestsThisPage += 1;
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'GET',
-                url: `https://api.torn.com/v2/${path}${path.includes('?') ? '&' : '?'}comment=TrainingAssist`,
+                url: baseUrl,
                 headers: { Authorization: `ApiKey ${key}` },
                 timeout: 15000,
                 onload: response => {
-                    let data;
-                    try { data = JSON.parse(response.responseText || '{}'); }
-                    catch { reject(new Error('Torn returned an unreadable API response.')); return; }
-                    if (response.status < 200 || response.status >= 300 || data.error) {
-                        reject(new Error(chainApiError(data, `Torn API request failed (${response.status || 'unknown status'}).`)));
-                        return;
-                    }
-                    resolve(data);
+                    try { resolve(validateTrainingApiResponse(decodeTrainingApiResponse(response), Number(response.status || 200))); }
+                    catch (error) { reject(error); }
                 },
                 onerror: () => reject(new Error('Could not reach the Torn API.')),
                 ontimeout: () => reject(new Error('The Torn API request timed out.'))
@@ -6797,7 +6848,11 @@ document.addEventListener('click', async e => {
                 saveTrainingCache();
                 captureAccessibleGymsFromPage();
             } catch (error) {
-                trainingError = String(error?.message || error);
+                const message = String(error?.message || error);
+                if (trainingData.activeGym && trainingData.gyms.length) {
+                    trainingError = '';
+                    trainingWarning = `Refresh failed; showing saved training data. ${message}`;
+                } else trainingError = message;
             } finally {
                 trainingLoading = false;
                 renderTrainingAssistant();
