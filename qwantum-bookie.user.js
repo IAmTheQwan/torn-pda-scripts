@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.18.2
-// @description  Floating PDA panel for Torn bookie tracking plus an optional Chain Report goal assistant
+// @version      1.19.0
+// @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
@@ -43,6 +43,7 @@ let batchFeatureEnabled = JSON.parse(localStorage.getItem('tbp_batch_feature_ena
 let footballStatsExpanded = JSON.parse(localStorage.getItem('tbp_football_stats_expanded') ?? 'true');
 let hockeyStatsExpanded = JSON.parse(localStorage.getItem('tbp_hockey_stats_expanded') ?? 'false');
 let chainAssistantEnabled = JSON.parse(localStorage.getItem('tbp_chain_assistant_enabled') || 'false');
+let trainingAssistantEnabled = JSON.parse(localStorage.getItem('tbp_training_assistant_enabled') || 'false');
 let batches = JSON.parse(localStorage.getItem('tbp_batches') || '[]');
 let selectedBatchId = localStorage.getItem('tbp_selected_batch_id') || '';
 let rawLogs = [];
@@ -54,7 +55,7 @@ let lastLoadStatus = 'Not loaded yet.';
 let indexedManualBetLinks = {};
 let indexedLoanLedger = { version: 1, payments: [] };
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.18.2';
+const SCRIPT_VERSION = '1.19.0';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -128,6 +129,14 @@ const styles = `
 #tca-container.tca-gray { background:#666; border-color:#888; }
 #tca-container.tca-red { background:#a83232; border-color:#df6262; }
 #tca-container.tca-green { background:#238c45; border-color:#48c96c; }
+#tta-container { position:fixed; top:108px; right:20px; width:360px; max-width:calc(100vw - 40px); background:#1a1a1a; color:#eee; border:1px solid #477d83; z-index:999997!important; font-family:'Segoe UI',sans-serif; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,.8); overflow:hidden; }
+#tta-container.tta-minimized { width:38px; height:38px; cursor:pointer; display:flex; align-items:center; justify-content:center; background:#287c87; border-color:#55b6c2; border-radius:4px; font-weight:bold; font-size:20px; touch-action:manipulation; }
+.tta-header { background:#22454a; padding:10px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #477d83; }
+.tta-tabs { display:flex; background:#1c3033; border-bottom:1px solid #477d83; }
+.tta-tab { flex:1; padding:10px 3px; text-align:center; cursor:pointer; font-size:10px; text-transform:uppercase; color:#93afb3; }
+.tta-tab.active { background:#315b61; border-bottom:2px solid #65d4df; color:#fff; font-weight:bold; }
+.tta-content { padding:12px; max-height:430px; overflow-y:auto; scrollbar-width:thin; }
+.tta-stat-card { border-left:5px solid #55b6c2; }
 .tca-header { background:#252525; padding:10px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #333; }
 .tca-tabs { display:flex; background:#222; border-bottom:1px solid #333; }
 .tca-tab { flex:1; padding:10px 3px; text-align:center; cursor:pointer; font-size:10px; text-transform:uppercase; color:#888; }
@@ -271,6 +280,7 @@ if (panelMountObserver || !document.documentElement) return;
 panelMountObserver = new MutationObserver(() => {
 if (!styleSheet.isConnected || !container.isConnected) ensurePanelMounted();
 if (chainAssistantEnabled && !chainContainer.isConnected) ensureChainContainerMounted();
+if (trainingAssistantEnabled && !trainingContainer.isConnected) ensureTrainingContainerMounted();
 });
 panelMountObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
@@ -294,6 +304,7 @@ localStorage.setItem('tbp_batch_feature_enabled', JSON.stringify(batchFeatureEna
 localStorage.setItem('tbp_football_stats_expanded', JSON.stringify(footballStatsExpanded));
 localStorage.setItem('tbp_hockey_stats_expanded', JSON.stringify(hockeyStatsExpanded));
 localStorage.setItem('tbp_chain_assistant_enabled', JSON.stringify(chainAssistantEnabled));
+localStorage.setItem('tbp_training_assistant_enabled', JSON.stringify(trainingAssistantEnabled));
 localStorage.setItem('tbp_batches', JSON.stringify(batches));
 localStorage.setItem('tbp_selected_batch_id', selectedBatchId);
 }
@@ -4330,6 +4341,7 @@ container.className = 'minimized';
 container.innerHTML = 'B';
 container.onclick = () => {
 minimizeChainAssistant();
+minimizeTrainingAssistant();
 isMinimized = false;
 container.onclick = null;
 saveData();
@@ -4629,11 +4641,11 @@ Page Limit Only ignores the configured scan date. Full Rescan always requires a 
 <div class="tbp-card">
 <div style="font-weight:bold; margin-bottom:6px;">API usage and privacy</div>
 <div class="tbp-muted">
-<strong>Data storage:</strong> Bookie logs in this browser's IndexedDB; viewed Football/Hockey fixtures, manual bet clicks, and My Bets name links in local storage.<br>
+<strong>Data storage:</strong> Bookie logs in this browser's IndexedDB; viewed Football/Hockey fixtures, manual bet clicks, My Bets name links, and Training Assistant gym/perk cache in local storage.<br>
 <strong>Data sharing:</strong> Torn history stays local. When Football scores are enabled, only team names and fixture dates are sent to the selected score provider; captured bet amounts and Torn history are never sent.<br>
-<strong>Purpose:</strong> Personal bookie history, totals, named open-bet estimates, Football/Hockey review, and incremental refreshes.<br>
+<strong>Purpose:</strong> Personal bookie history, totals, named open-bet estimates, Football/Hockey review, chain goals, and training recommendations.<br>
 <strong>Key handling:</strong> Keys stay in this browser. The Torn key is sent only to api.torn.com, and the optional API-Football key only to v3.football.api-sports.io. TheSportsDB free mode uses its public key.<br>
-<strong>Required access:</strong> Custom access to user → log, restricted to category 195 (Bookie), or Full Access.
+<strong>Required access:</strong> Bookie scanning needs user → log restricted to category 195 (Bookie), or Full Access. Optional assistants may use their own narrower keys; Training needs user → perks and user → gym.
 </div>
 </div>
 <div class="tbp-card">
@@ -4708,6 +4720,15 @@ ${footballAutoScoreEnabled && footballScoreProvider === 'api-football' ? `<div c
 </div>
 <div class="tbp-muted" style="margin-top:7px;">
 Shows a persistent C below the Bookie button on every Torn page. It uses Torn's chain-report API for your hits and respect score, while the loaded Chain Report page is used to highlight your row. Requests are manual or cache-limited; there is no repeating poll.
+</div>
+</div>
+<div class="tbp-card">
+<div class="tbp-row">
+<span>Enable Training assistant</span>
+<input type="checkbox" id="tbp-training-assistant-enabled" ${trainingAssistantEnabled ? 'checked' : ''}>
+</div>
+<div class="tbp-muted" style="margin-top:7px;">
+Shows a persistent T below the other assistant buttons. Torn's API supplies your current gym, faction gym-gain perks, and gym modifiers. Visiting the Gym page confirms which gyms are available to you so recommendations do not include unconfirmed specialty gyms. There is no repeating poll.
 </div>
 </div>
 <div class="tbp-card">
@@ -5184,8 +5205,10 @@ footballAutoScoreEnabled = document.getElementById('tbp-football-auto-score-enab
 footballScoreDayStartHour = Math.max(0, Math.min(23, Math.floor(Number(document.getElementById('tbp-football-score-day-start-hour').value || 8))));
 batchFeatureEnabled = document.getElementById('tbp-batch-feature-enabled').checked;
 chainAssistantEnabled = document.getElementById('tbp-chain-assistant-enabled').checked;
+trainingAssistantEnabled = document.getElementById('tbp-training-assistant-enabled').checked;
 saveData();
 syncChainAssistant();
+syncTrainingAssistant();
 scheduleFootballAutoScores();
 if (!footballScanEnabled) clearFootballHighlights();
 if (!footballOddsHistoryEnabled) {
@@ -5846,6 +5869,7 @@ chainContainer.title = !goal.configured
 ? `Chain Assistant: ${goal.met ? 'goal met' : 'goal not met'}`
 : 'Chain Assistant: report data unavailable';
 chainContainer.onclick = () => {
+minimizeTrainingAssistant();
 chainMinimized = false;
 if (!isMinimized) {
 isMinimized = true;
@@ -5903,12 +5927,386 @@ chainMinimized = true;
 saveChainSettings();
 renderChainAssistant();
 }
+const TRAINING_SETTINGS_KEY = 'tbp_training_assistant_settings';
+const TRAINING_MINIMIZED_KEY = 'tbp_training_assistant_minimized';
+const TRAINING_TAB_KEY = 'tbp_training_assistant_tab';
+const TRAINING_CACHE_KEY = 'tbp_training_assistant_cache';
+const TRAINING_USER_CACHE_MS = 30 * 60 * 1000;
+const TRAINING_GYM_CATALOG_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
+const TRAINING_STATS = ['strength', 'speed', 'defense', 'dexterity'];
+const trainingContainer = document.createElement('div');
+trainingContainer.id = 'tta-container';
+function loadTrainingSettings() {
+try {
+const saved = JSON.parse(localStorage.getItem(TRAINING_SETTINGS_KEY) || '{}');
+return { apiKey: String(saved.apiKey || '').trim() };
+} catch {
+return { apiKey: '' };
+}
+}
+function emptyTrainingData() {
+return {
+bonuses: { strength: 0, speed: 0, defense: 0, dexterity: 0 },
+activeGym: null,
+gyms: [],
+accessibleGymIds: [],
+fetchedAt: 0,
+gymsFetchedAt: 0
+};
+}
+function loadTrainingCache() {
+try {
+const saved = JSON.parse(localStorage.getItem(TRAINING_CACHE_KEY) || 'null');
+if (!saved || typeof saved !== 'object') return emptyTrainingData();
+return {
+...emptyTrainingData(),
+...saved,
+bonuses: { ...emptyTrainingData().bonuses, ...(saved.bonuses || {}) },
+gyms: Array.isArray(saved.gyms) ? saved.gyms : [],
+accessibleGymIds: Array.isArray(saved.accessibleGymIds) ? saved.accessibleGymIds.map(Number).filter(Number.isFinite) : []
+};
+} catch {
+return emptyTrainingData();
+}
+}
+let trainingSettings = loadTrainingSettings();
+let trainingData = loadTrainingCache();
+let trainingMinimized = JSON.parse(localStorage.getItem(TRAINING_MINIMIZED_KEY) ?? 'true');
+let trainingActiveTab = localStorage.getItem(TRAINING_TAB_KEY) === 'settings' ? 'settings' : 'status';
+let trainingLoading = false;
+let trainingError = '';
+let trainingWarning = '';
+let trainingApiPromise = null;
+let trainingApiRequestsThisPage = 0;
+let trainingObserver = null;
+let trainingCaptureTimer = null;
+function saveTrainingSettings() {
+localStorage.setItem(TRAINING_SETTINGS_KEY, JSON.stringify(trainingSettings));
+localStorage.setItem(TRAINING_MINIMIZED_KEY, JSON.stringify(trainingMinimized));
+localStorage.setItem(TRAINING_TAB_KEY, trainingActiveTab);
+}
+function saveTrainingCache() {
+localStorage.setItem(TRAINING_CACHE_KEY, JSON.stringify(trainingData));
+}
+function trainingApiKey() {
+return trainingSettings.apiKey || apiKey;
+}
+function ensureTrainingContainerMounted() {
+if (!document.body) return;
+if (!trainingContainer.isConnected) document.body.appendChild(trainingContainer);
+trainingContainer.style.top = chainAssistantEnabled ? '108px' : '64px';
+}
+function isGymPage() {
+const params = new URLSearchParams(location.search);
+return /\/gym\.php$/i.test(location.pathname)
+|| params.get('sid') === 'gym'
+|| /(?:^|[\/#])gym(?:[\/#]|$)/i.test(location.hash);
+}
+function normalizedTrainingText(value) {
+return String(value || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function trainingElementIsLocked(element) {
+let node = element;
+for (let depth = 0; node && node !== document.body && depth < 6; depth += 1, node = node.parentElement) {
+if (node.matches?.('[disabled], [aria-disabled="true"]')) return true;
+const className = String(node.className || '').toLowerCase();
+if (/(?:^|[\s_-])locked(?:$|[\s_-])/.test(className)) return true;
+}
+return false;
+}
+function gymPageSearchText() {
+if (!document.body) return '';
+const pieces = [];
+const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+let textNode;
+while ((textNode = walker.nextNode())) {
+const parent = textNode.parentElement;
+if (!parent || parent.closest('#tbp-container, #tca-container, #tta-container, script, style, noscript')) continue;
+if (trainingElementIsLocked(parent)) continue;
+const value = normalizedTrainingText(textNode.nodeValue);
+if (value) pieces.push(value);
+}
+document.querySelectorAll('[title], [aria-label], img[alt]').forEach(element => {
+if (element.closest('#tbp-container, #tca-container, #tta-container') || trainingElementIsLocked(element)) return;
+const value = normalizedTrainingText([
+element.getAttribute('title'),
+element.getAttribute('aria-label'),
+element.getAttribute('alt')
+].filter(Boolean).join(' '));
+if (value) pieces.push(value);
+});
+return ` ${pieces.join(' ')} `;
+}
+function captureAccessibleGymsFromPage() {
+if (!trainingAssistantEnabled || !isGymPage() || !trainingData.gyms.length) return false;
+const pageText = gymPageSearchText();
+const accessible = new Set(trainingData.accessibleGymIds.map(Number));
+if (trainingData.activeGym?.id) accessible.add(Number(trainingData.activeGym.id));
+trainingData.gyms.forEach(gym => {
+const name = normalizedTrainingText(gym?.name);
+if (name && pageText.includes(` ${name} `)) accessible.add(Number(gym.id));
+});
+const next = Array.from(accessible).filter(Number.isFinite).sort((a, b) => a - b);
+if (JSON.stringify(next) === JSON.stringify(trainingData.accessibleGymIds)) return false;
+trainingData.accessibleGymIds = next;
+saveTrainingCache();
+renderTrainingAssistant();
+return true;
+}
+function scheduleTrainingGymCapture() {
+if (trainingCaptureTimer) clearTimeout(trainingCaptureTimer);
+trainingCaptureTimer = setTimeout(() => {
+trainingCaptureTimer = null;
+captureAccessibleGymsFromPage();
+}, 400);
+}
+function startTrainingObserver() {
+if (trainingObserver || !document.body) return;
+trainingObserver = new MutationObserver(mutations => {
+if (!trainingAssistantEnabled || !isGymPage()) return;
+const pageChanged = mutations.some(mutation => {
+const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+return target && !target.closest('#tbp-container, #tca-container, #tta-container');
+});
+if (pageChanged) scheduleTrainingGymCapture();
+});
+trainingObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+}
+function extractSteadfastBonuses(factionPerks) {
+const bonuses = { strength: 0, speed: 0, defense: 0, dexterity: 0 };
+(Array.isArray(factionPerks) ? factionPerks : []).forEach(perk => {
+const text = String(perk || '');
+if (!/gym\s+gains?|gains?.*gym/i.test(text)) return;
+const percentValues = Array.from(text.matchAll(/([0-9]+(?:\.[0-9]+)?)\s*%/g), match => Number(match[1]));
+if (!percentValues.length) return;
+const percent = Math.max(...percentValues.filter(Number.isFinite));
+TRAINING_STATS.forEach(stat => {
+if (new RegExp(`\\b${stat}\\b`, 'i').test(text)) bonuses[stat] = Math.max(bonuses[stat], percent);
+});
+});
+return bonuses;
+}
+function requestTrainingTornV2(path, key) {
+trainingApiRequestsThisPage += 1;
+return new Promise((resolve, reject) => {
+GM_xmlhttpRequest({
+method: 'GET',
+url: `https://api.torn.com/v2/${path}${path.includes('?') ? '&' : '?'}comment=TrainingAssist`,
+headers: { Authorization: `ApiKey ${key}` },
+timeout: 15000,
+onload: response => {
+let data;
+try { data = JSON.parse(response.responseText || '{}'); }
+catch { reject(new Error('Torn returned an unreadable API response.')); return; }
+if (response.status < 200 || response.status >= 300 || data.error) {
+reject(new Error(chainApiError(data, `Torn API request failed (${response.status || 'unknown status'}).`)));
+return;
+}
+resolve(data);
+},
+onerror: () => reject(new Error('Could not reach the Torn API.')),
+ontimeout: () => reject(new Error('The Torn API request timed out.'))
+});
+});
+}
+async function fetchTrainingData(force = false) {
+if (!trainingAssistantEnabled || trainingApiPromise) return trainingApiPromise;
+const key = trainingApiKey();
+if (!key) {
+trainingError = 'Add a Training API key in T Settings, or configure a compatible Torn key in Bookie Settings.';
+renderTrainingAssistant();
+return null;
+}
+const userFresh = trainingData.fetchedAt && Date.now() - trainingData.fetchedAt < TRAINING_USER_CACHE_MS;
+const gymsFresh = trainingData.gyms.length && trainingData.gymsFetchedAt && Date.now() - trainingData.gymsFetchedAt < TRAINING_GYM_CATALOG_CACHE_MS;
+if (!force && userFresh && gymsFresh) {
+captureAccessibleGymsFromPage();
+renderTrainingAssistant();
+return trainingData;
+}
+trainingApiPromise = (async () => {
+trainingLoading = true;
+trainingError = '';
+trainingWarning = '';
+renderTrainingAssistant();
+try {
+const userData = await requestTrainingTornV2('user?selections=perks,gym', key);
+trainingData.bonuses = extractSteadfastBonuses(userData?.perks?.faction);
+trainingData.activeGym = userData?.gym?.id ? { id: Number(userData.gym.id), name: String(userData.gym.name || '') } : null;
+trainingData.fetchedAt = Date.now();
+if (trainingData.activeGym?.id) {
+trainingData.accessibleGymIds = Array.from(new Set([
+...trainingData.accessibleGymIds.map(Number),
+Number(trainingData.activeGym.id)
+])).filter(Number.isFinite).sort((a, b) => a - b);
+}
+if (!gymsFresh || force && !trainingData.gyms.length) {
+try {
+const gymData = await requestTrainingTornV2('torn/gyms', key);
+trainingData.gyms = Array.isArray(gymData?.gyms) ? gymData.gyms : [];
+trainingData.gymsFetchedAt = Date.now();
+} catch (error) {
+if (!trainingData.gyms.length) throw error;
+trainingWarning = `Gym catalog refresh failed; using the saved catalog. ${String(error?.message || error)}`;
+}
+}
+saveTrainingCache();
+captureAccessibleGymsFromPage();
+} catch (error) {
+trainingError = String(error?.message || error);
+} finally {
+trainingLoading = false;
+renderTrainingAssistant();
+}
+return trainingData;
+})().finally(() => {
+trainingApiPromise = null;
+});
+return trainingApiPromise;
+}
+function trainingGymModifier(gym, stat) {
+const value = Number(gym?.modifiers?.[stat]);
+return Number.isFinite(value) ? value : -Infinity;
+}
+function bestConfirmedGym(stat) {
+const accessible = new Set(trainingData.accessibleGymIds.map(Number));
+return trainingData.gyms
+.filter(gym => accessible.has(Number(gym?.id)) && Number.isFinite(Number(gym?.modifiers?.[stat])))
+.sort((a, b) => trainingGymModifier(b, stat) - trainingGymModifier(a, stat))[0] || null;
+}
+function trainingStatCard(stat) {
+const label = stat.charAt(0).toUpperCase() + stat.slice(1);
+const bonus = Number(trainingData.bonuses?.[stat] || 0);
+const gym = bestConfirmedGym(stat);
+const modifier = gym ? trainingGymModifier(gym, stat) : null;
+return `
+<div class="tbp-card tta-stat-card">
+<div class="tbp-row" style="margin-top:0;"><strong>${label}</strong><strong class="tbp-win">+${num(bonus)}%</strong></div>
+<div class="tbp-row"><span>Best confirmed gym</span><span style="text-align:right;">${gym ? escapeHtml(gym.name) : 'Not learned yet'}</span></div>
+<div class="tbp-row"><span>Gym rating</span><span>${gym ? `${num(modifier)} dots` : '—'}</span></div>
+</div>
+`;
+}
+function renderTrainingStatus() {
+const updated = trainingData.fetchedAt ? new Date(trainingData.fetchedAt).toLocaleString() : 'Not loaded';
+const confirmedCount = trainingData.accessibleGymIds.length;
+return `
+${trainingError ? `<div class="tbp-card" style="border-left:5px solid #d9534f;"><strong>Training data unavailable</strong><div class="tbp-muted" style="margin-top:5px;">${escapeHtml(trainingError)}</div></div>` : ''}
+${trainingWarning ? `<div class="tbp-card" style="border-left:5px solid #d4ad00;"><div class="tbp-muted">${escapeHtml(trainingWarning)}</div></div>` : ''}
+<div class="tbp-card">
+<div class="tbp-row" style="margin-top:0;"><span>Current gym</span><strong>${escapeHtml(trainingData.activeGym?.name || 'Unknown')}</strong></div>
+<div class="tbp-row"><span>Confirmed available gyms</span><span>${confirmedCount}</span></div>
+<div class="tbp-muted" style="margin-top:7px;">Steadfast shows the faction gym-gain perk currently applying to your account. Recommendations use only gyms confirmed from your active gym or a loaded Gym page.</div>
+</div>
+${TRAINING_STATS.map(trainingStatCard).join('')}
+<button class="tbp-btn tbp-btn-primary" id="tta-refresh" style="width:100%;" ${trainingLoading ? 'disabled' : ''}>${trainingLoading ? 'Refreshing Torn API…' : 'Refresh Training Data'}</button>
+<div class="tbp-muted" style="margin-top:8px;">
+Updated ${escapeHtml(updated)} · ${trainingApiRequestsThisPage} API request${trainingApiRequestsThisPage === 1 ? '' : 's'} this page.<br>
+${isGymPage() ? 'Gym-page access capture is active. Open the gym selector/list once if more gyms need to be learned.' : 'Visit the Gym page and open its gym selector/list to confirm all available gyms.'}
+</div>
+`;
+}
+function renderTrainingSettings() {
+return `
+<label class="tbp-muted">TRAINING API KEY</label>
+<input type="password" id="tta-api-key" class="tbp-input" value="${escapeHtml(trainingSettings.apiKey)}" placeholder="Leave blank to try the Bookie Torn key">
+<div class="tbp-muted" style="margin-bottom:10px;">Use a Minimal Access key that permits user → perks and user → gym. The public Torn gym catalog is cached for seven days; personal training data is cached for 30 minutes. No timer polling is used.</div>
+<button class="tbp-btn tbp-btn-success" id="tta-save-settings" style="width:100%;">Save Training Settings</button>
+`;
+}
+function attachTrainingEvents() {
+document.querySelectorAll('.tta-tab').forEach(tab => {
+tab.onclick = () => {
+trainingActiveTab = tab.dataset.ttaTab;
+saveTrainingSettings();
+renderTrainingAssistant();
+};
+});
+const hideButton = document.getElementById('tta-hide');
+if (hideButton) hideButton.onclick = event => {
+event.stopPropagation();
+trainingMinimized = true;
+saveTrainingSettings();
+renderTrainingAssistant();
+};
+const refreshButton = document.getElementById('tta-refresh');
+if (refreshButton) refreshButton.onclick = () => fetchTrainingData(true);
+const saveButton = document.getElementById('tta-save-settings');
+if (saveButton) saveButton.onclick = () => {
+const priorKey = trainingSettings.apiKey;
+trainingSettings.apiKey = String(document.getElementById('tta-api-key')?.value || '').trim();
+if (trainingSettings.apiKey !== priorKey) trainingData.fetchedAt = 0;
+trainingActiveTab = 'status';
+saveTrainingSettings();
+saveTrainingCache();
+renderTrainingAssistant();
+fetchTrainingData(true);
+};
+}
+function renderTrainingAssistant() {
+if (!trainingAssistantEnabled) {
+trainingContainer.remove();
+return;
+}
+ensureTrainingContainerMounted();
+if (trainingMinimized) {
+trainingContainer.className = 'tta-minimized';
+trainingContainer.textContent = 'T';
+trainingContainer.title = trainingError ? `Training Assistant: ${trainingError}` : 'Training Assistant';
+trainingContainer.onclick = () => {
+minimizeChainAssistant();
+if (!isMinimized) {
+isMinimized = true;
+saveData();
+render();
+}
+trainingMinimized = false;
+saveTrainingSettings();
+renderTrainingAssistant();
+};
+return;
+}
+trainingContainer.onclick = null;
+trainingContainer.className = '';
+trainingContainer.innerHTML = `
+<div class="tta-header">
+<div style="display:flex; align-items:center; gap:7px;"><strong>Training Assistant</strong><span class="tbp-muted" style="font-size:9px;">v${SCRIPT_VERSION}</span></div>
+<button class="tbp-btn" id="tta-hide" style="background:transparent; color:#aaa;">_</button>
+</div>
+<div class="tta-tabs">
+<div class="tta-tab ${trainingActiveTab === 'status' ? 'active' : ''}" data-tta-tab="status">Status</div>
+<div class="tta-tab ${trainingActiveTab === 'settings' ? 'active' : ''}" data-tta-tab="settings">Settings</div>
+</div>
+<div class="tta-content">${trainingActiveTab === 'settings' ? renderTrainingSettings() : renderTrainingStatus()}</div>
+`;
+attachTrainingEvents();
+}
+function syncTrainingAssistant() {
+if (!trainingAssistantEnabled) {
+trainingContainer.remove();
+return;
+}
+ensureTrainingContainerMounted();
+startTrainingObserver();
+renderTrainingAssistant();
+if (isGymPage()) scheduleTrainingGymCapture();
+fetchTrainingData(false);
+}
+function minimizeTrainingAssistant() {
+if (!trainingContainer.isConnected || trainingMinimized) return;
+trainingMinimized = true;
+saveTrainingSettings();
+renderTrainingAssistant();
+}
 window.addEventListener('popstate', syncChainAssistant);
 window.addEventListener('hashchange', syncChainAssistant);
+window.addEventListener('popstate', syncTrainingAssistant);
+window.addEventListener('hashchange', syncTrainingAssistant);
 setInterval(() => {
 if (location.href === chainLastUrl) return;
 chainLastUrl = location.href;
 syncChainAssistant();
+syncTrainingAssistant();
 }, 1000);
 let panelStarted = false;
 function startBookiePanel() {
@@ -5926,6 +6324,7 @@ loadFootballBookmarks();
 scheduleFootballBookmarkRestore();
 if (footballOddsHistoryEnabled) scheduleFootballHistoryExpiry(loadFootballOddsHistory());
 syncChainAssistant();
+syncTrainingAssistant();
 } catch (error) {
 console.error('Bookie Panel failed to start.', error);
 isMinimized = true;
