@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.19.3
+// @version      1.20.0
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -5187,7 +5187,7 @@ ${safeJson(log.raw)}
                     <input type="checkbox" id="tbp-training-assistant-enabled" ${trainingAssistantEnabled ? 'checked' : ''}>
                 </div>
                 <div class="tbp-muted" style="margin-top:7px;">
-                    Shows a persistent T below the other assistant buttons. Torn's API supplies your current gym, faction gym-gain perks, and gym modifiers. Visiting the Gym page confirms which gyms are available to you so recommendations do not include unconfirmed specialty gyms. There is no repeating poll.
+                    Shows a persistent T below the other assistant buttons. Torn's API supplies your current gym, all active personal gym-gain perks, and gym modifiers. Visiting the Gym page confirms which gyms are available to you so recommendations do not include unconfirmed specialty gyms. There is no repeating poll.
                 </div>
             </div>
 
@@ -6513,8 +6513,10 @@ document.addEventListener('click', async e => {
 
     function emptyTrainingData() {
         return {
-            dataVersion: 3,
+            dataVersion: 4,
             bonuses: { strength: 0, speed: 0, defense: 0, dexterity: 0 },
+            bonusSources: { strength: [], speed: [], defense: [], dexterity: [] },
+            totalPerkCount: 0,
             factionPerkCount: 0,
             gymFactionPerkCount: 0,
             steadfastMatchCount: 0,
@@ -6535,10 +6537,11 @@ document.addEventListener('click', async e => {
                 ...emptyTrainingData(),
                 ...saved,
                 bonuses: { ...emptyTrainingData().bonuses, ...(saved.bonuses || {}) },
+                bonusSources: { ...emptyTrainingData().bonusSources, ...(saved.bonusSources || {}) },
                 gyms: Array.isArray(saved.gyms) ? saved.gyms : [],
                 accessibleGymIds: Array.isArray(saved.accessibleGymIds) ? saved.accessibleGymIds.map(Number).filter(Number.isFinite) : []
             };
-            if (Number(saved.dataVersion || 0) < 3) loaded.fetchedAt = 0;
+            if (Number(saved.dataVersion || 0) < 4) loaded.fetchedAt = 0;
             return loaded;
         } catch {
             return emptyTrainingData();
@@ -6691,30 +6694,55 @@ document.addEventListener('click', async e => {
             .trim();
     }
 
-    function extractSteadfastBonuses(factionPerks) {
-        const bonuses = { strength: 0, speed: 0, defense: 0, dexterity: 0 };
+    function extractTrainingBonuses(perksByCategory) {
+        const factors = Object.fromEntries(TRAINING_STATS.map(stat => [stat, 1]));
+        const sourceFactors = Object.fromEntries(TRAINING_STATS.map(stat => [stat, {}]));
         let matched = 0;
         let gymRelated = 0;
         const unmatchedGymPerks = [];
-        (Array.isArray(factionPerks) ? factionPerks : []).forEach(perk => {
-            const text = readableTrainingPerk(perk);
-            const rawStat = String(text.match(/\b(strength|speed|dexterity|defen[sc]e)\b/i)?.[1] || '').toLowerCase();
-            const stat = rawStat === 'defence' ? 'defense' : rawStat;
-            const gymGainRelated = /\bgym\b/i.test(text) && /\b(?:gain|gains|training|train)\b/i.test(text) && TRAINING_STATS.includes(stat);
-            if (!gymGainRelated) return;
-            gymRelated += 1;
-            const percentMatch = text.match(/([0-9]+(?:\.[0-9]+)?)\s*%|%\s*([0-9]+(?:\.[0-9]+)?)/);
-            const percent = Number(percentMatch?.[1] || percentMatch?.[2]);
-            if (!Number.isFinite(percent)) {
-                if (unmatchedGymPerks.length < 4) unmatchedGymPerks.push(text.slice(0, 160));
-                return;
-            }
-            bonuses[stat] += percent;
-            matched += 1;
+        let totalPerkCount = 0;
+        let factionPerkCount = 0;
+        const categoryLabels = {
+            faction: 'Faction', job: 'Job', property: 'Property', education: 'Education',
+            enhancer: 'Enhancer', book: 'Book', stock: 'Stock', merit: 'Merit'
+        };
+
+        Object.entries(perksByCategory && typeof perksByCategory === 'object' ? perksByCategory : {}).forEach(([category, perks]) => {
+            if (!Array.isArray(perks)) return;
+            totalPerkCount += perks.length;
+            if (category === 'faction') factionPerkCount = perks.length;
+            perks.forEach(perk => {
+                const text = readableTrainingPerk(perk);
+                const gymGainRelated = /\bgym\b/i.test(text) && /\b(?:gain|gains|training|train)\b/i.test(text);
+                if (!gymGainRelated) return;
+                gymRelated += 1;
+                const rawStat = String(text.match(/\b(strength|speed|dexterity|defen[sc]e)\b/i)?.[1] || '').toLowerCase();
+                const stat = rawStat === 'defence' ? 'defense' : rawStat;
+                const affectedStats = TRAINING_STATS.includes(stat) ? [stat] : [...TRAINING_STATS];
+                const percentMatch = text.match(/([0-9]+(?:\.[0-9]+)?)\s*%|%\s*([0-9]+(?:\.[0-9]+)?)/);
+                const percent = Number(percentMatch?.[1] || percentMatch?.[2]);
+                if (!Number.isFinite(percent)) {
+                    if (unmatchedGymPerks.length < 6) unmatchedGymPerks.push(text.slice(0, 160));
+                    return;
+                }
+                const label = categoryLabels[category] || category.charAt(0).toUpperCase() + category.slice(1);
+                affectedStats.forEach(affectedStat => {
+                    factors[affectedStat] *= 1 + percent / 100;
+                    sourceFactors[affectedStat][label] = (sourceFactors[affectedStat][label] || 1) * (1 + percent / 100);
+                });
+                matched += 1;
+            });
         });
+
+        const bonuses = Object.fromEntries(TRAINING_STATS.map(stat => [stat, (factors[stat] - 1) * 100]));
+        const bonusSources = Object.fromEntries(TRAINING_STATS.map(stat => [stat,
+            Object.entries(sourceFactors[stat]).map(([label, factor]) => ({ label, percent: (factor - 1) * 100 }))
+        ]));
         return {
             bonuses,
-            factionPerkCount: Array.isArray(factionPerks) ? factionPerks.length : 0,
+            bonusSources,
+            totalPerkCount,
+            factionPerkCount,
             gymFactionPerkCount: gymRelated,
             steadfastMatchCount: matched,
             unmatchedGymPerks
@@ -6820,13 +6848,15 @@ document.addEventListener('click', async e => {
             try {
                 const userData = await requestTrainingTornV2('user?selections=perks,gym', key);
                 if (!userData?.gym?.id) throw new Error('Torn returned no active gym information.');
-                const steadfast = extractSteadfastBonuses(userData?.perks?.faction);
-                trainingData.dataVersion = 3;
-                trainingData.bonuses = steadfast.bonuses;
-                trainingData.factionPerkCount = steadfast.factionPerkCount;
-                trainingData.gymFactionPerkCount = steadfast.gymFactionPerkCount;
-                trainingData.steadfastMatchCount = steadfast.steadfastMatchCount;
-                trainingData.unmatchedGymPerks = steadfast.unmatchedGymPerks;
+                const trainingBonuses = extractTrainingBonuses(userData?.perks);
+                trainingData.dataVersion = 4;
+                trainingData.bonuses = trainingBonuses.bonuses;
+                trainingData.bonusSources = trainingBonuses.bonusSources;
+                trainingData.totalPerkCount = trainingBonuses.totalPerkCount;
+                trainingData.factionPerkCount = trainingBonuses.factionPerkCount;
+                trainingData.gymFactionPerkCount = trainingBonuses.gymFactionPerkCount;
+                trainingData.steadfastMatchCount = trainingBonuses.steadfastMatchCount;
+                trainingData.unmatchedGymPerks = trainingBonuses.unmatchedGymPerks;
                 trainingData.activeGym = userData?.gym?.id ? { id: Number(userData.gym.id), name: String(userData.gym.name || '') } : null;
                 trainingData.fetchedAt = Date.now();
                 if (trainingData.activeGym?.id) {
@@ -6879,14 +6909,18 @@ document.addEventListener('click', async e => {
     function trainingStatCard(stat) {
         const label = stat.charAt(0).toUpperCase() + stat.slice(1);
         const bonus = Number(trainingData.bonuses?.[stat] || 0);
-        const steadfastValue = trainingData.steadfastMatchCount > 0
-            ? `+${num(bonus)}%`
-            : trainingData.gymFactionPerkCount > 0 ? 'Unrecognized' : 'No active bonus';
+        const sources = trainingData.bonusSources?.[stat] || [];
+        const hasBonus = sources.length > 0;
+        const bonusValue = hasBonus ? `+${num(bonus)}%` : 'No active bonus';
+        const sourceText = sources
+            .map(source => `${source.label} +${num(source.percent)}%`)
+            .join(' · ');
         const gym = bestConfirmedGym(stat);
         const modifier = gym ? trainingGymModifier(gym, stat) : null;
         return `
             <div class="tbp-card tta-stat-card">
-                <div class="tbp-row" style="margin-top:0;"><strong>${label}</strong><strong class="${trainingData.steadfastMatchCount > 0 ? 'tbp-win' : 'tbp-muted'}">${steadfastValue}</strong></div>
+                <div class="tbp-row" style="margin-top:0;"><strong>${label}</strong><strong class="${hasBonus ? 'tbp-win' : 'tbp-muted'}">${bonusValue}</strong></div>
+                <div class="tbp-muted" style="margin-top:4px;">${sourceText ? escapeHtml(sourceText) : 'No active gym-gain perks returned'}</div>
                 <div class="tbp-row"><span>Best confirmed gym</span><span style="text-align:right;">${gym ? escapeHtml(gym.name) : 'Not learned yet'}</span></div>
                 <div class="tbp-row"><span>Gym rating</span><span>${gym ? `${num(modifier)} dots` : '—'}</span></div>
             </div>
@@ -6902,9 +6936,10 @@ document.addEventListener('click', async e => {
             <div class="tbp-card">
                 <div class="tbp-row" style="margin-top:0;"><span>Current gym</span><strong>${escapeHtml(trainingData.activeGym?.name || 'Unknown')}</strong></div>
                 <div class="tbp-row"><span>Confirmed available gyms</span><span>${confirmedCount}</span></div>
-                <div class="tbp-row"><span>Faction perks returned</span><span>${trainingData.factionPerkCount}</span></div>
+                <div class="tbp-row"><span>Personal perks returned</span><span>${trainingData.totalPerkCount}</span></div>
+                <div class="tbp-row"><span>Faction perks included</span><span>${trainingData.factionPerkCount}</span></div>
                 <div class="tbp-row"><span>Gym-gain / parsed</span><span>${trainingData.gymFactionPerkCount} / ${trainingData.steadfastMatchCount}</span></div>
-                <div class="tbp-muted" style="margin-top:7px;">Steadfast shows the faction gym-gain perk currently applying to your account. Recommendations use only gyms confirmed from your active gym or a loaded Gym page.</div>
+                <div class="tbp-muted" style="margin-top:7px;">Totals combine all active gym-gain perks returned by Torn (Faction, Education, Property, Job, Enhancer, and Book). Passive battle-stat modifiers such as merits are kept out because they do not increase gym gains. Recommendations use only confirmed gyms.</div>
             </div>
             ${trainingData.unmatchedGymPerks?.length ? `<div class="tbp-card" style="border-left:5px solid #d4ad00;"><strong>Unrecognized gym perk wording</strong>${trainingData.unmatchedGymPerks.map(perk => `<div class="tbp-muted" style="margin-top:5px;">${escapeHtml(perk)}</div>`).join('')}</div>` : ''}
             ${TRAINING_STATS.map(trainingStatCard).join('')}
@@ -6920,7 +6955,7 @@ document.addEventListener('click', async e => {
         return `
             <label class="tbp-muted">TRAINING API KEY</label>
             <input type="password" id="tta-api-key" class="tbp-input" value="${escapeHtml(trainingSettings.apiKey)}" placeholder="Leave blank to try the Bookie Torn key">
-            <div class="tbp-muted" style="margin-bottom:10px;">Use a Minimal Access key that permits user → perks and user → gym. The public Torn gym catalog is cached for seven days; personal training data is cached for 30 minutes. No timer polling is used.</div>
+            <div class="tbp-muted" style="margin-bottom:10px;">Use a Minimal Access key that permits user → perks and user → gym. All active personal gym-gain perk categories are included. The public Torn gym catalog is cached for seven days; personal training data is cached for 30 minutes. No timer polling is used.</div>
             <button class="tbp-btn tbp-btn-success" id="tta-save-settings" style="width:100%;">Save Training Settings</button>
         `;
     }
