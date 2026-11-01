@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.20.1
+// @version      1.21.0
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -40,6 +40,8 @@ let footballScoreProvider = localStorage.getItem('tbp_football_score_provider') 
 let footballAutoScoreEnabled = JSON.parse(localStorage.getItem('tbp_football_auto_score_enabled') || 'false');
 let footballScoreDayStartHour = Math.max(0, Math.min(23, Number(localStorage.getItem('tbp_football_score_day_start_hour') || 8)));
 let batchFeatureEnabled = JSON.parse(localStorage.getItem('tbp_batch_feature_enabled') || 'false');
+let loanFeatureEnabled = JSON.parse(localStorage.getItem('tbp_loan_feature_enabled') || 'false');
+let selectedLoanId = localStorage.getItem('tbp_selected_loan_id') || '';
 let footballStatsExpanded = JSON.parse(localStorage.getItem('tbp_football_stats_expanded') ?? 'true');
 let hockeyStatsExpanded = JSON.parse(localStorage.getItem('tbp_hockey_stats_expanded') ?? 'false');
 let chainAssistantEnabled = JSON.parse(localStorage.getItem('tbp_chain_assistant_enabled') || 'false');
@@ -53,9 +55,10 @@ let todaySummary = { bets: 0, wins: 0, losses: 0, refunds: 0, won: 0, lost: 0, n
 let overallBookieNet = 0;
 let lastLoadStatus = 'Not loaded yet.';
 let indexedManualBetLinks = {};
-let indexedLoanLedger = { version: 1, payments: [] };
+let indexedLoanLedger = { version: 2, loans: [], payments: [] };
+let pendingLoanDraft = null;
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.19.3';
+const SCRIPT_VERSION = '1.21.0';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -117,6 +120,7 @@ const LOAN_ORIGINAL_BALANCE = 1500000000;
 const LOAN_RECIPIENT_ID = '3995562';
 const LOAN_FIRST_PERIOD_START = '2026-09-02';
 const LOAN_FIRST_PERIOD_END = '2026-09-05';
+const LEGACY_LOAN_ID = 'bookie-loan-2026';
 let footballAutoScoreTimer = null;
 let footballAutoScoreRunning = false;
 let footballAutoScoreNextAt = 0;
@@ -301,6 +305,8 @@ localStorage.setItem('tbp_football_score_provider', footballScoreProvider);
 localStorage.setItem('tbp_football_auto_score_enabled', JSON.stringify(footballAutoScoreEnabled));
 localStorage.setItem('tbp_football_score_day_start_hour', String(footballScoreDayStartHour));
 localStorage.setItem('tbp_batch_feature_enabled', JSON.stringify(batchFeatureEnabled));
+localStorage.setItem('tbp_loan_feature_enabled', JSON.stringify(loanFeatureEnabled));
+localStorage.setItem('tbp_selected_loan_id', selectedLoanId);
 localStorage.setItem('tbp_football_stats_expanded', JSON.stringify(footballStatsExpanded));
 localStorage.setItem('tbp_hockey_stats_expanded', JSON.stringify(hockeyStatsExpanded));
 localStorage.setItem('tbp_chain_assistant_enabled', JSON.stringify(chainAssistantEnabled));
@@ -473,7 +479,7 @@ db.close();
 }
 async function loadIndexedLoanLedger() {
 const owner = await getCacheOwner();
-if (!owner) return { version: 1, payments: [] };
+if (!owner) return normalizeLoanLedger(null);
 const db = await openCacheDb();
 try {
 return await new Promise((resolve, reject) => {
@@ -483,9 +489,7 @@ const request = db
 .get(`${owner}:loan-ledger`);
 request.onsuccess = () => {
 const ledger = request.result?.ledger;
-resolve(ledger && Array.isArray(ledger.payments)
-? ledger
-: { version: 1, payments: [] });
+resolve(normalizeLoanLedger(ledger));
 };
 request.onerror = () => reject(request.error);
 });
@@ -4350,6 +4354,7 @@ render();
 return;
 }
 if (!showDebug && activeTab === 'debug') activeTab = 'open';
+if (activeTab === 'today' || (!loanFeatureEnabled && activeTab === 'loans')) activeTab = 'open';
 container.className = '';
 const footballBookmarkCount = Object.keys(loadFootballBookmarks().games || {}).length;
 container.innerHTML = `
@@ -4367,7 +4372,7 @@ ${guidedFootballReviewEnabled && guidedFootballSession.active ? '<button class="
 <div class="tbp-odds-change-strip" id="tbp-odds-change-strip"></div>
 <div class="tbp-tabs">
 <div class="tbp-tab ${activeTab === 'open' ? 'active' : ''}" data-tab="open">Open</div>
-<div class="tbp-tab ${activeTab === 'today' ? 'active' : ''}" data-tab="today">Today</div>
+${loanFeatureEnabled ? `<div class="tbp-tab ${activeTab === 'loans' ? 'active' : ''}" data-tab="loans">Loans${loanDueCount() ? ' !' : ''}</div>` : ''}
 <div class="tbp-tab ${activeTab === 'daily' ? 'active' : ''}" data-tab="daily">Daily</div>
 <div class="tbp-tab ${activeTab === 'batch' ? 'active' : ''}" data-tab="batch">${batchFeatureEnabled ? 'Batch' : 'Stats'}</div>
 ${showDebug ? `<div class="tbp-tab ${activeTab === 'debug' ? 'active' : ''}" data-tab="debug">Debug</div>` : ''}
@@ -4381,7 +4386,7 @@ ${showDebug ? `<div class="tbp-tab ${activeTab === 'debug' ? 'active' : ''}" dat
 `;
 const body = document.getElementById('tbp-body');
 if (activeTab === 'open') renderOpen(body);
-if (activeTab === 'today') renderToday(body);
+if (activeTab === 'loans') renderLoans(body);
 if (activeTab === 'daily') renderDaily(body);
 if (activeTab === 'batch') {
 if (batchFeatureEnabled) renderBatch(body);
@@ -4493,25 +4498,6 @@ list.appendChild(row);
 });
 refreshFootballDisplayClocks();
 }
-function renderToday(body) {
-body.innerHTML = `
-<div class="tbp-muted" style="margin-bottom:8px;">${lastLoadStatus}</div>
-<div class="tbp-summary-grid">
-<div class="tbp-summary-box"><div class="tbp-summary-label">Bets Today</div><div class="tbp-summary-value">${todaySummary.bets}</div></div>
-<div class="tbp-summary-box"><div class="tbp-summary-label">Wins / Losses</div><div class="tbp-summary-value">${todaySummary.wins} / ${todaySummary.losses}</div></div>
-<div class="tbp-summary-box"><div class="tbp-summary-label">Net Won</div><div class="tbp-summary-value tbp-win">${money(todaySummary.won)}</div></div>
-<div class="tbp-summary-box"><div class="tbp-summary-label">Lost</div><div class="tbp-summary-value tbp-loss">${money(todaySummary.lost)}</div></div>
-</div>
-<div class="tbp-card">
-<div class="tbp-row">
-<span>Daily Net</span>
-<span class="${todaySummary.net >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(todaySummary.net)}</span>
-</div>
-<div class="tbp-row"><span>Refunds</span><span>${todaySummary.refunds}</span></div>
-<div class="tbp-row"><span>Overall Bookie Net</span><span class="${overallBookieNet >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(overallBookieNet)}</span></div>
-</div>
-`;
-}
 function renderDaily(body) {
 const filteredDays = scanMode === 'pages'
 ? new Set(dailyTotals.map(day => day.dateKey)).size
@@ -4616,127 +4602,54 @@ ${safeJson(log.raw)}
 function renderSettings(body) {
 const scoreUsage = loadFootballScoreUsage();
 const sportsDbUsage = getSportsDbUsage();
-const resetDate = new Date(`${scoreUsage.date}T00:00:00Z`);
-resetDate.setUTCDate(resetDate.getUTCDate() + 1);
 body.innerHTML = `
-<label class="tbp-muted">TORN API KEY</label>
-<input type="password" id="tbp-api-key" class="tbp-input" value="${escapeHtml(apiKey)}" placeholder="Paste Torn API key">
+<details class="tbp-card">
+<summary style="font-weight:bold; cursor:pointer;">Bookie API</summary>
+<label class="tbp-muted" style="display:block; margin-top:9px;">TORN API KEY</label>
+<input type="password" id="tbp-api-key" class="tbp-input" value="${escapeHtml(apiKey)}" placeholder="Torn API key">
 <label class="tbp-muted">SCAN MODE</label>
 <select id="tbp-scan-mode" class="tbp-select">
-<option value="both" ${scanMode === 'both' ? 'selected' : ''}>Date + Page Limit</option>
-<option value="date" ${scanMode === 'date' ? 'selected' : ''}>Date Only</option>
-<option value="pages" ${scanMode === 'pages' ? 'selected' : ''}>Page Limit Only</option>
+<option value="both" ${scanMode === 'both' ? 'selected' : ''}>Date + page limit</option>
+<option value="date" ${scanMode === 'date' ? 'selected' : ''}>Date only</option>
+<option value="pages" ${scanMode === 'pages' ? 'selected' : ''}>Page limit only</option>
 </select>
-<label class="tbp-muted">SCAN FROM DATE</label>
+<label class="tbp-muted">FROM DATE</label>
 <input type="date" id="tbp-scan-start-date" class="tbp-input" value="${scanStartDate}">
-<label class="tbp-muted">MAX API PAGES TO LOAD</label>
+<label class="tbp-muted">MAX PAGES</label>
 <input type="number" id="tbp-max-pages" class="tbp-input" value="${maxPages}" min="1" max="${MAX_API_PAGES_PER_SCAN}">
-<div class="tbp-card">
-<div class="tbp-muted">
-Date + Page Limit uses both and stops when either limit is reached.
-Date Only continues to the configured date and ignores Max API Pages; a fixed ${MAX_API_PAGES_PER_SCAN}-page emergency ceiling still applies.
-Page Limit Only ignores the configured scan date. Full Rescan always requires a separate confirmation.
-</div>
-</div>
-<div class="tbp-card">
-<div style="font-weight:bold; margin-bottom:6px;">API usage and privacy</div>
-<div class="tbp-muted">
-<strong>Data storage:</strong> Bookie logs in this browser's IndexedDB; viewed Football/Hockey fixtures, manual bet clicks, My Bets name links, and Training Assistant gym/perk cache in local storage.<br>
-<strong>Data sharing:</strong> Torn history stays local. When Football scores are enabled, only team names and fixture dates are sent to the selected score provider; captured bet amounts and Torn history are never sent.<br>
-<strong>Purpose:</strong> Personal bookie history, totals, named open-bet estimates, Football/Hockey review, chain goals, and training recommendations.<br>
-<strong>Key handling:</strong> Keys stay in this browser. The Torn key is sent only to api.torn.com, and the optional API-Football key only to v3.football.api-sports.io. TheSportsDB free mode uses its public key.<br>
-<strong>Required access:</strong> Bookie scanning needs user → log restricted to category 195 (Bookie), or Full Access. Optional assistants may use their own narrower keys; Training needs user → perks and user → gym.
-</div>
-</div>
-<div class="tbp-card">
-<div class="tbp-row">
-<span>Enable Football/Hockey odds scan</span>
-<input type="checkbox" id="tbp-football-scan-enabled" ${footballScanEnabled ? 'checked' : ''}>
-</div>
-<div class="tbp-muted" style="margin-top:7px;">
-Football uses the existing slate/yellow/lime/green/olive/orange rules. Hockey colors are home-team-only: 3-Way Regular Time is yellow at x${HOCKEY_ML_YELLOW_MIN.toFixed(2)}–x${HOCKEY_ML_YELLOW_MAX.toFixed(2)}, green at x${HOCKEY_ML_GREEN_MIN.toFixed(2)}–x${HOCKEY_ML_GREEN_MAX.toFixed(2)}, and moss brown-green at x${HOCKEY_3WAY_MOSS_MIN.toFixed(2)}–x${HOCKEY_3WAY_MOSS_MAX.toFixed(2)}. Hockey 2-Way Including Overtime uses light orange and olive green for the first two ranges.
-</div>
-</div>
-<div class="tbp-card">
-<div class="tbp-row">
-<span>Track viewed Bookie odds</span>
-<input type="checkbox" id="tbp-football-odds-history-enabled" ${footballOddsHistoryEnabled ? 'checked' : ''}>
-</div>
-<div class="tbp-muted" style="margin-top:7px;">
-Records Football 3-Way/handicap plus Hockey 3-Way Regular Time and 2-Way Including Overtime multipliers locally when you open a game. Changed odds receive a signed badge such as +0.12 or −0.08; tap or hover the badge to see the prior observation time. A game's records are deleted when its Torn start time is reached.
-</div>
-</div>
-<div class="tbp-card">
-<div class="tbp-row">
-<span>Enable Bookie Game Review</span>
-<input type="checkbox" id="tbp-guided-football-review-enabled" ${guidedFootballReviewEnabled ? 'checked' : ''}>
-</div>
-<div class="tbp-muted" style="margin-top:7px;">
-Game Review works from either the Football or Hockey list, opens the first upcoming game immediately, then advances one game per press through up to ${MAX_GUIDED_FOOTBALL_GAMES} games. Hockey checks both 3-Way Regular Time and 2-Way Including Overtime. Use ☆ SAVE on a colored fixture to keep its color and a gold outline across End, reloads, and page changes until kickoff.
-</div>
-</div>
-<div class="tbp-card">
-<div class="tbp-row">
-<span>Enable Football scores</span>
-<input type="checkbox" id="tbp-football-score-enabled" ${footballScoreEnabled ? 'checked' : ''}>
-</div>
-<div class="tbp-muted" style="margin-top:7px;">Check Scores maps newly placed bets to provider fixtures. Finished results remain cached.</div>
-<label class="tbp-muted" style="display:block; margin-top:9px;">SCORE PROVIDER</label>
-<select id="tbp-football-score-provider" class="tbp-select" style="margin-bottom:6px;">
-<option value="sportsdb" ${footballScoreProvider === 'sportsdb' ? 'selected' : ''}>TheSportsDB Free (30/minute)</option>
-<option value="api-football" ${footballScoreProvider === 'api-football' ? 'selected' : ''}>API-Football (100/day)</option>
+</details>
+<details class="tbp-card" open>
+<summary style="font-weight:bold; cursor:pointer;">Game Review</summary>
+<div class="tbp-row"><span>Odds colors</span><input type="checkbox" id="tbp-football-scan-enabled" ${footballScanEnabled ? 'checked' : ''}></div>
+<div class="tbp-row"><span>Odds history</span><input type="checkbox" id="tbp-football-odds-history-enabled" ${footballOddsHistoryEnabled ? 'checked' : ''}></div>
+<div class="tbp-row"><span>Guided review</span><input type="checkbox" id="tbp-guided-football-review-enabled" ${guidedFootballReviewEnabled ? 'checked' : ''}></div>
+</details>
+<details class="tbp-card">
+<summary style="font-weight:bold; cursor:pointer;">Score API</summary>
+<div class="tbp-row" style="margin-top:9px;"><span>Enable scores</span><input type="checkbox" id="tbp-football-score-enabled" ${footballScoreEnabled ? 'checked' : ''}></div>
+<label class="tbp-muted">PROVIDER</label>
+<select id="tbp-football-score-provider" class="tbp-select">
+<option value="sportsdb" ${footballScoreProvider === 'sportsdb' ? 'selected' : ''}>TheSportsDB</option>
+<option value="api-football" ${footballScoreProvider === 'api-football' ? 'selected' : ''}>API-Football</option>
 </select>
-<label class="tbp-muted" style="display:block; margin-top:9px;">API-FOOTBALL KEY</label>
-<input type="password" id="tbp-football-score-api-key" class="tbp-input" value="${escapeHtml(footballScoreApiKey)}" placeholder="Optional unless API-Football is selected" style="margin-bottom:6px;">
-<div class="tbp-row" style="margin-top:8px;">
-<span>Auto-check active games every 10 minutes</span>
-<input type="checkbox" id="tbp-football-auto-score-enabled" ${footballAutoScoreEnabled ? 'checked' : ''}>
-</div>
-<label class="tbp-muted" style="display:block; margin-top:9px;">LOCAL DAY START HOUR</label>
-<input type="number" id="tbp-football-score-day-start-hour" class="tbp-input" value="${footballScoreDayStartHour}" min="0" max="23" step="1" style="margin-bottom:6px;">
-<div class="tbp-muted" style="margin-bottom:7px;">
-At or after ${String(footballScoreDayStartHour).padStart(2, '0')}:00 local time, only mapped fixtures whose kickoff window is active are requested. Two active games use two calls; no active games use zero. Press Check Scores once after placing a new bet so its fixture ID is mapped. Automatic checks run only while Torn PDA keeps this page and script alive.
-</div>
-${footballAutoScoreEnabled && footballScoreProvider === 'api-football' ? `<div class="tbp-muted" style="margin-bottom:7px;"><strong>Cycle audit:</strong> ${escapeHtml(footballAutoScoreAuditText())}</div>` : ''}
-<div class="tbp-summary-grid" style="margin-top:7px; margin-bottom:7px;">
-<div class="tbp-summary-box"><div class="tbp-summary-label">${footballScoreProvider === 'sportsdb' ? 'Used This Minute' : 'Requests Used'}</div><div class="tbp-summary-value">${footballScoreProvider === 'sportsdb' ? sportsDbUsage.used : scoreUsage.used}</div></div>
-<div class="tbp-summary-box"><div class="tbp-summary-label">Remaining</div><div class="tbp-summary-value ${(footballScoreProvider === 'sportsdb' ? sportsDbUsage.remaining : scoreUsage.remaining) <= 10 ? 'tbp-loss' : 'tbp-win'}">${footballScoreProvider === 'sportsdb' ? `${sportsDbUsage.remaining} / ${sportsDbUsage.limit}` : `${scoreUsage.remaining} / ${scoreUsage.limit}`}</div></div>
-</div>
-<div class="tbp-muted">${footballScoreProvider === 'sportsdb'
-? `The rolling counter clears each call 60 seconds after it was made. Calls are spaced ${Math.round(SPORTSDB_MIN_REQUEST_GAP_MS / 100) / 10} seconds apart, so the check duration adapts to the number of named games.`
-: `Counter resets daily. Next reset: ${escapeHtml(resetDate.toLocaleString())}. ${scoreUsage.source === 'provider' ? 'Verified from API-Football.' : 'Locally counted until the provider returns quota headers.'}`} Cached checks do not use a request.</div>
-</div>
-<div class="tbp-card">
-<div class="tbp-row">
-<span>Use Batch tab instead of Stats</span>
-<input type="checkbox" id="tbp-batch-feature-enabled" ${batchFeatureEnabled ? 'checked' : ''}>
-</div>
-<div class="tbp-muted" style="margin-top:7px;">Leave off to show green, yellow, orange, and all-other Football records from the configured scan date.</div>
-</div>
-<div class="tbp-card">
-<div class="tbp-row">
-<span>Enable Chain Report assistant</span>
-<input type="checkbox" id="tbp-chain-assistant-enabled" ${chainAssistantEnabled ? 'checked' : ''}>
-</div>
-<div class="tbp-muted" style="margin-top:7px;">
-Shows a persistent C below the Bookie button on every Torn page. It uses Torn's chain-report API for your hits and respect score, while the loaded Chain Report page is used to highlight your row. Requests are manual or cache-limited; there is no repeating poll.
-</div>
-</div>
-<div class="tbp-card">
-<div class="tbp-row">
-<span>Enable Training assistant</span>
-<input type="checkbox" id="tbp-training-assistant-enabled" ${trainingAssistantEnabled ? 'checked' : ''}>
-</div>
-<div class="tbp-muted" style="margin-top:7px;">
-Shows a persistent T below the other assistant buttons. Torn's API supplies your current gym, all active personal gym-gain perks, and gym modifiers. Visiting the Gym page confirms which gyms are available to you so recommendations do not include unconfirmed specialty gyms. There is no repeating poll.
-</div>
-</div>
-<div class="tbp-card">
-<div class="tbp-row">
-<span>Show Debug Tab</span>
-<input type="checkbox" id="tbp-show-debug" ${showDebug ? 'checked' : ''}>
-</div>
-</div>
+<label class="tbp-muted">API-FOOTBALL KEY</label>
+<input type="password" id="tbp-football-score-api-key" class="tbp-input" value="${escapeHtml(footballScoreApiKey)}">
+<div class="tbp-row"><span>Auto check every 10 min</span><input type="checkbox" id="tbp-football-auto-score-enabled" ${footballAutoScoreEnabled ? 'checked' : ''}></div>
+<label class="tbp-muted">DAY START HOUR</label>
+<input type="number" id="tbp-football-score-day-start-hour" class="tbp-input" value="${footballScoreDayStartHour}" min="0" max="23" step="1">
+<div class="tbp-row"><span>Usage</span><span>${footballScoreProvider === 'sportsdb' ? `${sportsDbUsage.used}/${sportsDbUsage.limit} this minute` : `${scoreUsage.used}/${scoreUsage.limit} today`}</span></div>
+</details>
+<details class="tbp-card" open>
+<summary style="font-weight:bold; cursor:pointer;">Tabs</summary>
+<div class="tbp-row"><span>Enable Loans tab</span><input type="checkbox" id="tbp-loan-feature-enabled" ${loanFeatureEnabled ? 'checked' : ''}></div>
+<div class="tbp-row"><span>Use Batch instead of Stats</span><input type="checkbox" id="tbp-batch-feature-enabled" ${batchFeatureEnabled ? 'checked' : ''}></div>
+<div class="tbp-row"><span>Show Debug</span><input type="checkbox" id="tbp-show-debug" ${showDebug ? 'checked' : ''}></div>
+</details>
+<details class="tbp-card">
+<summary style="font-weight:bold; cursor:pointer;">Assistants</summary>
+<div class="tbp-row" style="margin-top:9px;"><span>Chain Report (C)</span><input type="checkbox" id="tbp-chain-assistant-enabled" ${chainAssistantEnabled ? 'checked' : ''}></div>
+<div class="tbp-row"><span>Training (T)</span><input type="checkbox" id="tbp-training-assistant-enabled" ${trainingAssistantEnabled ? 'checked' : ''}></div>
+</details>
 <button class="tbp-btn tbp-btn-success" id="tbp-save-settings" style="width:100%;">Save Settings</button>
 `;
 }
@@ -4765,14 +4678,70 @@ if (type === 'loss') return net - bet;
 return net;
 }, 0);
 }
-function getLoanPeriods() {
-const today = localDateKey(new Date());
-const periods = [{
+function defaultLegacyLoan() {
+return {
+id: LEGACY_LOAN_ID,
+name: 'Bookie Loan',
+originalBalance: LOAN_ORIGINAL_BALANCE,
+recipientId: LOAN_RECIPIENT_ID,
+paymentMode: 'bookie-net',
+regularAmount: 0,
 startDate: LOAN_FIRST_PERIOD_START,
-endDate: LOAN_FIRST_PERIOD_END,
-dueDate: addDaysToDateKey(LOAN_FIRST_PERIOD_END, 1)
+firstPeriodEnd: LOAN_FIRST_PERIOD_END,
+nextDueDate: '',
+createdAt: Date.parse(`${LOAN_FIRST_PERIOD_START}T12:00:00`) || Date.now()
+};
+}
+function normalizeLoanLedger(ledger) {
+const source = ledger && typeof ledger === 'object' ? ledger : {};
+const oldPayments = Array.isArray(source.payments) ? source.payments : [];
+if (Number(source.version || 0) >= 2 && Array.isArray(source.loans)) {
+return {
+version: 2,
+loans: source.loans.filter(loan => loan && loan.id).map(loan => ({
+...loan,
+originalBalance: Math.max(0, Number(loan.originalBalance || 0)),
+regularAmount: Math.max(0, Number(loan.regularAmount || 0))
+})),
+payments: oldPayments
+};
+}
+return {
+version: 2,
+loans: [defaultLegacyLoan()],
+payments: oldPayments.map(payment => ({ ...payment, loanId: payment.loanId || LEGACY_LOAN_ID }))
+};
+}
+function nextSundayAfter(dateKey) {
+const date = new Date(`${dateKey}T12:00:00`);
+const days = (7 - date.getDay()) % 7 || 7;
+return addDaysToDateKey(dateKey, days);
+}
+function selectedLoan() {
+const loans = Array.isArray(indexedLoanLedger?.loans) ? indexedLoanLedger.loans : [];
+const selected = (pendingLoanDraft?.id === selectedLoanId ? pendingLoanDraft : null)
+|| loans.find(loan => loan.id === selectedLoanId)
+|| loans[0]
+|| null;
+if (selected && selectedLoanId !== selected.id) {
+selectedLoanId = selected.id;
+saveData();
+}
+return selected;
+}
+function loanPayments(loanId) {
+return (Array.isArray(indexedLoanLedger?.payments) ? indexedLoanLedger.payments : [])
+.filter(payment => String(payment.loanId || LEGACY_LOAN_ID) === String(loanId));
+}
+function getBookieLoanPeriods(loan) {
+const today = localDateKey(new Date());
+const firstEnd = loan.firstPeriodEnd || addDaysToDateKey(loan.startDate, 6);
+const periods = [{
+startDate: loan.startDate,
+endDate: firstEnd,
+dueDate: addDaysToDateKey(firstEnd, 1)
 }];
-let startDate = addDaysToDateKey(LOAN_FIRST_PERIOD_END, 1);
+let startDate = addDaysToDateKey(firstEnd, 1);
 while (startDate <= today) {
 const endDate = addDaysToDateKey(startDate, 6);
 periods.push({ startDate, endDate, dueDate: addDaysToDateKey(endDate, 1) });
@@ -4788,69 +4757,118 @@ closed: today >= period.dueDate
 };
 });
 }
-function getLoanRepaymentState() {
-const payments = Array.isArray(indexedLoanLedger?.payments) ? indexedLoanLedger.payments : [];
+function getLoanState(loan) {
+if (!loan) return null;
+const payments = loanPayments(loan.id);
 const totalPaid = payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
-const remainingBalance = Math.max(0, LOAN_ORIGINAL_BALANCE - totalPaid);
-const paidPeriods = new Set(payments.map(payment => `${payment.startDate}|${payment.endDate}`));
-const periods = getLoanPeriods();
-const duePeriod = periods.find(period =>
-period.closed
-&& period.calculatedPayment > 0
-&& !paidPeriods.has(`${period.startDate}|${period.endDate}`)
-) || null;
+const remainingBalance = Math.max(0, Number(loan.originalBalance || 0) - totalPaid);
+if (loan.paymentMode === 'bookie-net') {
+const paidPeriods = new Set(payments.filter(payment => payment.type === 'weekly').map(payment => `${payment.startDate}|${payment.endDate}`));
+const periods = getBookieLoanPeriods(loan);
+const duePeriod = periods.find(period => period.closed && period.calculatedPayment > 0 && !paidPeriods.has(`${period.startDate}|${period.endDate}`)) || null;
 const currentPeriod = [...periods].reverse().find(period => !period.closed) || null;
-return { payments, totalPaid, remainingBalance, periods, duePeriod, currentPeriod };
+return { loan, payments, totalPaid, remainingBalance, duePeriod, currentPeriod, paymentDue: duePeriod ? Math.min(duePeriod.calculatedPayment, remainingBalance) : 0 };
 }
-function renderLoanRepaymentCard() {
-const state = getLoanRepaymentState();
-const today = localDateKey(new Date());
-const period = state.duePeriod || state.currentPeriod;
-const payment = period ? Math.min(period.calculatedPayment, state.remainingBalance) : 0;
-const isDue = Boolean(state.duePeriod && state.remainingBalance > 0);
-const status = state.remainingBalance <= 0
-? 'Loan paid in full'
-: isDue
-? `Payment due ${displayDateKey(period.dueDate)}`
-: period
-? `Current period · due ${displayDateKey(period.dueDate)}`
-: 'No payment period available';
-const recentPayments = [...state.payments]
-.sort((a, b) => {
+const nextDueDate = loan.nextDueDate || nextSundayAfter(loan.startDate || localDateKey(new Date()));
+const isDue = remainingBalance > 0 && localDateKey(new Date()) >= nextDueDate;
+const paymentDue = loan.paymentMode === 'fixed' ? Math.min(Number(loan.regularAmount || 0), remainingBalance) : 0;
+return { loan, payments, totalPaid, remainingBalance, nextDueDate, isDue, paymentDue };
+}
+function loanDueCount() {
+return (indexedLoanLedger.loans || []).filter(loan => {
+const state = getLoanState(loan);
+return state?.remainingBalance > 0 && (loan.paymentMode === 'bookie-net' ? Boolean(state.duePeriod) : state.isDue);
+}).length;
+}
+function recentLoanPayments(state) {
+return [...state.payments].sort((a, b) => {
 const bDate = b.paymentDate ? Date.parse(`${b.paymentDate}T12:00:00`) : Number(b.paidAt || 0);
 const aDate = a.paymentDate ? Date.parse(`${a.paymentDate}T12:00:00`) : Number(a.paidAt || 0);
 return Number(bDate || 0) - Number(aDate || 0);
-})
-.slice(0, 4);
-return `
-<div class="tbp-card" style="border:1px solid #3b82a8; border-left:6px solid #4da3ff; margin-bottom:12px;">
-<div style="font-weight:bold; font-size:14px; margin-bottom:2px;">Weekly Loan Repayment</div>
-<div class="tbp-muted" style="margin-bottom:8px;">Send 50% of positive weekly Bookie net to Torn ID ${LOAN_RECIPIENT_ID}. Losing or $0-net weeks owe $0.</div>
-<div class="tbp-summary-grid" style="margin-bottom:8px;">
-<div class="tbp-summary-box"><div class="tbp-summary-label">Original Loan</div><div class="tbp-summary-value" style="font-size:13px;">${money(LOAN_ORIGINAL_BALANCE)}</div></div>
+}).slice(0, 8);
+}
+function loanModeLabel(mode) {
+if (mode === 'fixed') return 'Regular fixed weekly';
+if (mode === 'manual') return 'Irregular / enter weekly';
+return '50% of positive Bookie net';
+}
+function renderLoans(body) {
+const loans = [
+...(indexedLoanLedger.loans || []),
+...(pendingLoanDraft ? [pendingLoanDraft] : [])
+];
+const loan = selectedLoan();
+const state = getLoanState(loan);
+const today = localDateKey(new Date());
+const recent = state ? recentLoanPayments(state) : [];
+const period = state?.duePeriod || state?.currentPeriod || null;
+const isDue = state && state.remainingBalance > 0 && (loan.paymentMode === 'bookie-net' ? Boolean(state.duePeriod) : state.isDue);
+const dueDate = loan?.paymentMode === 'bookie-net' ? period?.dueDate : state?.nextDueDate;
+const scheduledAmount = loan?.paymentMode === 'bookie-net'
+? Math.min(Number(period?.calculatedPayment || 0), Number(state?.remainingBalance || 0))
+: Number(state?.paymentDue || 0);
+body.innerHTML = `
+<div class="tbp-row" style="margin:0 0 8px; gap:7px;">
+<select id="tbp-loan-select" class="tbp-select" style="margin:0; flex:1;">
+${loans.length ? loans.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === loan?.id ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('') : '<option value="">No loans</option>'}
+</select>
+<button class="tbp-btn tbp-btn-primary" id="tbp-new-loan">New</button>
+</div>
+${state ? `
+<div class="tbp-card" style="border-left:6px solid ${isDue ? '#d9534f' : state.remainingBalance ? '#4da3ff' : '#28a745'};">
+<div class="tbp-row" style="margin-top:0;"><strong>${escapeHtml(loan.name)}</strong><strong class="${isDue ? 'tbp-loss' : 'tbp-muted'}">${state.remainingBalance <= 0 ? 'Paid' : isDue ? 'PAYMENT DUE' : `Due ${displayDateKey(dueDate)}`}</strong></div>
+<div class="tbp-summary-grid" style="margin-top:8px;">
+<div class="tbp-summary-box"><div class="tbp-summary-label">Original</div><div class="tbp-summary-value" style="font-size:13px;">${money(loan.originalBalance)}</div></div>
 <div class="tbp-summary-box"><div class="tbp-summary-label">Remaining</div><div class="tbp-summary-value ${state.remainingBalance ? 'tbp-loss' : 'tbp-win'}" style="font-size:13px;">${money(state.remainingBalance)}</div></div>
-<div class="tbp-summary-box"><div class="tbp-summary-label">Total Paid</div><div class="tbp-summary-value tbp-win" style="font-size:13px;">${money(state.totalPaid)}</div></div>
-<div class="tbp-summary-box"><div class="tbp-summary-label">${isDue ? 'Payment Due' : 'Estimated Payment'}</div><div class="tbp-summary-value ${isDue ? 'tbp-loss' : 'tbp-blue'}" style="font-size:13px;">${money(payment)}</div></div>
+<div class="tbp-summary-box"><div class="tbp-summary-label">Paid</div><div class="tbp-summary-value tbp-win" style="font-size:13px;">${money(state.totalPaid)}</div></div>
+<div class="tbp-summary-box"><div class="tbp-summary-label">${loan.paymentMode === 'manual' ? 'Weekly Amount' : isDue ? 'Due Now' : 'Next Payment'}</div><div class="tbp-summary-value ${isDue ? 'tbp-loss' : 'tbp-blue'}" style="font-size:13px;">${loan.paymentMode === 'manual' ? 'Enter below' : money(scheduledAmount)}</div></div>
 </div>
-<div style="font-weight:bold; margin-bottom:4px;">${escapeHtml(status)}</div>
-${period ? `
-<div class="tbp-row"><span>Period</span><span>${displayDateKey(period.startDate)}–${displayDateKey(period.endDate)}</span></div>
-<div class="tbp-row"><span>Weekly net</span><span class="${period.weeklyNet >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(period.weeklyNet)}</span></div>
-<div class="tbp-row"><span>50% of positive net</span><span>${money(payment)}</span></div>
+<div class="tbp-row"><span>Schedule</span><span>${escapeHtml(loanModeLabel(loan.paymentMode))}</span></div>
+${loan.recipientId ? `<div class="tbp-row"><span>Recipient</span><span>${escapeHtml(loan.recipientId)}</span></div>` : ''}
+${period ? `<div class="tbp-row"><span>Period</span><span>${displayDateKey(period.startDate)}–${displayDateKey(period.endDate)}</span></div>${loan.paymentMode === 'bookie-net' ? `<div class="tbp-row"><span>Weekly net</span><span class="${period.weeklyNet >= 0 ? 'tbp-win' : 'tbp-loss'}">${money(period.weeklyNet)}</span></div>` : ''}` : ''}
+${isDue ? `
+${loan.paymentMode === 'manual' ? `<input type="text" inputmode="numeric" id="tbp-weekly-loan-payment-amount" class="tbp-input" placeholder="Amount paid this week" style="margin-top:9px;">` : ''}
+<button class="tbp-btn tbp-btn-success" id="tbp-mark-loan-paid" style="width:100%; margin-top:7px;">Record Weekly Payment${loan.paymentMode === 'manual' ? '' : ` · ${money(scheduledAmount)}`}</button>
 ` : ''}
-${isDue ? `<button class="tbp-btn tbp-btn-success" id="tbp-mark-loan-paid" style="width:100%; margin-top:9px;">Mark ${money(payment)} Paid</button>` : ''}
+</div>
 ${state.remainingBalance > 0 ? `
-<div style="font-weight:bold; margin-top:12px; margin-bottom:5px;">Record Manual Payment</div>
-<div class="tbp-muted" style="margin-bottom:6px;">Use this for any extra loan payment. It reduces the remaining balance but does not mark a weekly payment as paid.</div>
-<input type="date" id="tbp-manual-loan-payment-date" class="tbp-input" value="${today}" style="margin-bottom:6px;">
-<input type="text" inputmode="numeric" id="tbp-manual-loan-payment-amount" class="tbp-input" placeholder="Payment amount" style="margin-bottom:6px;">
-<button class="tbp-btn tbp-btn-primary" id="tbp-record-manual-loan-payment" style="width:100%;">Record Manual Payment</button>
+<details class="tbp-card">
+<summary style="font-weight:bold; cursor:pointer;">Extra payment</summary>
+<input type="date" id="tbp-manual-loan-payment-date" class="tbp-input" value="${today}" style="margin-top:9px;">
+<input type="text" inputmode="numeric" id="tbp-manual-loan-payment-amount" class="tbp-input" placeholder="Amount">
+<button class="tbp-btn tbp-btn-primary" id="tbp-record-manual-loan-payment" style="width:100%;">Record Extra Payment</button>
+</details>
 ` : ''}
-${recentPayments.length ? `
-<div style="font-weight:bold; margin-top:10px; margin-bottom:4px;">Recent Payments</div>
-${recentPayments.map(item => `<div class="tbp-row"><span>${item.type === 'manual' ? `Manual · ${displayDateKey(item.paymentDate)}` : `${displayDateKey(item.startDate)}–${displayDateKey(item.endDate)}`}</span><span class="tbp-win">${money(item.amount)}</span></div>`).join('')}
-` : '<div class="tbp-muted" style="margin-top:9px;">No payments recorded yet.</div>'}
+<details class="tbp-card" ${Number(loan.originalBalance || 0) <= 0 ? 'open' : ''}>
+<summary style="font-weight:bold; cursor:pointer;">Edit loan</summary>
+<label class="tbp-muted" style="display:block; margin-top:9px;">NAME</label>
+<input id="tbp-loan-name" class="tbp-input" value="${escapeHtml(loan.name)}">
+<label class="tbp-muted">ORIGINAL AMOUNT OWED</label>
+<input id="tbp-loan-balance" inputmode="numeric" class="tbp-input" value="${Number(loan.originalBalance || 0)}">
+<label class="tbp-muted">RECIPIENT / NOTE</label>
+<input id="tbp-loan-recipient" class="tbp-input" value="${escapeHtml(loan.recipientId || '')}">
+<label class="tbp-muted">PAYMENT TYPE</label>
+<select id="tbp-loan-mode" class="tbp-select">
+<option value="fixed" ${loan.paymentMode === 'fixed' ? 'selected' : ''}>Regular fixed weekly</option>
+<option value="manual" ${loan.paymentMode === 'manual' ? 'selected' : ''}>Irregular / enter weekly</option>
+<option value="bookie-net" ${loan.paymentMode === 'bookie-net' ? 'selected' : ''}>50% positive Bookie net</option>
+</select>
+<label class="tbp-muted">FIXED WEEKLY AMOUNT</label>
+<input id="tbp-loan-regular-amount" inputmode="numeric" class="tbp-input" value="${Number(loan.regularAmount || 0)}">
+<label class="tbp-muted">START DATE</label>
+<input id="tbp-loan-start-date" type="date" class="tbp-input" value="${escapeHtml(loan.startDate || today)}">
+<label class="tbp-muted">NEXT WEEKLY DUE DATE</label>
+<input id="tbp-loan-next-due-date" type="date" class="tbp-input" value="${escapeHtml(loan.nextDueDate || nextSundayAfter(loan.startDate || today))}">
+<div class="tbp-btn-row">
+<button class="tbp-btn tbp-btn-success" id="tbp-save-loan">Save</button>
+<button class="tbp-btn tbp-btn-danger" id="tbp-delete-loan">Delete</button>
 </div>
+</details>
+<div class="tbp-card">
+<strong>Payment history</strong>
+${recent.length ? recent.map(item => `<div class="tbp-row"><span>${displayDateKey(item.paymentDate)} · ${item.type === 'weekly' ? 'Weekly' : 'Extra'}</span><span class="tbp-win">${money(item.amount)}</span></div>`).join('') : '<div class="tbp-muted" style="margin-top:7px;">No payments recorded.</div>'}
+</div>
+` : '<div class="tbp-muted">Create a loan to begin tracking it.</div>'}
 `;
 }
 function renderStats(body) {
@@ -4902,7 +4920,6 @@ ${renderStatRows(rows)}
 `;
 };
 body.innerHTML = `
-${renderLoanRepaymentCard()}
 <div class="tbp-muted" style="margin-bottom:8px;">${lastLoadStatus}</div>
 <div class="tbp-muted" style="margin-bottom:8px;">Stats group all cached Bookie outcomes logged from ${escapeHtml(stats.fromDate)} through today, matching Daily's date rule. Captured 3-Way Football bets use the colored rules; other straight-win and non-equivalent results remain in their separate boxes.</div>
 <button class="tbp-btn tbp-btn-primary" id="tbp-measure-stats-btn" style="width:100%; margin-bottom:8px;">Refresh Outcome Audit</button>
@@ -5038,39 +5055,50 @@ render();
 const markLoanPaidBtn = document.getElementById('tbp-mark-loan-paid');
 if (markLoanPaidBtn) {
 markLoanPaidBtn.onclick = async () => {
-const state = getLoanRepaymentState();
-const period = state.duePeriod;
-if (!period) {
+const loan = selectedLoan();
+const state = getLoanState(loan);
+const period = state?.duePeriod || null;
+const manualInput = document.getElementById('tbp-weekly-loan-payment-amount');
+const amount = loan?.paymentMode === 'manual'
+? Math.floor(Number(String(manualInput?.value || '').replace(/[$,\s]/g, '')))
+: Math.floor(Number(state?.paymentDue || 0));
+if (!loan || !state || !(loan.paymentMode === 'bookie-net' ? period : state.isDue)) {
 alert('There is no unpaid weekly payment due.');
 render();
 return;
 }
-const amount = Math.min(period.calculatedPayment, state.remainingBalance);
-if (!amount) return;
-if (!confirm(`Mark ${money(amount)} paid to Torn ID ${LOAN_RECIPIENT_ID} for ${displayDateKey(period.startDate)}–${displayDateKey(period.endDate)}?`)) return;
+if (!Number.isFinite(amount) || amount <= 0) {
+alert('Enter the amount paid this week.');
+return;
+}
+if (amount > state.remainingBalance) {
+alert(`That payment is larger than the remaining balance of ${money(state.remainingBalance)}.`);
+return;
+}
+if (!confirm(`Record a weekly payment of ${money(amount)} for ${loan.name}?`)) return;
 markLoanPaidBtn.disabled = true;
 markLoanPaidBtn.textContent = 'Saving payment...';
-const payments = Array.isArray(indexedLoanLedger?.payments)
-? [...indexedLoanLedger.payments]
-: [];
-payments.push({
+const previous = JSON.parse(JSON.stringify(indexedLoanLedger));
+indexedLoanLedger.payments.push({
+loanId: loan.id,
 type: 'weekly',
+...(period ? {
 startDate: period.startDate,
 endDate: period.endDate,
 dueDate: period.dueDate,
-weeklyNet: period.weeklyNet,
+weeklyNet: period.weeklyNet
+} : { dueDate: state.nextDueDate }),
 amount,
-recipientId: LOAN_RECIPIENT_ID,
+recipientId: loan.recipientId || '',
 paymentDate: localDateKey(new Date()),
 paidAt: Date.now()
 });
-indexedLoanLedger = { version: 1, payments };
+if (loan.paymentMode !== 'bookie-net') loan.nextDueDate = addDaysToDateKey(state.nextDueDate, 7);
 try {
 await storeIndexedLoanLedger(indexedLoanLedger);
-lastLoadStatus = `Recorded ${money(amount)} paid to Torn ID ${LOAN_RECIPIENT_ID}.`;
+lastLoadStatus = `Recorded ${money(amount)} paid toward ${loan.name}.`;
 } catch (error) {
-payments.pop();
-indexedLoanLedger = { version: 1, payments };
+indexedLoanLedger = previous;
 alert(`Could not save the payment record: ${String(error?.message || error)}`);
 }
 render();
@@ -5084,7 +5112,9 @@ const amountInput = document.getElementById('tbp-manual-loan-payment-amount');
 const paymentDate = String(dateInput?.value || '').trim();
 const amountText = String(amountInput?.value || '').replace(/[$,\s]/g, '');
 const amount = Math.floor(Number(amountText));
-const state = getLoanRepaymentState();
+const loan = selectedLoan();
+const state = getLoanState(loan);
+if (!loan || !state) return;
 if (!/^\d{4}-\d{2}-\d{2}$/.test(paymentDate)) {
 alert('Choose the date the manual payment was made.');
 return;
@@ -5097,31 +5127,126 @@ if (amount > state.remainingBalance) {
 alert(`That payment is larger than the remaining loan balance of ${money(state.remainingBalance)}.`);
 return;
 }
-if (!confirm(`Record a manual payment of ${money(amount)} to Torn ID ${LOAN_RECIPIENT_ID} on ${displayDateKey(paymentDate)}?`)) return;
+if (!confirm(`Record an extra payment of ${money(amount)} toward ${loan.name} on ${displayDateKey(paymentDate)}?`)) return;
 manualLoanPaymentBtn.disabled = true;
 manualLoanPaymentBtn.textContent = 'Saving payment...';
-const payments = Array.isArray(indexedLoanLedger?.payments)
-? [...indexedLoanLedger.payments]
-: [];
-payments.push({
-type: 'manual',
+const previous = JSON.parse(JSON.stringify(indexedLoanLedger));
+indexedLoanLedger.payments.push({
+loanId: loan.id,
+type: 'extra',
 paymentDate,
 amount,
-recipientId: LOAN_RECIPIENT_ID,
+recipientId: loan.recipientId || '',
 paidAt: Date.now()
 });
-indexedLoanLedger = { version: 1, payments };
 try {
 await storeIndexedLoanLedger(indexedLoanLedger);
-lastLoadStatus = `Recorded manual loan payment of ${money(amount)} on ${displayDateKey(paymentDate)}.`;
+lastLoadStatus = `Recorded extra payment of ${money(amount)} toward ${loan.name}.`;
 } catch (error) {
-payments.pop();
-indexedLoanLedger = { version: 1, payments };
+indexedLoanLedger = previous;
 alert(`Could not save the manual payment: ${String(error?.message || error)}`);
 }
 render();
 };
 }
+const loanSelect = document.getElementById('tbp-loan-select');
+if (loanSelect) loanSelect.onchange = () => {
+selectedLoanId = loanSelect.value;
+saveData();
+render();
+};
+const newLoanBtn = document.getElementById('tbp-new-loan');
+if (newLoanBtn) newLoanBtn.onclick = () => {
+if (pendingLoanDraft) {
+selectedLoanId = pendingLoanDraft.id;
+saveData();
+render();
+return;
+}
+const id = `loan-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+const startDate = localDateKey(new Date());
+pendingLoanDraft = {
+id,
+name: `Loan ${indexedLoanLedger.loans.length + 1}`,
+originalBalance: 0,
+recipientId: '',
+paymentMode: 'fixed',
+regularAmount: 0,
+startDate,
+nextDueDate: nextSundayAfter(startDate),
+createdAt: Date.now()
+};
+selectedLoanId = id;
+saveData();
+render();
+};
+const saveLoanBtn = document.getElementById('tbp-save-loan');
+if (saveLoanBtn) saveLoanBtn.onclick = async () => {
+const loan = selectedLoan();
+if (!loan) return;
+const name = String(document.getElementById('tbp-loan-name')?.value || '').trim();
+const balance = Math.floor(Number(String(document.getElementById('tbp-loan-balance')?.value || '').replace(/[$,\s]/g, '')));
+const regularAmount = Math.floor(Number(String(document.getElementById('tbp-loan-regular-amount')?.value || '').replace(/[$,\s]/g, '')));
+const recipientId = String(document.getElementById('tbp-loan-recipient')?.value || '').trim();
+const paymentMode = String(document.getElementById('tbp-loan-mode')?.value || 'manual');
+const startDate = String(document.getElementById('tbp-loan-start-date')?.value || '').trim();
+const nextDueDate = String(document.getElementById('tbp-loan-next-due-date')?.value || '').trim();
+const paid = loanPayments(loan.id).reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+if (!name) return alert('Enter a loan name.');
+if (!Number.isFinite(balance) || balance <= 0) return alert('Enter an amount owed greater than $0.');
+if (balance < paid) return alert(`The amount owed cannot be below the ${money(paid)} already recorded as paid.`);
+if (paymentMode === 'fixed' && (!Number.isFinite(regularAmount) || regularAmount <= 0)) return alert('Enter the regular weekly payment amount.');
+if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate)) return alert('Choose a valid start date.');
+if (paymentMode !== 'bookie-net' && !/^\d{4}-\d{2}-\d{2}$/.test(nextDueDate)) return alert('Choose the next weekly due date.');
+const previous = JSON.parse(JSON.stringify(indexedLoanLedger));
+const wasDraft = pendingLoanDraft?.id === loan.id;
+Object.assign(loan, {
+name,
+originalBalance: balance,
+recipientId,
+paymentMode,
+regularAmount: Math.max(0, Number.isFinite(regularAmount) ? regularAmount : 0),
+startDate,
+nextDueDate: paymentMode === 'bookie-net' ? '' : nextDueDate
+});
+if (wasDraft) {
+indexedLoanLedger.loans.push(loan);
+pendingLoanDraft = null;
+}
+try {
+await storeIndexedLoanLedger(indexedLoanLedger);
+lastLoadStatus = `Saved ${name}.`;
+} catch (error) {
+indexedLoanLedger = previous;
+if (wasDraft) pendingLoanDraft = loan;
+alert(`Could not save the loan: ${String(error?.message || error)}`);
+}
+render();
+};
+const deleteLoanBtn = document.getElementById('tbp-delete-loan');
+if (deleteLoanBtn) deleteLoanBtn.onclick = async () => {
+const loan = selectedLoan();
+if (!loan || !confirm(`Delete ${loan.name} and its payment history?`)) return;
+if (pendingLoanDraft?.id === loan.id) {
+pendingLoanDraft = null;
+selectedLoanId = indexedLoanLedger.loans[0]?.id || '';
+saveData();
+render();
+return;
+}
+const previous = JSON.parse(JSON.stringify(indexedLoanLedger));
+indexedLoanLedger.loans = indexedLoanLedger.loans.filter(item => item.id !== loan.id);
+indexedLoanLedger.payments = indexedLoanLedger.payments.filter(payment => String(payment.loanId || LEGACY_LOAN_ID) !== String(loan.id));
+selectedLoanId = indexedLoanLedger.loans[0]?.id || '';
+saveData();
+try {
+await storeIndexedLoanLedger(indexedLoanLedger);
+} catch (error) {
+indexedLoanLedger = previous;
+alert(`Could not delete the loan: ${String(error?.message || error)}`);
+}
+render();
+};
 const footballScanBtn = document.getElementById('tbp-football-scan-btn');
 if (footballScanBtn) {
 footballScanBtn.onclick = () => {
@@ -5204,6 +5329,7 @@ footballScoreApiKey = document.getElementById('tbp-football-score-api-key').valu
 footballAutoScoreEnabled = document.getElementById('tbp-football-auto-score-enabled').checked;
 footballScoreDayStartHour = Math.max(0, Math.min(23, Math.floor(Number(document.getElementById('tbp-football-score-day-start-hour').value || 8))));
 batchFeatureEnabled = document.getElementById('tbp-batch-feature-enabled').checked;
+loanFeatureEnabled = document.getElementById('tbp-loan-feature-enabled').checked;
 chainAssistantEnabled = document.getElementById('tbp-chain-assistant-enabled').checked;
 trainingAssistantEnabled = document.getElementById('tbp-training-assistant-enabled').checked;
 saveData();
