@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.21.3
+// @version      1.22.0
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -58,8 +58,9 @@ let indexedManualBetLinks = {};
 let indexedLoanLedger = { version: 5, loans: [], payments: [] };
 let pendingLoanDraft = null;
 let loanLedgerNeedsMigration = false;
+let loanView = 'summary';
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.21.3';
+const SCRIPT_VERSION = '1.22.0';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -4858,11 +4859,64 @@ if (mode === 'fixed') return 'Regular fixed weekly';
 if (mode === 'manual') return 'Irregular / enter weekly';
 return '50% of positive Bookie net';
 }
+function loanUpcomingPayment(loan, state) {
+if (!state || state.remainingBalance <= 0) return { paid: true, amount: 0, dueDate: '', isDue: false, canRecord: false };
+if (loan.paymentMode === 'bookie-net') {
+const period = state.duePeriod || state.currentPeriod || null;
+return {
+paid: false,
+amount: Math.min(Number(period?.calculatedPayment || 0), state.remainingBalance),
+dueDate: period?.dueDate || '',
+isDue: Boolean(state.duePeriod),
+canRecord: Boolean(state.duePeriod),
+estimated: !state.duePeriod
+};
+}
+return {
+paid: false,
+amount: loan.paymentMode === 'fixed' ? Math.min(Number(loan.regularAmount || 0), state.remainingBalance) : 0,
+dueDate: state.nextDueDate || '',
+isDue: Boolean(state.isDue),
+canRecord: true,
+estimated: false
+};
+}
+function renderLoanSummary(body, loans) {
+body.innerHTML = `
+<div class="tbp-row" style="margin:0 0 8px; align-items:center;">
+<strong>Loan Summary</strong>
+<button class="tbp-btn tbp-btn-primary" id="tbp-new-loan">New Loan</button>
+</div>
+${loans.length ? loans.map(loan => {
+const state = getLoanState(loan);
+const upcoming = loanUpcomingPayment(loan, state);
+const manualInputId = `tbp-summary-payment-${String(loan.id).replace(/[^a-z0-9_-]/gi, '-')}`;
+return `
+<div class="tbp-card" style="border-left:6px solid ${upcoming.paid ? '#28a745' : upcoming.isDue ? '#d9534f' : '#4da3ff'};">
+<div class="tbp-row" style="margin-top:0;"><strong>${escapeHtml(loan.name)}</strong><strong class="${upcoming.isDue ? 'tbp-loss' : upcoming.paid ? 'tbp-win' : 'tbp-blue'}">${upcoming.paid ? 'PAID' : upcoming.isDue ? 'DUE' : upcoming.dueDate ? displayDateKey(upcoming.dueDate) : 'Upcoming'}</strong></div>
+<div class="tbp-row"><span>Remaining</span><strong>${money(state?.remainingBalance || 0)}</strong></div>
+<div class="tbp-row"><span>${upcoming.estimated ? 'Current estimate' : 'Upcoming payment'}</span><strong>${loan.paymentMode === 'manual' ? 'Enter amount' : money(upcoming.amount)}</strong></div>
+<div class="tbp-row"><span>Schedule</span><span>${escapeHtml(loanModeLabel(loan.paymentMode))}</span></div>
+${!upcoming.paid && loan.paymentMode === 'manual' ? `<input id="${manualInputId}" data-loan-id="${escapeHtml(loan.id)}" class="tbp-input tbp-summary-loan-amount" inputmode="numeric" placeholder="Payment amount" style="margin-top:8px;">` : ''}
+<div class="tbp-btn-row" style="margin-top:8px;">
+<button class="tbp-btn" data-loan-id="${escapeHtml(loan.id)}" data-loan-action="manage">Details</button>
+${!upcoming.paid && upcoming.canRecord ? `<button class="tbp-btn tbp-btn-success" data-loan-id="${escapeHtml(loan.id)}" data-loan-action="pay">${upcoming.isDue ? 'Record Payment' : 'Record Early'}</button>` : ''}
+</div>
+${upcoming.estimated ? '<div class="tbp-muted" style="margin-top:7px;">Bookie-net payment becomes recordable after the week closes.</div>' : ''}
+</div>
+`;
+}).join('') : '<div class="tbp-card tbp-muted">No loans yet. Create one to begin.</div>'}
+`;
+}
 function renderLoans(body) {
 const loans = [
 ...(indexedLoanLedger.loans || []),
 ...(pendingLoanDraft ? [pendingLoanDraft] : [])
 ];
+if (loanView === 'summary') {
+renderLoanSummary(body, loans);
+return;
+}
 const loan = selectedLoan();
 const state = getLoanState(loan);
 const today = localDateKey(new Date());
@@ -4874,6 +4928,7 @@ const scheduledAmount = loan?.paymentMode === 'bookie-net'
 ? Math.min(Number(period?.calculatedPayment || 0), Number(state?.remainingBalance || 0))
 : Number(state?.paymentDue || 0);
 body.innerHTML = `
+<button class="tbp-btn" id="tbp-loans-home" style="width:100%; margin-bottom:8px;">← All Loans</button>
 <div class="tbp-row" style="margin:0 0 8px; gap:7px;">
 <select id="tbp-loan-select" class="tbp-select" style="margin:0; flex:1;">
 ${loans.length ? loans.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === loan?.id ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('') : '<option value="">No loans</option>'}
@@ -4938,6 +4993,62 @@ ${recent.length ? recent.map(item => `<div class="tbp-row"><span>${escapeHtml(lo
 </div>
 ` : '<div class="tbp-muted">Create a loan to begin tracking it.</div>'}
 `;
+}
+async function recordWeeklyLoanPayment(loan, amount, { allowEarly = false, button = null } = {}) {
+const state = getLoanState(loan);
+const period = state?.duePeriod || null;
+const canRecord = loan?.paymentMode === 'bookie-net'
+? Boolean(period)
+: Boolean(state?.isDue || allowEarly);
+if (!loan || !state || !canRecord) {
+alert(loan?.paymentMode === 'bookie-net'
+? 'The Bookie-net week has not closed yet.'
+: 'There is no weekly payment available to record.');
+return false;
+}
+const paymentAmount = Math.floor(Number(amount || 0));
+if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+alert('Enter the amount paid this week.');
+return false;
+}
+if (paymentAmount > state.remainingBalance) {
+alert(`That payment is larger than the remaining balance of ${money(state.remainingBalance)}.`);
+return false;
+}
+const earlyText = !state.isDue && loan.paymentMode !== 'bookie-net' ? ' early' : '';
+if (!confirm(`Record${earlyText} a weekly payment of ${money(paymentAmount)} for ${loan.name}?`)) return false;
+if (button) {
+button.disabled = true;
+button.textContent = 'Saving...';
+}
+const previous = JSON.parse(JSON.stringify(indexedLoanLedger));
+indexedLoanLedger.payments.push({
+id: `payment-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+loanId: loan.id,
+type: 'weekly',
+...(period ? {
+startDate: period.startDate,
+endDate: period.endDate,
+dueDate: period.dueDate,
+weeklyNet: period.weeklyNet
+} : { dueDate: state.nextDueDate }),
+amount: paymentAmount,
+recipientId: loan.recipientId || '',
+paymentDate: localDateKey(new Date()),
+paidAt: Date.now()
+});
+if (loan.paymentMode !== 'bookie-net') loan.nextDueDate = addDaysToDateKey(state.nextDueDate, 7);
+try {
+await storeIndexedLoanLedger(indexedLoanLedger);
+lastLoadStatus = `Recorded ${money(paymentAmount)} paid toward ${loan.name}.`;
+render();
+return true;
+} catch (error) {
+indexedLoanLedger = previous;
+alert(`Could not save the payment record: ${String(error?.message || error)}`);
+render();
+return false;
+}
 }
 function renderStats(body) {
 const stats = getColorBetStats();
@@ -5044,6 +5155,7 @@ document.querySelectorAll('.tbp-tab').forEach(tab => {
 tab.onclick = () => {
 captureVisibleScanSettings();
 activeTab = tab.dataset.tab;
+if (activeTab === 'loans') loanView = 'summary';
 saveData();
 render();
 };
@@ -5125,52 +5237,11 @@ if (markLoanPaidBtn) {
 markLoanPaidBtn.onclick = async () => {
 const loan = selectedLoan();
 const state = getLoanState(loan);
-const period = state?.duePeriod || null;
 const manualInput = document.getElementById('tbp-weekly-loan-payment-amount');
 const amount = loan?.paymentMode === 'manual'
 ? Math.floor(Number(String(manualInput?.value || '').replace(/[$,\s]/g, '')))
 : Math.floor(Number(state?.paymentDue || 0));
-if (!loan || !state || !(loan.paymentMode === 'bookie-net' ? period : state.isDue)) {
-alert('There is no unpaid weekly payment due.');
-render();
-return;
-}
-if (!Number.isFinite(amount) || amount <= 0) {
-alert('Enter the amount paid this week.');
-return;
-}
-if (amount > state.remainingBalance) {
-alert(`That payment is larger than the remaining balance of ${money(state.remainingBalance)}.`);
-return;
-}
-if (!confirm(`Record a weekly payment of ${money(amount)} for ${loan.name}?`)) return;
-markLoanPaidBtn.disabled = true;
-markLoanPaidBtn.textContent = 'Saving payment...';
-const previous = JSON.parse(JSON.stringify(indexedLoanLedger));
-indexedLoanLedger.payments.push({
-id: `payment-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-loanId: loan.id,
-type: 'weekly',
-...(period ? {
-startDate: period.startDate,
-endDate: period.endDate,
-dueDate: period.dueDate,
-weeklyNet: period.weeklyNet
-} : { dueDate: state.nextDueDate }),
-amount,
-recipientId: loan.recipientId || '',
-paymentDate: localDateKey(new Date()),
-paidAt: Date.now()
-});
-if (loan.paymentMode !== 'bookie-net') loan.nextDueDate = addDaysToDateKey(state.nextDueDate, 7);
-try {
-await storeIndexedLoanLedger(indexedLoanLedger);
-lastLoadStatus = `Recorded ${money(amount)} paid toward ${loan.name}.`;
-} catch (error) {
-indexedLoanLedger = previous;
-alert(`Could not save the payment record: ${String(error?.message || error)}`);
-}
-render();
+await recordWeeklyLoanPayment(loan, amount, { button: markLoanPaidBtn });
 };
 }
 const manualLoanPaymentBtn = document.getElementById('tbp-record-manual-loan-payment');
@@ -5254,9 +5325,37 @@ alert(`Could not remove the payment: ${String(error?.message || error)}`);
 render();
 };
 });
+const loansHomeBtn = document.getElementById('tbp-loans-home');
+if (loansHomeBtn) loansHomeBtn.onclick = () => {
+loanView = 'summary';
+render();
+};
+document.querySelectorAll('[data-loan-action="manage"]').forEach(button => {
+button.onclick = () => {
+selectedLoanId = String(button.dataset.loanId || '');
+loanView = 'detail';
+saveData();
+render();
+};
+});
+document.querySelectorAll('[data-loan-action="pay"]').forEach(button => {
+button.onclick = async () => {
+const loanId = String(button.dataset.loanId || '');
+const loan = (indexedLoanLedger.loans || []).find(item => String(item.id) === loanId);
+const state = getLoanState(loan);
+const upcoming = loanUpcomingPayment(loan, state);
+const manualInput = Array.from(document.querySelectorAll('.tbp-summary-loan-amount'))
+.find(input => String(input.dataset.loanId || '') === loanId);
+const amount = loan?.paymentMode === 'manual'
+? Math.floor(Number(String(manualInput?.value || '').replace(/[$,\s]/g, '')))
+: Math.floor(Number(upcoming.amount || 0));
+await recordWeeklyLoanPayment(loan, amount, { allowEarly: loan?.paymentMode !== 'bookie-net', button });
+};
+});
 const loanSelect = document.getElementById('tbp-loan-select');
 if (loanSelect) loanSelect.onchange = () => {
 selectedLoanId = loanSelect.value;
+loanView = 'detail';
 saveData();
 render();
 };
@@ -5264,6 +5363,7 @@ const newLoanBtn = document.getElementById('tbp-new-loan');
 if (newLoanBtn) newLoanBtn.onclick = () => {
 if (pendingLoanDraft) {
 selectedLoanId = pendingLoanDraft.id;
+loanView = 'detail';
 saveData();
 render();
 return;
@@ -5282,6 +5382,7 @@ nextDueDate: nextSundayAfter(startDate),
 createdAt: Date.now()
 };
 selectedLoanId = id;
+loanView = 'detail';
 saveData();
 render();
 };
