@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.22.0
+// @version      1.23.0
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -29,6 +29,16 @@ let scanMode = localStorage.getItem('tbp_scan_mode') || 'both';
 let scanStartDate = localStorage.getItem('tbp_scan_start_date') || defaultScanStartDate();
 let maxPages = Number(localStorage.getItem('tbp_max_pages') || 5);
 let activeTab = localStorage.getItem('tbp_active_tab') || 'open';
+let openTabEnabled = JSON.parse(localStorage.getItem('tbp_open_tab_enabled') || 'false');
+let goalsFeatureEnabled = JSON.parse(localStorage.getItem('tbp_goals_feature_enabled') ?? 'true');
+let goalsApiKey = localStorage.getItem('tbp_goals_api_key') || '';
+let goalsTargets = (() => {
+try {
+return { xanax: 72, refills: 27, battleStats: 110000000, ...JSON.parse(localStorage.getItem('tbp_goals_targets') || '{}') };
+} catch {
+return { xanax: 72, refills: 27, battleStats: 110000000 };
+}
+})();
 let isMinimized = JSON.parse(localStorage.getItem('tbp_minimized') || 'false');
 let showDebug = JSON.parse(localStorage.getItem('tbp_show_debug') || 'false');
 let footballScanEnabled = JSON.parse(localStorage.getItem('tbp_football_scan_enabled') || 'false');
@@ -59,8 +69,15 @@ let indexedLoanLedger = { version: 5, loans: [], payments: [] };
 let pendingLoanDraft = null;
 let loanLedgerNeedsMigration = false;
 let loanView = 'summary';
+let goalsMonthView = 'current';
+let goalsLoading = false;
+let goalsError = '';
+let goalsCache = (() => {
+try { return JSON.parse(localStorage.getItem('tbp_goals_cache') || 'null'); }
+catch { return null; }
+})();
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.22.0';
+const SCRIPT_VERSION = '1.23.0';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -305,6 +322,10 @@ localStorage.setItem('tbp_scan_mode', scanMode);
 localStorage.setItem('tbp_scan_start_date', scanStartDate);
 localStorage.setItem('tbp_max_pages', maxPages);
 localStorage.setItem('tbp_active_tab', activeTab);
+localStorage.setItem('tbp_open_tab_enabled', JSON.stringify(openTabEnabled));
+localStorage.setItem('tbp_goals_feature_enabled', JSON.stringify(goalsFeatureEnabled));
+localStorage.setItem('tbp_goals_api_key', goalsApiKey);
+localStorage.setItem('tbp_goals_targets', JSON.stringify(goalsTargets));
 localStorage.setItem('tbp_minimized', JSON.stringify(isMinimized));
 localStorage.setItem('tbp_show_debug', JSON.stringify(showDebug));
 localStorage.setItem('tbp_football_scan_enabled', JSON.stringify(footballScanEnabled));
@@ -4372,8 +4393,12 @@ render();
 };
 return;
 }
-if (!showDebug && activeTab === 'debug') activeTab = 'open';
-if (activeTab === 'today' || (!loanFeatureEnabled && activeTab === 'loans')) activeTab = 'open';
+const defaultVisibleTab = goalsFeatureEnabled ? 'goals' : openTabEnabled ? 'open' : 'daily';
+if (!showDebug && activeTab === 'debug') activeTab = defaultVisibleTab;
+if (activeTab === 'today'
+|| (!openTabEnabled && activeTab === 'open')
+|| (!goalsFeatureEnabled && activeTab === 'goals')
+|| (!loanFeatureEnabled && activeTab === 'loans')) activeTab = defaultVisibleTab;
 container.className = '';
 const footballBookmarkCount = Object.keys(loadFootballBookmarks().games || {}).length;
 container.innerHTML = `
@@ -4390,7 +4415,8 @@ ${guidedFootballReviewEnabled && guidedFootballSession.active ? '<button class="
 </div>
 <div class="tbp-odds-change-strip" id="tbp-odds-change-strip"></div>
 <div class="tbp-tabs">
-<div class="tbp-tab ${activeTab === 'open' ? 'active' : ''}" data-tab="open">Open</div>
+${openTabEnabled ? `<div class="tbp-tab ${activeTab === 'open' ? 'active' : ''}" data-tab="open">Open</div>` : ''}
+${goalsFeatureEnabled ? `<div class="tbp-tab ${activeTab === 'goals' ? 'active' : ''}" data-tab="goals">Goals</div>` : ''}
 ${loanFeatureEnabled ? `<div class="tbp-tab ${activeTab === 'loans' ? 'active' : ''}" data-tab="loans">Loans${loanDueCount() ? ' !' : ''}</div>` : ''}
 <div class="tbp-tab ${activeTab === 'daily' ? 'active' : ''}" data-tab="daily">Daily</div>
 <div class="tbp-tab ${activeTab === 'batch' ? 'active' : ''}" data-tab="batch">${batchFeatureEnabled ? 'Batch' : 'Stats'}</div>
@@ -4405,6 +4431,7 @@ ${showDebug ? `<div class="tbp-tab ${activeTab === 'debug' ? 'active' : ''}" dat
 `;
 const body = document.getElementById('tbp-body');
 if (activeTab === 'open') renderOpen(body);
+if (activeTab === 'goals') renderGoals(body);
 if (activeTab === 'loans') renderLoans(body);
 if (activeTab === 'daily') renderDaily(body);
 if (activeTab === 'batch') {
@@ -4415,6 +4442,138 @@ if (activeTab === 'debug') renderDebug(body);
 if (activeTab === 'settings') renderSettings(body);
 attachEvents();
 updateFootballOddsChangeStrip();
+}
+function goalsMonthBoundary(offset = 0) {
+const now = new Date();
+const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 1));
+return {
+key: `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`,
+label: date.toLocaleDateString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' }),
+timestamp: Math.floor(date.getTime() / 1000)
+};
+}
+function parseGoalsPersonalStats(data) {
+const rows = Array.isArray(data?.personalstats) ? data.personalstats : [];
+const values = Object.fromEntries(rows.map(row => [String(row?.name || '').toLowerCase(), Number(row?.value || 0)]));
+const required = ['xantaken', 'refills', 'totalstats'];
+const missing = required.filter(name => !Object.prototype.hasOwnProperty.call(values, name));
+if (missing.length) throw new Error(`Torn did not return ${missing.join(', ')}. Use a Limited or compatible custom key with user personalstats access.`);
+return values;
+}
+function calculateGoalsDifference(end, start) {
+return {
+xanax: Math.max(0, Number(end.xantaken || 0) - Number(start.xantaken || 0)),
+refills: Math.max(0, Number(end.refills || 0) - Number(start.refills || 0)),
+battleStats: Math.max(0, Number(end.totalstats || 0) - Number(start.totalstats || 0))
+};
+}
+async function requestGoalsTornV2(timestamp = null) {
+const key = goalsApiKey || apiKey;
+const query = new URLSearchParams({
+stat: 'xantaken,refills,totalstats',
+comment: 'BookieGoals'
+});
+if (timestamp) query.set('timestamp', String(timestamp));
+const baseUrl = `https://api.torn.com/v2/user/personalstats?${query.toString()}`;
+const pdaUrl = `${baseUrl}&key=${encodeURIComponent(key)}`;
+const pdaBridge = window.flutter_inappwebview;
+if (pdaBridge && typeof pdaBridge.callHandler === 'function') {
+const response = await pdaBridge.callHandler('PDA_httpGet', pdaUrl, {});
+return validateTrainingApiResponse(decodeTrainingApiResponse(response));
+}
+if (typeof window.PDA_httpGet === 'function') {
+const response = await window.PDA_httpGet(pdaUrl, {});
+return validateTrainingApiResponse(decodeTrainingApiResponse(response));
+}
+return new Promise((resolve, reject) => {
+GM_xmlhttpRequest({
+method: 'GET',
+url: baseUrl,
+headers: { Authorization: `ApiKey ${key}` },
+timeout: 15000,
+onload: response => {
+try { resolve(validateTrainingApiResponse(decodeTrainingApiResponse(response), Number(response.status || 200))); }
+catch (error) { reject(error); }
+},
+onerror: () => reject(new Error('Could not reach the Torn API.')),
+ontimeout: () => reject(new Error('The Torn API request timed out.'))
+});
+});
+}
+async function fetchGoalsData() {
+if (goalsLoading) return;
+if (!(goalsApiKey || apiKey)) {
+goalsError = 'Add a Goals API key, or configure a compatible key under Bookie API.';
+render();
+return;
+}
+goalsLoading = true;
+goalsError = '';
+render();
+try {
+const current = goalsMonthBoundary(0);
+const previous = goalsMonthBoundary(-1);
+const [latestData, currentStartData, previousStartData] = await Promise.all([
+requestGoalsTornV2(),
+requestGoalsTornV2(current.timestamp),
+requestGoalsTornV2(previous.timestamp)
+]);
+const latest = parseGoalsPersonalStats(latestData);
+const currentStart = parseGoalsPersonalStats(currentStartData);
+const previousStart = parseGoalsPersonalStats(previousStartData);
+goalsCache = {
+updatedAt: Date.now(),
+current: { key: current.key, label: current.label, values: calculateGoalsDifference(latest, currentStart) },
+previous: { key: previous.key, label: previous.label, values: calculateGoalsDifference(currentStart, previousStart) }
+};
+localStorage.setItem('tbp_goals_cache', JSON.stringify(goalsCache));
+} catch (error) {
+goalsError = String(error?.message || error);
+} finally {
+goalsLoading = false;
+render();
+}
+}
+function formatGoalValue(value, compact = false) {
+const number = Math.max(0, Number(value || 0));
+if (compact && number >= 1000000) return `${(number / 1000000).toFixed(number >= 100000000 ? 1 : 2)}m`;
+return Math.floor(number).toLocaleString();
+}
+function renderGoals(body) {
+const expectedCurrentKey = goalsMonthBoundary(0).key;
+const staleMonth = goalsCache?.current?.key !== expectedCurrentKey;
+const month = goalsMonthView === 'previous' ? goalsCache?.previous : goalsCache?.current;
+const goalRows = [
+{ key: 'xanax', label: 'Xanax', target: Number(goalsTargets.xanax || 0), compact: false },
+{ key: 'refills', label: 'Energy Refills', target: Number(goalsTargets.refills || 0), compact: false },
+{ key: 'battleStats', label: 'Battle Stats Gained', target: Number(goalsTargets.battleStats || 0), compact: true }
+];
+body.innerHTML = `
+<div class="tbp-btn-row" style="margin-bottom:8px;">
+<button class="tbp-btn ${goalsMonthView === 'current' ? 'tbp-btn-primary' : ''}" data-goals-month="current">This Month</button>
+<button class="tbp-btn ${goalsMonthView === 'previous' ? 'tbp-btn-primary' : ''}" data-goals-month="previous">Last Month</button>
+</div>
+${month && !staleMonth ? `
+<div class="tbp-row" style="margin:0 2px 9px;"><strong>${escapeHtml(month.label)}</strong><span class="tbp-muted">${goalsMonthView === 'current' ? 'In progress' : 'Final'}</span></div>
+${goalRows.map(goal => {
+const value = Number(month.values?.[goal.key] || 0);
+const percent = goal.target > 0 ? Math.min(100, value / goal.target * 100) : 0;
+const met = goal.target > 0 && value >= goal.target;
+return `
+<div class="tbp-card" style="border-left:6px solid ${met ? '#28a745' : '#4da3ff'};">
+<div class="tbp-row" style="margin-top:0;"><strong>${goal.label}</strong><strong class="${met ? 'tbp-win' : ''}">${formatGoalValue(value, goal.compact)} / ${formatGoalValue(goal.target, goal.compact)}</strong></div>
+<div style="height:8px; background:#151515; border-radius:5px; overflow:hidden; margin-top:8px;"><div style="width:${percent.toFixed(1)}%; height:100%; background:${met ? '#28a745' : '#2980b9'};"></div></div>
+<div class="tbp-muted" style="margin-top:5px; text-align:right;">${percent.toFixed(1)}%</div>
+</div>
+`;
+}).join('')}
+` : `<div class="tbp-card tbp-muted">${goalsLoading ? 'Loading monthly goals…' : staleMonth && goalsCache ? 'A new month has started. Refresh to calculate the new period.' : 'Refresh to load monthly goal progress.'}</div>`}
+${goalsError ? `<div class="tbp-card tbp-loss">${escapeHtml(goalsError)}</div>` : ''}
+<button class="tbp-btn tbp-btn-primary" id="tbp-refresh-goals" style="width:100%;" ${goalsLoading ? 'disabled' : ''}>${goalsLoading ? 'Refreshing…' : 'Refresh Goals'}</button>
+${goalsCache?.updatedAt ? `<div class="tbp-muted" style="margin-top:7px; text-align:center;">Updated ${new Date(goalsCache.updatedAt).toLocaleString()}</div>` : ''}
+<div class="tbp-muted" style="margin-top:5px; text-align:center;">A refresh uses 3 Torn API requests. No repeating poll.</div>
+`;
+if ((!goalsCache || staleMonth) && !goalsLoading && !goalsError && (goalsApiKey || apiKey)) setTimeout(() => fetchGoalsData(), 0);
 }
 function renderOpen(body) {
 // Re-run local matching so fixtures reviewed after the API log was cached can
@@ -4660,9 +4819,22 @@ body.innerHTML = `
 </details>
 <details class="tbp-card" open>
 <summary style="font-weight:bold; cursor:pointer;">Tabs</summary>
+<div class="tbp-row"><span>Show Open tab</span><input type="checkbox" id="tbp-open-tab-enabled" ${openTabEnabled ? 'checked' : ''}></div>
+<div class="tbp-row"><span>Enable Goals tab</span><input type="checkbox" id="tbp-goals-feature-enabled" ${goalsFeatureEnabled ? 'checked' : ''}></div>
 <div class="tbp-row"><span>Enable Loans tab</span><input type="checkbox" id="tbp-loan-feature-enabled" ${loanFeatureEnabled ? 'checked' : ''}></div>
 <div class="tbp-row"><span>Use Batch instead of Stats</span><input type="checkbox" id="tbp-batch-feature-enabled" ${batchFeatureEnabled ? 'checked' : ''}></div>
 <div class="tbp-row"><span>Show Debug</span><input type="checkbox" id="tbp-show-debug" ${showDebug ? 'checked' : ''}></div>
+</details>
+<details class="tbp-card" open>
+<summary style="font-weight:bold; cursor:pointer;">Monthly Goals</summary>
+<label class="tbp-muted" style="display:block; margin-top:9px;">GOALS API KEY (OPTIONAL)</label>
+<input type="password" id="tbp-goals-api-key" class="tbp-input" value="${escapeHtml(goalsApiKey)}" placeholder="Uses Bookie key when blank">
+<label class="tbp-muted" style="display:block; margin-top:9px;">XANAX TARGET</label>
+<input type="number" id="tbp-goal-xanax" class="tbp-input" value="${Number(goalsTargets.xanax || 72)}" min="0" step="1">
+<label class="tbp-muted">ENERGY REFILL TARGET</label>
+<input type="number" id="tbp-goal-refills" class="tbp-input" value="${Number(goalsTargets.refills || 27)}" min="0" step="1">
+<label class="tbp-muted">BATTLE STAT GAIN TARGET</label>
+<input type="number" id="tbp-goal-battle-stats" class="tbp-input" value="${Number(goalsTargets.battleStats || 110000000)}" min="0" step="1000000">
 </details>
 <details class="tbp-card">
 <summary style="font-weight:bold; cursor:pointer;">Assistants</summary>
@@ -5160,6 +5332,14 @@ saveData();
 render();
 };
 });
+document.querySelectorAll('[data-goals-month]').forEach(button => {
+button.onclick = () => {
+goalsMonthView = button.dataset.goalsMonth === 'previous' ? 'previous' : 'current';
+render();
+};
+});
+const refreshGoalsBtn = document.getElementById('tbp-refresh-goals');
+if (refreshGoalsBtn) refreshGoalsBtn.onclick = () => fetchGoalsData();
 document.getElementById('tbp-hide-btn').onclick = e => {
 e.stopPropagation();
 captureVisibleScanSettings();
@@ -5536,6 +5716,14 @@ footballAutoScoreEnabled = document.getElementById('tbp-football-auto-score-enab
 footballScoreDayStartHour = Math.max(0, Math.min(23, Math.floor(Number(document.getElementById('tbp-football-score-day-start-hour').value || 8))));
 batchFeatureEnabled = document.getElementById('tbp-batch-feature-enabled').checked;
 loanFeatureEnabled = document.getElementById('tbp-loan-feature-enabled').checked;
+openTabEnabled = document.getElementById('tbp-open-tab-enabled').checked;
+goalsFeatureEnabled = document.getElementById('tbp-goals-feature-enabled').checked;
+goalsApiKey = document.getElementById('tbp-goals-api-key').value.trim();
+goalsTargets = {
+xanax: Math.max(0, Math.floor(Number(document.getElementById('tbp-goal-xanax').value || 0))),
+refills: Math.max(0, Math.floor(Number(document.getElementById('tbp-goal-refills').value || 0))),
+battleStats: Math.max(0, Math.floor(Number(document.getElementById('tbp-goal-battle-stats').value || 0)))
+};
 chainAssistantEnabled = document.getElementById('tbp-chain-assistant-enabled').checked;
 trainingAssistantEnabled = document.getElementById('tbp-training-assistant-enabled').checked;
 saveData();
@@ -6514,7 +6702,7 @@ try { candidate = new TextDecoder().decode(candidate); } catch { continue; }
 }
 for (let depth = 0; depth < 2; depth += 1) {
 if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
-const looksLikeApiData = candidate.error || candidate.gym || candidate.perks || candidate.gyms;
+const looksLikeApiData = candidate.error || candidate.gym || candidate.perks || candidate.gyms || candidate.personalstats;
 if (looksLikeApiData) return candidate;
 break;
 }
