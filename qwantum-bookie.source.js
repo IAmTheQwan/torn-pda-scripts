@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.23.0
+// @version      1.24.0
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -38,9 +38,9 @@
     let goalsApiKey = localStorage.getItem('tbp_goals_api_key') || '';
     let goalsTargets = (() => {
         try {
-            return { xanax: 72, refills: 27, battleStats: 110000000, ...JSON.parse(localStorage.getItem('tbp_goals_targets') || '{}') };
+            return { xanax: 72, refills: 27, battleStats: 110000000, activityHours: 20, warHitPercent: 5, ...JSON.parse(localStorage.getItem('tbp_goals_targets') || '{}') };
         } catch {
-            return { xanax: 72, refills: 27, battleStats: 110000000 };
+            return { xanax: 72, refills: 27, battleStats: 110000000, activityHours: 20, warHitPercent: 5 };
         }
     })();
     let isMinimized = JSON.parse(localStorage.getItem('tbp_minimized') || 'false');
@@ -75,16 +75,21 @@
     let pendingLoanDraft = null;
     let loanLedgerNeedsMigration = false;
     let loanView = 'summary';
-    let goalsMonthView = 'current';
+    let goalsMonthView = 'rolling';
     let goalsLoading = false;
     let goalsError = '';
+    let goalsLastRequestCount = 0;
     let goalsCache = (() => {
         try { return JSON.parse(localStorage.getItem('tbp_goals_cache') || 'null'); }
         catch { return null; }
     })();
+    let goalsWarReportCache = (() => {
+        try { return JSON.parse(localStorage.getItem('tbp_goals_war_report_cache') || '{}'); }
+        catch { return {}; }
+    })();
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.23.0';
+    const SCRIPT_VERSION = '1.24.0';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -4879,7 +4884,7 @@
     function parseGoalsPersonalStats(data) {
         const rows = Array.isArray(data?.personalstats) ? data.personalstats : [];
         const values = Object.fromEntries(rows.map(row => [String(row?.name || '').toLowerCase(), Number(row?.value || 0)]));
-        const required = ['xantaken', 'refills', 'totalstats'];
+        const required = ['xantaken', 'refills', 'totalstats', 'timeplayed'];
         const missing = required.filter(name => !Object.prototype.hasOwnProperty.call(values, name));
         if (missing.length) throw new Error(`Torn did not return ${missing.join(', ')}. Use a Limited or compatible custom key with user personalstats access.`);
         return values;
@@ -4889,18 +4894,22 @@
         return {
             xanax: Math.max(0, Number(end.xantaken || 0) - Number(start.xantaken || 0)),
             refills: Math.max(0, Number(end.refills || 0) - Number(start.refills || 0)),
-            battleStats: Math.max(0, Number(end.totalstats || 0) - Number(start.totalstats || 0))
+            battleStats: Math.max(0, Number(end.totalstats || 0) - Number(start.totalstats || 0)),
+            activityHours: Math.max(0, Number(end.timeplayed || 0) - Number(start.timeplayed || 0)) / 3600
         };
     }
 
-    async function requestGoalsTornV2(timestamp = null) {
+    function calculateRankedWarPercent(playerHits, factionHits) {
+        const player = Math.max(0, Number(playerHits || 0));
+        const faction = Math.max(0, Number(factionHits || 0));
+        return faction > 0 ? player / faction * 100 : 0;
+    }
+
+    async function requestGoalsPath(path) {
         const key = goalsApiKey || apiKey;
-        const query = new URLSearchParams({
-            stat: 'xantaken,refills,totalstats',
-            comment: 'BookieGoals'
-        });
-        if (timestamp) query.set('timestamp', String(timestamp));
-        const baseUrl = `https://api.torn.com/v2/user/personalstats?${query.toString()}`;
+        goalsLastRequestCount += 1;
+        const separator = path.includes('?') ? '&' : '?';
+        const baseUrl = `https://api.torn.com/v2/${path}${separator}comment=BookieGoals`;
         const pdaUrl = `${baseUrl}&key=${encodeURIComponent(key)}`;
         const pdaBridge = window.flutter_inappwebview;
         if (pdaBridge && typeof pdaBridge.callHandler === 'function') {
@@ -4927,6 +4936,51 @@
         });
     }
 
+    async function requestGoalsPersonalStats(timestamp = null) {
+        const query = new URLSearchParams({
+            stat: 'xantaken,refills,totalstats,timeplayed'
+        });
+        if (timestamp) query.set('timestamp', String(timestamp));
+        return requestGoalsPath(`user/personalstats?${query.toString()}`);
+    }
+
+    async function fetchRankedWarGoals(playerId, rollingStartTimestamp) {
+        const historyData = await requestGoalsPath('faction/rankedwars?limit=20');
+        const wars = (Array.isArray(historyData?.rankedwars) ? historyData.rankedwars : [])
+            .filter(war => Number(war?.end || war?.start || 0) >= rollingStartTimestamp);
+        const results = [];
+        for (const war of wars) {
+            const warId = String(war?.id || '');
+            if (!warId) continue;
+            let report = goalsWarReportCache[warId]?.report || null;
+            if (!report || !Number(war?.end || 0)) {
+                const reportData = await requestGoalsPath(`faction/${encodeURIComponent(warId)}/rankedwarreport`);
+                report = reportData?.rankedwarreport || null;
+                if (report && Number(report.end || war.end || 0)) {
+                    goalsWarReportCache[warId] = { report, cachedAt: Date.now() };
+                }
+            }
+            const factions = Array.isArray(report?.factions) ? report.factions : [];
+            const ownFaction = factions.find(faction => (faction.members || []).some(member => String(member.id) === String(playerId)));
+            const member = (ownFaction?.members || []).find(item => String(item.id) === String(playerId));
+            if (!ownFaction || !member) continue;
+            const opponent = factions.find(faction => String(faction.id) !== String(ownFaction.id));
+            const factionHits = Math.max(0, Number(ownFaction.attacks || 0));
+            const playerHits = Math.max(0, Number(member.attacks || 0));
+            results.push({
+                id: warId,
+                start: Number(report?.start || war?.start || 0),
+                end: Number(report?.end || war?.end || 0),
+                opponent: String(opponent?.name || 'Opponent'),
+                playerHits,
+                factionHits,
+                percent: calculateRankedWarPercent(playerHits, factionHits)
+            });
+        }
+        localStorage.setItem('tbp_goals_war_report_cache', JSON.stringify(goalsWarReportCache));
+        return results.sort((a, b) => b.start - a.start);
+    }
+
     async function fetchGoalsData() {
         if (goalsLoading) return;
         if (!(goalsApiKey || apiKey)) {
@@ -4936,20 +4990,30 @@
         }
         goalsLoading = true;
         goalsError = '';
+        goalsLastRequestCount = 0;
         render();
         try {
             const current = goalsMonthBoundary(0);
             const previous = goalsMonthBoundary(-1);
-            const [latestData, currentStartData, previousStartData] = await Promise.all([
-                requestGoalsTornV2(),
-                requestGoalsTornV2(current.timestamp),
-                requestGoalsTornV2(previous.timestamp)
+            const rollingStartTimestamp = Math.floor((Date.now() - 30 * 86400000) / 1000);
+            const [latestData, currentStartData, previousStartData, rollingStartData, basicData] = await Promise.all([
+                requestGoalsPersonalStats(),
+                requestGoalsPersonalStats(current.timestamp),
+                requestGoalsPersonalStats(previous.timestamp),
+                requestGoalsPersonalStats(rollingStartTimestamp),
+                requestGoalsPath('user/basic')
             ]);
             const latest = parseGoalsPersonalStats(latestData);
             const currentStart = parseGoalsPersonalStats(currentStartData);
             const previousStart = parseGoalsPersonalStats(previousStartData);
+            const rollingStart = parseGoalsPersonalStats(rollingStartData);
+            const playerId = Number(basicData?.profile?.id || 0);
+            if (!playerId) throw new Error('Torn did not return your player ID.');
+            const rankedWars = await fetchRankedWarGoals(playerId, rollingStartTimestamp);
             goalsCache = {
                 updatedAt: Date.now(),
+                requestCount: goalsLastRequestCount,
+                rolling: { key: `rolling-${Math.floor(Date.now() / 86400000)}`, label: 'Last 30 Days', values: calculateGoalsDifference(latest, rollingStart), rankedWars },
                 current: { key: current.key, label: current.label, values: calculateGoalsDifference(latest, currentStart) },
                 previous: { key: previous.key, label: previous.label, values: calculateGoalsDifference(currentStart, previousStart) }
             };
@@ -4962,45 +5026,67 @@
         }
     }
 
-    function formatGoalValue(value, compact = false) {
+    function formatGoalValue(value, compact = false, decimals = 0, suffix = '') {
         const number = Math.max(0, Number(value || 0));
         if (compact && number >= 1000000) return `${(number / 1000000).toFixed(number >= 100000000 ? 1 : 2)}m`;
-        return Math.floor(number).toLocaleString();
+        return `${number.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}${suffix}`;
     }
 
     function renderGoals(body) {
         const expectedCurrentKey = goalsMonthBoundary(0).key;
         const staleMonth = goalsCache?.current?.key !== expectedCurrentKey;
-        const month = goalsMonthView === 'previous' ? goalsCache?.previous : goalsCache?.current;
+        const period = goalsMonthView === 'rolling'
+            ? goalsCache?.rolling
+            : goalsMonthView === 'previous' ? goalsCache?.previous : goalsCache?.current;
         const goalRows = [
             { key: 'xanax', label: 'Xanax', target: Number(goalsTargets.xanax || 0), compact: false },
             { key: 'refills', label: 'Energy Refills', target: Number(goalsTargets.refills || 0), compact: false },
-            { key: 'battleStats', label: 'Battle Stats Gained', target: Number(goalsTargets.battleStats || 0), compact: true }
+            { key: 'battleStats', label: 'Battle Stats Gained', target: Number(goalsTargets.battleStats || 0), compact: true },
+            { key: 'activityHours', label: 'Activity', target: Number(goalsTargets.activityHours || 0), compact: false, decimals: 2, suffix: 'h' }
         ];
+        const rankedWars = goalsMonthView === 'rolling' && Array.isArray(period?.rankedWars) ? period.rankedWars : [];
+        const warTarget = Number(goalsTargets.warHitPercent || 0);
+        const regularMet = period ? goalRows.filter(goal => goal.target > 0 && Number(period.values?.[goal.key] || 0) >= goal.target).length : 0;
+        const warsMet = rankedWars.length > 0 && rankedWars.every(war => Number(war.percent || 0) >= warTarget);
+        const requirementsMet = regularMet + (warsMet ? 1 : 0);
+        const periodReady = period && !(goalsMonthView === 'current' && staleMonth);
         body.innerHTML = `
             <div class="tbp-btn-row" style="margin-bottom:8px;">
+                <button class="tbp-btn ${goalsMonthView === 'rolling' ? 'tbp-btn-primary' : ''}" data-goals-month="rolling">Last 30 Days</button>
                 <button class="tbp-btn ${goalsMonthView === 'current' ? 'tbp-btn-primary' : ''}" data-goals-month="current">This Month</button>
                 <button class="tbp-btn ${goalsMonthView === 'previous' ? 'tbp-btn-primary' : ''}" data-goals-month="previous">Last Month</button>
             </div>
-            ${month && !staleMonth ? `
-                <div class="tbp-row" style="margin:0 2px 9px;"><strong>${escapeHtml(month.label)}</strong><span class="tbp-muted">${goalsMonthView === 'current' ? 'In progress' : 'Final'}</span></div>
+            ${periodReady ? `
+                <div class="tbp-row" style="margin:0 2px 9px;"><strong>${escapeHtml(period.label)}</strong><span class="tbp-muted">${goalsMonthView === 'previous' ? 'Final' : 'In progress'}</span></div>
+                ${goalsMonthView === 'rolling' ? `<div class="tbp-card" style="border-color:${requirementsMet >= 3 ? '#28a745' : '#d9534f'};"><div class="tbp-row" style="margin:0;"><strong>Requirements met</strong><strong class="${requirementsMet >= 3 ? 'tbp-win' : 'tbp-loss'}">${requirementsMet} / 5</strong></div><div class="tbp-muted" style="margin-top:5px;">At least 3 are required. Ranked Wars counts as one requirement and every listed war must reach ${warTarget.toFixed(1)}%.</div></div>` : ''}
                 ${goalRows.map(goal => {
-                    const value = Number(month.values?.[goal.key] || 0);
+                    const value = Number(period.values?.[goal.key] || 0);
                     const percent = goal.target > 0 ? Math.min(100, value / goal.target * 100) : 0;
                     const met = goal.target > 0 && value >= goal.target;
                     return `
                         <div class="tbp-card" style="border-left:6px solid ${met ? '#28a745' : '#4da3ff'};">
-                            <div class="tbp-row" style="margin-top:0;"><strong>${goal.label}</strong><strong class="${met ? 'tbp-win' : ''}">${formatGoalValue(value, goal.compact)} / ${formatGoalValue(goal.target, goal.compact)}</strong></div>
+                            <div class="tbp-row" style="margin-top:0;"><strong>${goal.label}</strong><strong class="${met ? 'tbp-win' : ''}">${formatGoalValue(value, goal.compact, goal.decimals, goal.suffix)} / ${formatGoalValue(goal.target, goal.compact, goal.decimals, goal.suffix)}</strong></div>
                             <div style="height:8px; background:#151515; border-radius:5px; overflow:hidden; margin-top:8px;"><div style="width:${percent.toFixed(1)}%; height:100%; background:${met ? '#28a745' : '#2980b9'};"></div></div>
                             <div class="tbp-muted" style="margin-top:5px; text-align:right;">${percent.toFixed(1)}%</div>
                         </div>
                     `;
                 }).join('')}
-            ` : `<div class="tbp-card tbp-muted">${goalsLoading ? 'Loading monthly goals…' : staleMonth && goalsCache ? 'A new month has started. Refresh to calculate the new period.' : 'Refresh to load monthly goal progress.'}</div>`}
+                ${goalsMonthView === 'rolling' ? `
+                    <div class="tbp-card" style="border-left:6px solid ${warsMet ? '#28a745' : '#4da3ff'};">
+                        <div class="tbp-row" style="margin-top:0;"><strong>Ranked Wars % Hits</strong><strong class="${warsMet ? 'tbp-win' : ''}">${rankedWars.length ? `${rankedWars.filter(war => Number(war.percent || 0) >= warTarget).length} / ${rankedWars.length} wars` : 'No wars found'}</strong></div>
+                        <div class="tbp-muted" style="margin-top:5px;">Target: ${warTarget.toFixed(1)}% of your faction's hits in each war.</div>
+                    </div>
+                    ${rankedWars.map(war => {
+                        const met = Number(war.percent || 0) >= warTarget;
+                        const date = war.end || war.start ? new Date((war.end || war.start) * 1000).toLocaleDateString() : 'In progress';
+                        return `<div class="tbp-card" style="border-left:6px solid ${met ? '#28a745' : '#d9534f'};"><div class="tbp-row" style="margin-top:0;"><strong>vs ${escapeHtml(war.opponent)}</strong><span class="tbp-muted">${escapeHtml(date)}</span></div><div class="tbp-row"><span>Your hits / faction hits</span><strong>${war.playerHits} / ${war.factionHits}</strong></div><div class="tbp-row"><span>Participation</span><strong class="${met ? 'tbp-win' : 'tbp-loss'}">${Number(war.percent || 0).toFixed(2)}% / ${warTarget.toFixed(1)}%</strong></div></div>`;
+                    }).join('')}
+                ` : ''}
+            ` : `<div class="tbp-card tbp-muted">${goalsLoading ? 'Loading goals…' : staleMonth && goalsCache && goalsMonthView === 'current' ? 'A new month has started. Refresh to calculate the new period.' : 'Refresh to load goal progress.'}</div>`}
             ${goalsError ? `<div class="tbp-card tbp-loss">${escapeHtml(goalsError)}</div>` : ''}
             <button class="tbp-btn tbp-btn-primary" id="tbp-refresh-goals" style="width:100%;" ${goalsLoading ? 'disabled' : ''}>${goalsLoading ? 'Refreshing…' : 'Refresh Goals'}</button>
             ${goalsCache?.updatedAt ? `<div class="tbp-muted" style="margin-top:7px; text-align:center;">Updated ${new Date(goalsCache.updatedAt).toLocaleString()}</div>` : ''}
-            <div class="tbp-muted" style="margin-top:5px; text-align:center;">A refresh uses 3 Torn API requests. No repeating poll.</div>
+            <div class="tbp-muted" style="margin-top:5px; text-align:center;">Last refresh used ${Number(goalsCache?.requestCount || goalsLastRequestCount || 0)} Torn API requests. No repeating poll.</div>
         `;
         if ((!goalsCache || staleMonth) && !goalsLoading && !goalsError && (goalsApiKey || apiKey)) setTimeout(() => fetchGoalsData(), 0);
     }
@@ -5293,6 +5379,11 @@ ${safeJson(log.raw)}
                 <input type="number" id="tbp-goal-refills" class="tbp-input" value="${Number(goalsTargets.refills || 27)}" min="0" step="1">
                 <label class="tbp-muted">BATTLE STAT GAIN TARGET</label>
                 <input type="number" id="tbp-goal-battle-stats" class="tbp-input" value="${Number(goalsTargets.battleStats || 110000000)}" min="0" step="1000000">
+                <label class="tbp-muted">ACTIVITY TARGET (HOURS)</label>
+                <input type="number" id="tbp-goal-activity-hours" class="tbp-input" value="${Number(goalsTargets.activityHours || 20)}" min="0" step="0.25">
+                <label class="tbp-muted">RANKED WAR HITS TARGET (%)</label>
+                <input type="number" id="tbp-goal-war-hit-percent" class="tbp-input" value="${Number(goalsTargets.warHitPercent || 5)}" min="0" max="100" step="0.1">
+                <div class="tbp-muted" style="margin-top:7px;">Ranked Wars are measured separately: your attacks divided by your faction's attacks in each war over the last 30 days.</div>
             </details>
 
             <details class="tbp-card">
@@ -5822,7 +5913,8 @@ ${safeJson(log.raw)}
 
         document.querySelectorAll('[data-goals-month]').forEach(button => {
             button.onclick = () => {
-                goalsMonthView = button.dataset.goalsMonth === 'previous' ? 'previous' : 'current';
+                const view = button.dataset.goalsMonth;
+                goalsMonthView = ['rolling', 'current', 'previous'].includes(view) ? view : 'rolling';
                 render();
             };
         });
@@ -6239,7 +6331,9 @@ ${safeJson(log.raw)}
                 goalsTargets = {
                     xanax: Math.max(0, Math.floor(Number(document.getElementById('tbp-goal-xanax').value || 0))),
                     refills: Math.max(0, Math.floor(Number(document.getElementById('tbp-goal-refills').value || 0))),
-                    battleStats: Math.max(0, Math.floor(Number(document.getElementById('tbp-goal-battle-stats').value || 0)))
+                    battleStats: Math.max(0, Math.floor(Number(document.getElementById('tbp-goal-battle-stats').value || 0))),
+                    activityHours: Math.max(0, Number(document.getElementById('tbp-goal-activity-hours').value || 0)),
+                    warHitPercent: Math.max(0, Math.min(100, Number(document.getElementById('tbp-goal-war-hit-percent').value || 0)))
                 };
                 chainAssistantEnabled = document.getElementById('tbp-chain-assistant-enabled').checked;
                 trainingAssistantEnabled = document.getElementById('tbp-training-assistant-enabled').checked;
@@ -7313,7 +7407,7 @@ document.addEventListener('click', async e => {
             }
             for (let depth = 0; depth < 2; depth += 1) {
                 if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
-                    const looksLikeApiData = candidate.error || candidate.gym || candidate.perks || candidate.gyms || candidate.personalstats;
+                    const looksLikeApiData = candidate.error || candidate.gym || candidate.perks || candidate.gyms || candidate.personalstats || candidate.profile || candidate.rankedwars || candidate.rankedwarreport;
                     if (looksLikeApiData) return candidate;
                     break;
                 }
