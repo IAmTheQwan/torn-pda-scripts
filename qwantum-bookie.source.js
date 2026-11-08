@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.9
+// @version      1.24.10
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -96,7 +96,7 @@
     })();
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.24.9';
+    const SCRIPT_VERSION = '1.24.10';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -4926,6 +4926,24 @@
         return faction > 0 ? player / faction * 100 : 0;
     }
 
+    function calculateLiveRankedWarHits(attacks, playerId, factionId, opponentFactionId) {
+        const successfulResults = new Set(['Attacked', 'Mugged', 'Hospitalized', 'Arrested', 'Looted', 'Special', 'Bounty']);
+        const qualifying = (Array.isArray(attacks) ? attacks : []).filter(attack => {
+            const ownAttack = String(attack?.attacker?.faction_id) === String(factionId);
+            const againstOpponent = String(attack?.defender?.faction_id) === String(opponentFactionId);
+            const successful = Number(attack?.respect_gain || 0) > 0 || successfulResults.has(String(attack?.result || ''));
+            return ownAttack && againstOpponent && successful;
+        });
+        const factionHits = qualifying.length;
+        const playerHits = qualifying.filter(attack => String(attack?.attacker?.id) === String(playerId)).length;
+        return {
+            playerHits,
+            factionHits,
+            percent: calculateRankedWarPercent(playerHits, factionHits),
+            capped: (Array.isArray(attacks) ? attacks.length : 0) >= 1000
+        };
+    }
+
     function calculateMonthlyGoalPace(value, target, periodKey, isCurrent, maxPerDay = 0, now = new Date()) {
         const match = String(periodKey || '').match(/^(\d{4})-(\d{2})$/);
         if (!match) return null;
@@ -5033,6 +5051,7 @@
             // shortly before the calendar boundary.
             occurredAt: Math.max(start, Number(currentMonthTimestamp || 0)),
             opponent: String(opponent?.name || 'Opponent'),
+            opponentFactionId: Number(opponent?.id || 0),
             ownScore: Math.max(0, Number(ownFaction.score || 0)),
             opponentScore: Math.max(0, Number(opponent?.score || 0)),
             target: Math.max(0, Number(war?.target || 0)),
@@ -5056,7 +5075,21 @@
         const nowTimestamp = Math.floor(Date.now() / 1000);
         if (currentRankedWar && !Number(currentRankedWar.end || 0) && Number(currentRankedWar.start || 0) <= nowTimestamp) {
             const activeResult = extractActiveRankedWar(currentRankedWar, factionId, currentMonthTimestamp);
-            if (activeResult) results.push(activeResult);
+            if (activeResult) {
+                try {
+                    const query = new URLSearchParams({
+                        filters: 'outgoing',
+                        from: String(activeResult.start),
+                        to: String(nowTimestamp),
+                        limit: '1000'
+                    });
+                    const attackData = await requestGoalsPath(`faction/attacksfull?${query.toString()}`);
+                    Object.assign(activeResult, calculateLiveRankedWarHits(attackData?.attacks, playerId, factionId, activeResult.opponentFactionId));
+                } catch (error) {
+                    activeResult.liveHitsError = String(error?.message || error);
+                }
+                results.push(activeResult);
+            }
         }
         for (const war of wars) {
             const warId = Number(war?.id || 0);
@@ -5211,7 +5244,13 @@
                 ${rankedWars.map(war => {
                     if (war.status === 'active') {
                         const started = war.start ? new Date(war.start * 1000).toLocaleString() : 'Now';
-                        return `<div class="tbp-card" style="border-left:6px solid #d69a32;"><div class="tbp-row" style="margin-top:0;"><strong>vs ${escapeHtml(war.opponent)}</strong><strong style="color:#f2bd61;">In progress</strong></div><div class="tbp-row"><span>Current score</span><strong>${Number(war.ownScore || 0).toLocaleString()} - ${Number(war.opponentScore || 0).toLocaleString()}</strong></div>${war.target ? `<div class="tbp-row"><span>Score target</span><strong>${Number(war.target).toLocaleString()}</strong></div>` : ''}<div class="tbp-muted" style="margin-top:5px;">Started ${escapeHtml(started)}. Your final hit percentage will appear after Torn publishes the completed war report.</div></div>`;
+                        const hasLiveHits = war.playerHits !== null && war.factionHits !== null
+                            && Number.isFinite(Number(war.playerHits)) && Number.isFinite(Number(war.factionHits));
+                        const liveMet = hasLiveHits && Number(war.percent || 0) >= warTarget;
+                        const hitDetails = hasLiveHits
+                            ? `<div class="tbp-row"><span>Your hits / faction hits</span><strong>${Number(war.playerHits).toLocaleString()} / ${Number(war.factionHits).toLocaleString()}</strong></div><div class="tbp-row"><span>Live participation</span><strong class="${liveMet ? 'tbp-win' : 'tbp-loss'}">${Number(war.percent || 0).toFixed(2)}% / ${warTarget.toFixed(1)}%</strong></div>${war.capped ? '<div class="tbp-muted" style="color:#f2bd61; margin-top:4px;">The API returned its 1,000-attack maximum; this live estimate may be incomplete.</div>' : ''}`
+                            : `<div class="tbp-muted" style="color:#f2bd61; margin-top:6px;">Live hit tracking unavailable: ${escapeHtml(war.liveHitsError || 'No attack data returned. The API key needs Limited access and faction API permission.')}</div>`;
+                        return `<div class="tbp-card" style="border-left:6px solid #d69a32;"><div class="tbp-row" style="margin-top:0;"><strong>vs ${escapeHtml(war.opponent)}</strong><strong style="color:#f2bd61;">In progress</strong></div>${hitDetails}<div class="tbp-row"><span>Current score</span><strong>${Number(war.ownScore || 0).toLocaleString()} - ${Number(war.opponentScore || 0).toLocaleString()}</strong></div>${war.target ? `<div class="tbp-row"><span>Score target</span><strong>${Number(war.target).toLocaleString()}</strong></div>` : ''}<div class="tbp-muted" style="margin-top:5px;">Live hits are a provisional count of successful outgoing attacks against ${escapeHtml(war.opponent)} since ${escapeHtml(started)}. Torn's completed report supplies the final percentage.</div></div>`;
                     }
                     const met = Number(war.percent || 0) >= warTarget;
                     const date = war.end || war.start ? new Date((war.end || war.start) * 1000).toLocaleDateString() : 'In progress';
@@ -7542,7 +7581,7 @@ document.addEventListener('click', async e => {
             }
             for (let depth = 0; depth < 2; depth += 1) {
                 if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
-                    const looksLikeApiData = candidate.error || candidate.gym || candidate.perks || candidate.gyms || candidate.personalstats || candidate.profile || candidate.rankedwars || candidate.rankedwarreport || candidate.wars;
+                    const looksLikeApiData = candidate.error || candidate.gym || candidate.perks || candidate.gyms || candidate.personalstats || candidate.profile || candidate.rankedwars || candidate.rankedwarreport || candidate.wars || candidate.attacks;
                     if (looksLikeApiData) return candidate;
                     break;
                 }
