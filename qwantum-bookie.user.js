@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.4
+// @version      1.24.5
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -78,11 +78,18 @@ try { return JSON.parse(localStorage.getItem('tbp_goals_cache') || 'null'); }
 catch { return null; }
 })();
 let goalsWarReportCache = (() => {
-try { return JSON.parse(localStorage.getItem('tbp_goals_war_report_cache') || '{}'); }
-catch { return {}; }
+try {
+const parsed = JSON.parse(localStorage.getItem('tbp_goals_war_report_cache') || 'null');
+if (parsed?.version === 2 && parsed.entries && typeof parsed.entries === 'object') return parsed;
+localStorage.removeItem('tbp_goals_war_report_cache');
+return { version: 2, entries: {} };
+} catch {
+localStorage.removeItem('tbp_goals_war_report_cache');
+return { version: 2, entries: {} };
+}
 })();
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.24.4';
+const SCRIPT_VERSION = '1.24.5';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -4537,6 +4544,25 @@ stat: 'xantaken,refills,totalstats,timeplayed'
 if (timestamp) query.set('timestamp', String(timestamp));
 return requestGoalsPath(`user/personalstats?${query.toString()}`);
 }
+function extractRankedWarGoal(report, war, playerId) {
+const factions = Array.isArray(report?.factions) ? report.factions : [];
+const ownFaction = factions.find(faction => (faction.members || []).some(member => String(member.id) === String(playerId)));
+const member = (ownFaction?.members || []).find(item => String(item.id) === String(playerId));
+if (!ownFaction || !member) return null;
+const opponent = factions.find(faction => String(faction.id) !== String(ownFaction.id));
+const factionHits = Math.max(0, Number(ownFaction.attacks || 0));
+const playerHits = Math.max(0, Number(member.attacks || 0));
+return {
+id: Number(report?.id || war?.id || 0),
+start: Number(report?.start || war?.start || 0),
+end: Number(report?.end || war?.end || 0),
+occurredAt: Number(report?.end || war?.end || report?.start || war?.start || 0),
+opponent: String(opponent?.name || 'Opponent'),
+playerHits,
+factionHits,
+percent: calculateRankedWarPercent(playerHits, factionHits)
+};
+}
 async function fetchRankedWarGoals(playerId, earliestMonthTimestamp) {
 const historyData = await requestGoalsPath('faction/rankedwars?limit=100');
 const wars = (Array.isArray(historyData?.rankedwars) ? historyData.rankedwars : [])
@@ -4549,36 +4575,30 @@ if (!Number.isInteger(warId) || warId <= 0) {
 skipped.push({ id: String(war?.id || 'unknown'), occurredAt: Number(war?.end || 0), error: 'Invalid ranked-war ID in history.' });
 continue;
 }
-let report = goalsWarReportCache[warId]?.report || null;
-if (!report) {
+const cacheKey = `${playerId}:${warId}`;
+let result = goalsWarReportCache.entries[cacheKey]?.result || null;
+if (!result) {
 try {
 const reportData = await requestGoalsPath(`faction/${encodeURIComponent(warId)}/rankedwarreport`);
-report = reportData?.rankedwarreport || null;
-if (report) goalsWarReportCache[warId] = { report, cachedAt: Date.now() };
+const report = reportData?.rankedwarreport || null;
+result = extractRankedWarGoal(report, war, playerId);
+if (result) goalsWarReportCache.entries[cacheKey] = { result, cachedAt: Date.now() };
 } catch (error) {
 skipped.push({ id: String(warId), occurredAt: Number(war?.end || 0), error: String(error?.message || error) });
 continue;
 }
 }
-const factions = Array.isArray(report?.factions) ? report.factions : [];
-const ownFaction = factions.find(faction => (faction.members || []).some(member => String(member.id) === String(playerId)));
-const member = (ownFaction?.members || []).find(item => String(item.id) === String(playerId));
-if (!ownFaction || !member) continue;
-const opponent = factions.find(faction => String(faction.id) !== String(ownFaction.id));
-const factionHits = Math.max(0, Number(ownFaction.attacks || 0));
-const playerHits = Math.max(0, Number(member.attacks || 0));
-results.push({
-id: warId,
-start: Number(report?.start || war?.start || 0),
-end: Number(report?.end || war?.end || 0),
-occurredAt: Number(report?.end || war?.end || report?.start || war?.start || 0),
-opponent: String(opponent?.name || 'Opponent'),
-playerHits,
-factionHits,
-percent: calculateRankedWarPercent(playerHits, factionHits)
-});
+if (result) results.push(result);
 }
+Object.keys(goalsWarReportCache.entries).forEach(key => {
+if (Number(goalsWarReportCache.entries[key]?.result?.occurredAt || 0) < earliestMonthTimestamp) delete goalsWarReportCache.entries[key];
+});
+try {
 localStorage.setItem('tbp_goals_war_report_cache', JSON.stringify(goalsWarReportCache));
+} catch {
+localStorage.removeItem('tbp_goals_war_report_cache');
+goalsWarReportCache = { version: 2, entries: {} };
+}
 return { wars: results.sort((a, b) => b.start - a.start), skipped };
 }
 async function fetchGoalsData() {
