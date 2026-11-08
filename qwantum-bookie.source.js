@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.10
+// @version      1.24.11
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -96,7 +96,7 @@
     })();
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.24.10';
+    const SCRIPT_VERSION = '1.24.11';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -5086,7 +5086,10 @@
                     const attackData = await requestGoalsPath(`faction/attacksfull?${query.toString()}`);
                     Object.assign(activeResult, calculateLiveRankedWarHits(attackData?.attacks, playerId, factionId, activeResult.opponentFactionId));
                 } catch (error) {
-                    activeResult.liveHitsError = String(error?.message || error);
+                    const message = String(error?.message || error);
+                    activeResult.liveHitsError = /Incorrect ID-entity relation/i.test(message)
+                        ? 'Faction API Access is disabled for your Torn faction role. Ask faction leadership to enable Use API / API Access for your role; changing to a stronger personal API key alone will not fix it.'
+                        : message;
                 }
                 results.push(activeResult);
             }

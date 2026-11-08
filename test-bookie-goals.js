@@ -17,6 +17,7 @@ assert(source.includes('faction/attacksfull?'));
 assert(source.includes('/rankedwarreport`'));
 assert(source.includes("status: 'active'"));
 assert(source.includes('Live participation'));
+assert(source.includes('Faction API Access is disabled'));
 assert(source.includes('In progress'));
 assert(source.includes('No repeating poll.'));
 assert(source.includes("activityHours: 20, warHitPercent: 5"));
