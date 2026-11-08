@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.8
+// @version      1.24.9
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -96,7 +96,7 @@
     })();
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.24.8';
+    const SCRIPT_VERSION = '1.24.9';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -5013,16 +5013,51 @@
             opponent: String(opponent?.name || 'Opponent'),
             playerHits,
             factionHits,
-            percent: calculateRankedWarPercent(playerHits, factionHits)
+            percent: calculateRankedWarPercent(playerHits, factionHits),
+            status: 'complete'
         };
     }
 
-    async function fetchRankedWarGoals(playerId, factionId, earliestMonthTimestamp) {
-        const historyData = await requestGoalsPath('faction/rankedwars?limit=100');
+    function extractActiveRankedWar(war, factionId, currentMonthTimestamp) {
+        const factions = Array.isArray(war?.factions) ? war.factions : [];
+        const ownFaction = factions.find(faction => String(faction.id) === String(factionId));
+        if (!ownFaction) return null;
+        const opponent = factions.find(faction => String(faction.id) !== String(ownFaction.id));
+        const warId = Number(war?.war_id || war?.id || 0);
+        const start = Number(war?.start || 0);
+        return {
+            id: warId,
+            start,
+            end: 0,
+            // An active war belongs on the current-month view even if it began
+            // shortly before the calendar boundary.
+            occurredAt: Math.max(start, Number(currentMonthTimestamp || 0)),
+            opponent: String(opponent?.name || 'Opponent'),
+            ownScore: Math.max(0, Number(ownFaction.score || 0)),
+            opponentScore: Math.max(0, Number(opponent?.score || 0)),
+            target: Math.max(0, Number(war?.target || 0)),
+            playerHits: null,
+            factionHits: null,
+            percent: null,
+            status: 'active'
+        };
+    }
+
+    async function fetchRankedWarGoals(playerId, factionId, earliestMonthTimestamp, currentMonthTimestamp) {
+        const [historyData, currentWarData] = await Promise.all([
+            requestGoalsPath('faction/rankedwars?limit=100'),
+            requestGoalsPath('faction/wars')
+        ]);
         const wars = (Array.isArray(historyData?.rankedwars) ? historyData.rankedwars : [])
             .filter(war => Number(war?.end || 0) >= earliestMonthTimestamp);
         const results = [];
         const skipped = [];
+        const currentRankedWar = currentWarData?.wars?.ranked || null;
+        const nowTimestamp = Math.floor(Date.now() / 1000);
+        if (currentRankedWar && !Number(currentRankedWar.end || 0) && Number(currentRankedWar.start || 0) <= nowTimestamp) {
+            const activeResult = extractActiveRankedWar(currentRankedWar, factionId, currentMonthTimestamp);
+            if (activeResult) results.push(activeResult);
+        }
         for (const war of wars) {
             const warId = Number(war?.id || 0);
             if (!Number.isInteger(warId) || warId <= 0) {
@@ -5082,7 +5117,7 @@
             const factionId = Number(profileData?.profile?.faction_id || 0);
             if (!playerId) throw new Error('Torn did not return your player ID.');
             if (!factionId) throw new Error('Torn did not return your faction ID.');
-            const rankedWarResult = await fetchRankedWarGoals(playerId, factionId, previous.timestamp);
+            const rankedWarResult = await fetchRankedWarGoals(playerId, factionId, previous.timestamp, current.timestamp);
             const currentWars = rankedWarResult.wars.filter(war => war.occurredAt >= current.timestamp);
             const previousWars = rankedWarResult.wars.filter(war => war.occurredAt >= previous.timestamp && war.occurredAt < current.timestamp);
             const currentWarWarnings = rankedWarResult.skipped.filter(war => war.occurredAt >= current.timestamp);
@@ -5136,7 +5171,9 @@
         const rankedWarWarnings = Array.isArray(period?.rankedWarWarnings) ? period.rankedWarWarnings : [];
         const warTarget = Number(goalsTargets.warHitPercent || 0);
         const regularMet = period ? goalRows.filter(goal => goal.target > 0 && Number(period.values?.[goal.key] || 0) >= goal.target).length : 0;
-        const warsMet = rankedWars.length > 0 && rankedWars.every(war => Number(war.percent || 0) >= warTarget);
+        const completedWars = rankedWars.filter(war => war.status !== 'active');
+        const activeWars = rankedWars.filter(war => war.status === 'active');
+        const warsMet = completedWars.length > 0 && completedWars.every(war => Number(war.percent || 0) >= warTarget);
         const requirementsMet = regularMet + (warsMet ? 1 : 0);
         const periodReady = period && !(goalsMonthView === 'current' && staleMonth);
         body.innerHTML = `
@@ -5146,7 +5183,7 @@
             </div>
             ${periodReady ? `
                 <div class="tbp-row" style="margin:0 2px 9px;"><strong>${escapeHtml(period.label)}</strong><span class="tbp-muted">${goalsMonthView === 'previous' ? 'Final' : 'In progress'}</span></div>
-                <div class="tbp-card" style="border-color:${requirementsMet >= 3 ? '#28a745' : '#d9534f'};"><div class="tbp-row" style="margin:0;"><strong>Requirements met</strong><strong class="${requirementsMet >= 3 ? 'tbp-win' : 'tbp-loss'}">${requirementsMet} / 5</strong></div><div class="tbp-muted" style="margin-top:5px;">At least 3 are required for this calendar month. Ranked Wars counts as one requirement and every listed war must reach ${warTarget.toFixed(1)}%.</div></div>
+                <div class="tbp-card" style="border-color:${requirementsMet >= 3 ? '#28a745' : '#d9534f'};"><div class="tbp-row" style="margin:0;"><strong>Requirements met</strong><strong class="${requirementsMet >= 3 ? 'tbp-win' : 'tbp-loss'}">${requirementsMet} / 5</strong></div><div class="tbp-muted" style="margin-top:5px;">At least 3 are required for this calendar month. Ranked Wars counts as one requirement and every completed war must reach ${warTarget.toFixed(1)}%. Active wars remain pending.</div></div>
                 ${goalRows.map(goal => {
                     const value = Number(period.values?.[goal.key] || 0);
                     const percent = goal.target > 0 ? Math.min(100, value / goal.target * 100) : 0;
@@ -5167,11 +5204,15 @@
                     `;
                 }).join('')}
                 <div class="tbp-card" style="border-left:6px solid ${warsMet ? '#28a745' : '#4da3ff'};">
-                    <div class="tbp-row" style="margin-top:0;"><strong>Ranked Wars % Hits</strong><strong class="${warsMet ? 'tbp-win' : ''}">${rankedWars.length ? `${rankedWars.filter(war => Number(war.percent || 0) >= warTarget).length} / ${rankedWars.length} wars` : 'No wars found'}</strong></div>
+                    <div class="tbp-row" style="margin-top:0;"><strong>Ranked Wars % Hits</strong><strong class="${warsMet ? 'tbp-win' : ''}">${completedWars.length ? `${completedWars.filter(war => Number(war.percent || 0) >= warTarget).length} / ${completedWars.length} completed` : activeWars.length ? `${activeWars.length} in progress` : 'No wars found'}</strong></div>
                     <div class="tbp-muted" style="margin-top:5px;">Target: ${warTarget.toFixed(1)}% of your faction's hits in each war completed this month.</div>
                 </div>
                 ${rankedWarWarnings.length ? `<div class="tbp-card" style="border-left:6px solid #d69a32;"><strong style="color:#f2bd61;">${rankedWarWarnings.length} war report${rankedWarWarnings.length === 1 ? '' : 's'} unavailable</strong><div class="tbp-muted" style="margin-top:5px;">The remaining monthly goals still loaded. War IDs: ${rankedWarWarnings.map(war => escapeHtml(war.id)).join(', ')}.</div></div>` : ''}
                 ${rankedWars.map(war => {
+                    if (war.status === 'active') {
+                        const started = war.start ? new Date(war.start * 1000).toLocaleString() : 'Now';
+                        return `<div class="tbp-card" style="border-left:6px solid #d69a32;"><div class="tbp-row" style="margin-top:0;"><strong>vs ${escapeHtml(war.opponent)}</strong><strong style="color:#f2bd61;">In progress</strong></div><div class="tbp-row"><span>Current score</span><strong>${Number(war.ownScore || 0).toLocaleString()} - ${Number(war.opponentScore || 0).toLocaleString()}</strong></div>${war.target ? `<div class="tbp-row"><span>Score target</span><strong>${Number(war.target).toLocaleString()}</strong></div>` : ''}<div class="tbp-muted" style="margin-top:5px;">Started ${escapeHtml(started)}. Your final hit percentage will appear after Torn publishes the completed war report.</div></div>`;
+                    }
                     const met = Number(war.percent || 0) >= warTarget;
                     const date = war.end || war.start ? new Date((war.end || war.start) * 1000).toLocaleDateString() : 'In progress';
                     return `<div class="tbp-card" style="border-left:6px solid ${met ? '#28a745' : '#d9534f'};"><div class="tbp-row" style="margin-top:0;"><strong>vs ${escapeHtml(war.opponent)}</strong><span class="tbp-muted">${escapeHtml(date)}</span></div><div class="tbp-row"><span>Your hits / faction hits</span><strong>${war.playerHits} / ${war.factionHits}</strong></div><div class="tbp-row"><span>Participation</span><strong class="${met ? 'tbp-win' : 'tbp-loss'}">${Number(war.percent || 0).toFixed(2)}% / ${warTarget.toFixed(1)}%</strong></div></div>`;
@@ -7501,7 +7542,7 @@ document.addEventListener('click', async e => {
             }
             for (let depth = 0; depth < 2; depth += 1) {
                 if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
-                    const looksLikeApiData = candidate.error || candidate.gym || candidate.perks || candidate.gyms || candidate.personalstats || candidate.profile || candidate.rankedwars || candidate.rankedwarreport;
+                    const looksLikeApiData = candidate.error || candidate.gym || candidate.perks || candidate.gyms || candidate.personalstats || candidate.profile || candidate.rankedwars || candidate.rankedwarreport || candidate.wars;
                     if (looksLikeApiData) return candidate;
                     break;
                 }

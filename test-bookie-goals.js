@@ -12,7 +12,10 @@ assert(source.includes("let goalsApiKey = localStorage.getItem('tbp_goals_api_ke
 assert(source.includes('const key = goalsApiKey || apiKey;'));
 assert(source.includes("stat: 'xantaken,refills,totalstats,timeplayed'"));
 assert(source.includes("requestGoalsPath('faction/rankedwars?limit=100')"));
+assert(source.includes("requestGoalsPath('faction/wars')"));
 assert(source.includes('/rankedwarreport`'));
+assert(source.includes("status: 'active'"));
+assert(source.includes('In progress'));
 assert(source.includes('No repeating poll.'));
 assert(source.includes("activityHours: 20, warHitPercent: 5"));
 assert(source.includes("let goalsMonthView = 'current';"));
