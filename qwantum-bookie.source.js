@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.2
+// @version      1.24.3
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -89,7 +89,7 @@
     })();
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.24.2';
+    const SCRIPT_VERSION = '1.24.3';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -4905,7 +4905,7 @@
         return faction > 0 ? player / faction * 100 : 0;
     }
 
-    function calculateMonthlyGoalPace(value, target, periodKey, isCurrent, now = new Date()) {
+    function calculateMonthlyGoalPace(value, target, periodKey, isCurrent, maxPerDay = 0, now = new Date()) {
         const match = String(periodKey || '').match(/^(\d{4})-(\d{2})$/);
         if (!match) return null;
         const year = Number(match[1]);
@@ -4915,13 +4915,16 @@
         const elapsedDays = isCurrent && isDisplayedMonth ? Math.max(1, now.getUTCDate()) : daysInMonth;
         const safeValue = Math.max(0, Number(value || 0));
         const safeTarget = Math.max(0, Number(target || 0));
+        const safeMaxPerDay = Math.max(0, Number(maxPerDay || 0));
         const dailyAverage = safeValue / elapsedDays;
+        const remainingFullDays = Math.max(0, daysInMonth - elapsedDays);
         return {
             daysInMonth,
             elapsedDays,
             requiredDaily: daysInMonth > 0 ? safeTarget / daysInMonth : 0,
             dailyAverage,
-            projectedTotal: isCurrent && isDisplayedMonth ? dailyAverage * daysInMonth : safeValue
+            projectedTotal: isCurrent && isDisplayedMonth ? dailyAverage * daysInMonth : safeValue,
+            maximumPossible: isCurrent && isDisplayedMonth ? safeValue + safeMaxPerDay * remainingFullDays : safeValue
         };
     }
 
@@ -5056,8 +5059,8 @@
         const staleMonth = goalsCache?.current?.key !== expectedCurrentKey;
         const period = goalsMonthView === 'previous' ? goalsCache?.previous : goalsCache?.current;
         const goalRows = [
-            { key: 'xanax', label: 'Xanax', target: Number(goalsTargets.xanax || 0), compact: false, pace: true },
-            { key: 'refills', label: 'Energy Refills', target: Number(goalsTargets.refills || 0), compact: false, pace: true },
+            { key: 'xanax', label: 'Xanax', target: Number(goalsTargets.xanax || 0), compact: false, pace: true, maxPerDay: 3 },
+            { key: 'refills', label: 'Energy Refills', target: Number(goalsTargets.refills || 0), compact: false, pace: true, maxPerDay: 1 },
             { key: 'battleStats', label: 'Battle Stats Gained', target: Number(goalsTargets.battleStats || 0), compact: true },
             { key: 'activityHours', label: 'Activity', target: Number(goalsTargets.activityHours || 0), compact: false, decimals: 2, suffix: 'h' }
         ];
@@ -5079,14 +5082,14 @@
                     const value = Number(period.values?.[goal.key] || 0);
                     const percent = goal.target > 0 ? Math.min(100, value / goal.target * 100) : 0;
                     const met = goal.target > 0 && value >= goal.target;
-                    const pace = goal.pace ? calculateMonthlyGoalPace(value, goal.target, period.key, goalsMonthView === 'current') : null;
+                    const pace = goal.pace ? calculateMonthlyGoalPace(value, goal.target, period.key, goalsMonthView === 'current', goal.maxPerDay) : null;
                     const projectedMet = pace && goal.target > 0 && pace.projectedTotal >= goal.target;
                     return `
                         <div class="tbp-card" style="border-left:6px solid ${met ? '#28a745' : '#4da3ff'};">
                             <div class="tbp-row" style="margin-top:0;"><strong>${goal.label}</strong><strong class="${met ? 'tbp-win' : ''}">${formatGoalValue(value, goal.compact, goal.decimals, goal.suffix)} / ${formatGoalValue(goal.target, goal.compact, goal.decimals, goal.suffix)}</strong></div>
                             <div style="height:8px; background:#151515; border-radius:5px; overflow:hidden; margin-top:8px;"><div style="width:${percent.toFixed(1)}%; height:100%; background:${met ? '#28a745' : '#2980b9'};"></div></div>
                             <div class="tbp-muted" style="margin-top:5px; text-align:right;">${percent.toFixed(1)}%</div>
-                            ${pace ? `<div style="border-top:1px solid #3a3a3a; margin-top:7px; padding-top:5px;"><div class="tbp-row"><span class="tbp-muted">Required average</span><span>${pace.requiredDaily.toFixed(2)} / day</span></div><div class="tbp-row"><span class="tbp-muted">Your average</span><span>${pace.dailyAverage.toFixed(2)} / day</span></div><div class="tbp-row"><span class="tbp-muted">${goalsMonthView === 'current' ? 'Projected month-end' : 'Final total'}</span><strong class="${projectedMet ? 'tbp-win' : goalsMonthView === 'current' ? 'tbp-loss' : ''}">${pace.projectedTotal.toFixed(1)}</strong></div></div>` : ''}
+                            ${pace ? `<div style="border-top:1px solid #3a3a3a; margin-top:7px; padding-top:5px;"><div class="tbp-row"><span class="tbp-muted">Required average</span><span>${pace.requiredDaily.toFixed(2)} / day</span></div><div class="tbp-row"><span class="tbp-muted">Your average</span><span>${pace.dailyAverage.toFixed(2)} / day</span></div><div class="tbp-row"><span class="tbp-muted">${goalsMonthView === 'current' ? 'Projected month-end' : 'Final total'}</span><strong class="${projectedMet ? 'tbp-win' : goalsMonthView === 'current' ? 'tbp-loss' : ''}">${pace.projectedTotal.toFixed(1)}</strong></div>${goalsMonthView === 'current' ? `<div class="tbp-row"><span class="tbp-muted">Max possible now</span><strong class="${pace.maximumPossible >= goal.target ? 'tbp-win' : 'tbp-loss'}">${pace.maximumPossible.toFixed(0)} <span class="tbp-muted">(${goal.maxPerDay}/day)</span></strong></div>` : ''}</div>` : ''}
                         </div>
                     `;
                 }).join('')}
