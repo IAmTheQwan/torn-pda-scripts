@@ -29,6 +29,26 @@ assert(source.includes('String(faction.id) === String(factionId)'));
 assert(source.includes('Number(member?.attacks || 0)'));
 assert(source.includes('audit: { xanaxEnd: latest.xantaken, xanaxStart: currentStart.xantaken'));
 assert(source.includes('API audit:'));
+assert(source.includes("requestGoalsPath('user/personalstats?cat=popular')"));
+assert(source.includes("requestGoalsPath('user/personalstats?cat=battle_stats')"));
+assert(source.includes('popular?.drugs?.xanax'));
+
+const liveStart = source.indexOf('    function parseGoalsLiveStats');
+const liveEnd = source.indexOf('    function calculateGoalsDifference', liveStart);
+assert(liveStart >= 0 && liveEnd > liveStart, 'Could not locate the live goals parser.');
+const liveContext = {};
+vm.runInNewContext(
+    `${source.slice(liveStart, liveEnd)}\nglobalThis.__parseGoalsLiveStats = parseGoalsLiveStats;`,
+    liveContext,
+    { filename: scriptPath }
+);
+assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(liveContext.__parseGoalsLiveStats(
+        { personalstats: { drugs: { xanax: 123 }, other: { refills: { energy: 45 }, activity: { time: 3600 } } } },
+        { personalstats: { battle_stats: { total: 987654321 } } }
+    ))),
+    { xantaken: 123, refills: 45, timeplayed: 3600, totalstats: 987654321 }
+);
 
 const start = source.indexOf('    function calculateGoalsDifference');
 const end = source.indexOf('    async function requestGoalsPath', start);

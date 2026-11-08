@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.7
+// @version      1.24.8
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -89,7 +89,7 @@ return { version: 2, entries: {} };
 }
 })();
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.24.7';
+const SCRIPT_VERSION = '1.24.8';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -4472,6 +4472,19 @@ const missing = required.filter(name => !Object.prototype.hasOwnProperty.call(va
 if (missing.length) throw new Error(`Torn did not return ${missing.join(', ')}. Use a Limited or compatible custom key with user personalstats access.`);
 return values;
 }
+function parseGoalsLiveStats(popularData, battleStatsData) {
+const popular = popularData?.personalstats || {};
+const battle = battleStatsData?.personalstats || {};
+const values = {
+xantaken: Number(popular?.drugs?.xanax),
+refills: Number(popular?.other?.refills?.energy),
+timeplayed: Number(popular?.other?.activity?.time),
+totalstats: Number(battle?.battle_stats?.total)
+};
+const missing = Object.entries(values).filter(([, value]) => !Number.isFinite(value)).map(([name]) => name);
+if (missing.length) throw new Error(`Torn did not return live ${missing.join(', ')} values.`);
+return values;
+}
 function calculateGoalsDifference(end, start) {
 return {
 xanax: Math.max(0, Number(end.xantaken || 0) - Number(start.xantaken || 0)),
@@ -4543,6 +4556,13 @@ stat: 'xantaken,refills,totalstats,timeplayed'
 });
 if (timestamp) query.set('timestamp', String(timestamp));
 return requestGoalsPath(`user/personalstats?${query.toString()}`);
+}
+async function requestGoalsLiveStats() {
+const [popularData, battleStatsData] = await Promise.all([
+requestGoalsPath('user/personalstats?cat=popular'),
+requestGoalsPath('user/personalstats?cat=battle_stats')
+]);
+return parseGoalsLiveStats(popularData, battleStatsData);
 }
 function extractRankedWarGoal(report, war, playerId, factionId) {
 const factions = Array.isArray(report?.factions) ? report.factions : [];
@@ -4616,13 +4636,12 @@ render();
 try {
 const current = goalsMonthBoundary(0);
 const previous = goalsMonthBoundary(-1);
-const [latestData, currentStartData, previousStartData, profileData] = await Promise.all([
-requestGoalsPersonalStats(),
+const [latest, currentStartData, previousStartData, profileData] = await Promise.all([
+requestGoalsLiveStats(),
 requestGoalsPersonalStats(current.timestamp),
 requestGoalsPersonalStats(previous.timestamp),
 requestGoalsPath('user/profile')
 ]);
-const latest = parseGoalsPersonalStats(latestData);
 const currentStart = parseGoalsPersonalStats(currentStartData);
 const previousStart = parseGoalsPersonalStats(previousStartData);
 const playerId = Number(profileData?.profile?.id || 0);
