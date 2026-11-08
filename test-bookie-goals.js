@@ -24,6 +24,9 @@ assert(source.includes('war reports unavailable') || source.includes('war report
 assert(source.includes("parsed?.version === 2"));
 assert(source.includes('goalsWarReportCache.entries[cacheKey]'));
 assert(!source.includes('goalsWarReportCache[warId] = { report'));
+assert(source.includes("requestGoalsPath('user/profile')"));
+assert(source.includes('String(faction.id) === String(factionId)'));
+assert(source.includes('Number(member?.attacks || 0)'));
 
 const start = source.indexOf('    function calculateGoalsDifference');
 const end = source.indexOf('    async function requestGoalsPath', start);

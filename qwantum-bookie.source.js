@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.5
+// @version      1.24.6
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -96,7 +96,7 @@
     })();
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.24.5';
+    const SCRIPT_VERSION = '1.24.6';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -4974,14 +4974,15 @@
         return requestGoalsPath(`user/personalstats?${query.toString()}`);
     }
 
-    function extractRankedWarGoal(report, war, playerId) {
+    function extractRankedWarGoal(report, war, playerId, factionId) {
         const factions = Array.isArray(report?.factions) ? report.factions : [];
-        const ownFaction = factions.find(faction => (faction.members || []).some(member => String(member.id) === String(playerId)));
+        const ownFaction = factions.find(faction => String(faction.id) === String(factionId))
+            || factions.find(faction => (faction.members || []).some(member => String(member.id) === String(playerId)));
         const member = (ownFaction?.members || []).find(item => String(item.id) === String(playerId));
-        if (!ownFaction || !member) return null;
+        if (!ownFaction) return null;
         const opponent = factions.find(faction => String(faction.id) !== String(ownFaction.id));
         const factionHits = Math.max(0, Number(ownFaction.attacks || 0));
-        const playerHits = Math.max(0, Number(member.attacks || 0));
+        const playerHits = Math.max(0, Number(member?.attacks || 0));
         return {
             id: Number(report?.id || war?.id || 0),
             start: Number(report?.start || war?.start || 0),
@@ -4994,7 +4995,7 @@
         };
     }
 
-    async function fetchRankedWarGoals(playerId, earliestMonthTimestamp) {
+    async function fetchRankedWarGoals(playerId, factionId, earliestMonthTimestamp) {
         const historyData = await requestGoalsPath('faction/rankedwars?limit=100');
         const wars = (Array.isArray(historyData?.rankedwars) ? historyData.rankedwars : [])
             .filter(war => Number(war?.end || 0) >= earliestMonthTimestamp);
@@ -5006,13 +5007,13 @@
                 skipped.push({ id: String(war?.id || 'unknown'), occurredAt: Number(war?.end || 0), error: 'Invalid ranked-war ID in history.' });
                 continue;
             }
-            const cacheKey = `${playerId}:${warId}`;
+            const cacheKey = `${playerId}:${factionId}:${warId}`;
             let result = goalsWarReportCache.entries[cacheKey]?.result || null;
             if (!result) {
                 try {
                     const reportData = await requestGoalsPath(`faction/${encodeURIComponent(warId)}/rankedwarreport`);
                     const report = reportData?.rankedwarreport || null;
-                    result = extractRankedWarGoal(report, war, playerId);
+                    result = extractRankedWarGoal(report, war, playerId, factionId);
                     if (result) goalsWarReportCache.entries[cacheKey] = { result, cachedAt: Date.now() };
                 } catch (error) {
                     skipped.push({ id: String(warId), occurredAt: Number(war?.end || 0), error: String(error?.message || error) });
@@ -5047,18 +5048,20 @@
         try {
             const current = goalsMonthBoundary(0);
             const previous = goalsMonthBoundary(-1);
-            const [latestData, currentStartData, previousStartData, basicData] = await Promise.all([
+            const [latestData, currentStartData, previousStartData, profileData] = await Promise.all([
                 requestGoalsPersonalStats(),
                 requestGoalsPersonalStats(current.timestamp),
                 requestGoalsPersonalStats(previous.timestamp),
-                requestGoalsPath('user/basic')
+                requestGoalsPath('user/profile')
             ]);
             const latest = parseGoalsPersonalStats(latestData);
             const currentStart = parseGoalsPersonalStats(currentStartData);
             const previousStart = parseGoalsPersonalStats(previousStartData);
-            const playerId = Number(basicData?.profile?.id || 0);
+            const playerId = Number(profileData?.profile?.id || 0);
+            const factionId = Number(profileData?.profile?.faction_id || 0);
             if (!playerId) throw new Error('Torn did not return your player ID.');
-            const rankedWarResult = await fetchRankedWarGoals(playerId, previous.timestamp);
+            if (!factionId) throw new Error('Torn did not return your faction ID.');
+            const rankedWarResult = await fetchRankedWarGoals(playerId, factionId, previous.timestamp);
             const currentWars = rankedWarResult.wars.filter(war => war.occurredAt >= current.timestamp);
             const previousWars = rankedWarResult.wars.filter(war => war.occurredAt >= previous.timestamp && war.occurredAt < current.timestamp);
             const currentWarWarnings = rankedWarResult.skipped.filter(war => war.occurredAt >= current.timestamp);
