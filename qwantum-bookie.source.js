@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.0
+// @version      1.24.1
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -75,7 +75,7 @@
     let pendingLoanDraft = null;
     let loanLedgerNeedsMigration = false;
     let loanView = 'summary';
-    let goalsMonthView = 'rolling';
+    let goalsMonthView = 'current';
     let goalsLoading = false;
     let goalsError = '';
     let goalsLastRequestCount = 0;
@@ -89,7 +89,7 @@
     })();
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.24.0';
+    const SCRIPT_VERSION = '1.24.1';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -4944,10 +4944,10 @@
         return requestGoalsPath(`user/personalstats?${query.toString()}`);
     }
 
-    async function fetchRankedWarGoals(playerId, rollingStartTimestamp) {
-        const historyData = await requestGoalsPath('faction/rankedwars?limit=20');
+    async function fetchRankedWarGoals(playerId, earliestMonthTimestamp) {
+        const historyData = await requestGoalsPath('faction/rankedwars?limit=100');
         const wars = (Array.isArray(historyData?.rankedwars) ? historyData.rankedwars : [])
-            .filter(war => Number(war?.end || war?.start || 0) >= rollingStartTimestamp);
+            .filter(war => Number(war?.end || war?.start || 0) >= earliestMonthTimestamp);
         const results = [];
         for (const war of wars) {
             const warId = String(war?.id || '');
@@ -4971,6 +4971,7 @@
                 id: warId,
                 start: Number(report?.start || war?.start || 0),
                 end: Number(report?.end || war?.end || 0),
+                occurredAt: Number(report?.end || war?.end || report?.start || war?.start || 0),
                 opponent: String(opponent?.name || 'Opponent'),
                 playerHits,
                 factionHits,
@@ -4995,27 +4996,25 @@
         try {
             const current = goalsMonthBoundary(0);
             const previous = goalsMonthBoundary(-1);
-            const rollingStartTimestamp = Math.floor((Date.now() - 30 * 86400000) / 1000);
-            const [latestData, currentStartData, previousStartData, rollingStartData, basicData] = await Promise.all([
+            const [latestData, currentStartData, previousStartData, basicData] = await Promise.all([
                 requestGoalsPersonalStats(),
                 requestGoalsPersonalStats(current.timestamp),
                 requestGoalsPersonalStats(previous.timestamp),
-                requestGoalsPersonalStats(rollingStartTimestamp),
                 requestGoalsPath('user/basic')
             ]);
             const latest = parseGoalsPersonalStats(latestData);
             const currentStart = parseGoalsPersonalStats(currentStartData);
             const previousStart = parseGoalsPersonalStats(previousStartData);
-            const rollingStart = parseGoalsPersonalStats(rollingStartData);
             const playerId = Number(basicData?.profile?.id || 0);
             if (!playerId) throw new Error('Torn did not return your player ID.');
-            const rankedWars = await fetchRankedWarGoals(playerId, rollingStartTimestamp);
+            const rankedWars = await fetchRankedWarGoals(playerId, previous.timestamp);
+            const currentWars = rankedWars.filter(war => war.occurredAt >= current.timestamp);
+            const previousWars = rankedWars.filter(war => war.occurredAt >= previous.timestamp && war.occurredAt < current.timestamp);
             goalsCache = {
                 updatedAt: Date.now(),
                 requestCount: goalsLastRequestCount,
-                rolling: { key: `rolling-${Math.floor(Date.now() / 86400000)}`, label: 'Last 30 Days', values: calculateGoalsDifference(latest, rollingStart), rankedWars },
-                current: { key: current.key, label: current.label, values: calculateGoalsDifference(latest, currentStart) },
-                previous: { key: previous.key, label: previous.label, values: calculateGoalsDifference(currentStart, previousStart) }
+                current: { key: current.key, label: current.label, values: calculateGoalsDifference(latest, currentStart), rankedWars: currentWars },
+                previous: { key: previous.key, label: previous.label, values: calculateGoalsDifference(currentStart, previousStart), rankedWars: previousWars }
             };
             localStorage.setItem('tbp_goals_cache', JSON.stringify(goalsCache));
         } catch (error) {
@@ -5035,16 +5034,14 @@
     function renderGoals(body) {
         const expectedCurrentKey = goalsMonthBoundary(0).key;
         const staleMonth = goalsCache?.current?.key !== expectedCurrentKey;
-        const period = goalsMonthView === 'rolling'
-            ? goalsCache?.rolling
-            : goalsMonthView === 'previous' ? goalsCache?.previous : goalsCache?.current;
+        const period = goalsMonthView === 'previous' ? goalsCache?.previous : goalsCache?.current;
         const goalRows = [
             { key: 'xanax', label: 'Xanax', target: Number(goalsTargets.xanax || 0), compact: false },
             { key: 'refills', label: 'Energy Refills', target: Number(goalsTargets.refills || 0), compact: false },
             { key: 'battleStats', label: 'Battle Stats Gained', target: Number(goalsTargets.battleStats || 0), compact: true },
             { key: 'activityHours', label: 'Activity', target: Number(goalsTargets.activityHours || 0), compact: false, decimals: 2, suffix: 'h' }
         ];
-        const rankedWars = goalsMonthView === 'rolling' && Array.isArray(period?.rankedWars) ? period.rankedWars : [];
+        const rankedWars = Array.isArray(period?.rankedWars) ? period.rankedWars : [];
         const warTarget = Number(goalsTargets.warHitPercent || 0);
         const regularMet = period ? goalRows.filter(goal => goal.target > 0 && Number(period.values?.[goal.key] || 0) >= goal.target).length : 0;
         const warsMet = rankedWars.length > 0 && rankedWars.every(war => Number(war.percent || 0) >= warTarget);
@@ -5052,13 +5049,12 @@
         const periodReady = period && !(goalsMonthView === 'current' && staleMonth);
         body.innerHTML = `
             <div class="tbp-btn-row" style="margin-bottom:8px;">
-                <button class="tbp-btn ${goalsMonthView === 'rolling' ? 'tbp-btn-primary' : ''}" data-goals-month="rolling">Last 30 Days</button>
                 <button class="tbp-btn ${goalsMonthView === 'current' ? 'tbp-btn-primary' : ''}" data-goals-month="current">This Month</button>
                 <button class="tbp-btn ${goalsMonthView === 'previous' ? 'tbp-btn-primary' : ''}" data-goals-month="previous">Last Month</button>
             </div>
             ${periodReady ? `
                 <div class="tbp-row" style="margin:0 2px 9px;"><strong>${escapeHtml(period.label)}</strong><span class="tbp-muted">${goalsMonthView === 'previous' ? 'Final' : 'In progress'}</span></div>
-                ${goalsMonthView === 'rolling' ? `<div class="tbp-card" style="border-color:${requirementsMet >= 3 ? '#28a745' : '#d9534f'};"><div class="tbp-row" style="margin:0;"><strong>Requirements met</strong><strong class="${requirementsMet >= 3 ? 'tbp-win' : 'tbp-loss'}">${requirementsMet} / 5</strong></div><div class="tbp-muted" style="margin-top:5px;">At least 3 are required. Ranked Wars counts as one requirement and every listed war must reach ${warTarget.toFixed(1)}%.</div></div>` : ''}
+                <div class="tbp-card" style="border-color:${requirementsMet >= 3 ? '#28a745' : '#d9534f'};"><div class="tbp-row" style="margin:0;"><strong>Requirements met</strong><strong class="${requirementsMet >= 3 ? 'tbp-win' : 'tbp-loss'}">${requirementsMet} / 5</strong></div><div class="tbp-muted" style="margin-top:5px;">At least 3 are required for this calendar month. Ranked Wars counts as one requirement and every listed war must reach ${warTarget.toFixed(1)}%.</div></div>
                 ${goalRows.map(goal => {
                     const value = Number(period.values?.[goal.key] || 0);
                     const percent = goal.target > 0 ? Math.min(100, value / goal.target * 100) : 0;
@@ -5071,17 +5067,15 @@
                         </div>
                     `;
                 }).join('')}
-                ${goalsMonthView === 'rolling' ? `
-                    <div class="tbp-card" style="border-left:6px solid ${warsMet ? '#28a745' : '#4da3ff'};">
-                        <div class="tbp-row" style="margin-top:0;"><strong>Ranked Wars % Hits</strong><strong class="${warsMet ? 'tbp-win' : ''}">${rankedWars.length ? `${rankedWars.filter(war => Number(war.percent || 0) >= warTarget).length} / ${rankedWars.length} wars` : 'No wars found'}</strong></div>
-                        <div class="tbp-muted" style="margin-top:5px;">Target: ${warTarget.toFixed(1)}% of your faction's hits in each war.</div>
-                    </div>
-                    ${rankedWars.map(war => {
-                        const met = Number(war.percent || 0) >= warTarget;
-                        const date = war.end || war.start ? new Date((war.end || war.start) * 1000).toLocaleDateString() : 'In progress';
-                        return `<div class="tbp-card" style="border-left:6px solid ${met ? '#28a745' : '#d9534f'};"><div class="tbp-row" style="margin-top:0;"><strong>vs ${escapeHtml(war.opponent)}</strong><span class="tbp-muted">${escapeHtml(date)}</span></div><div class="tbp-row"><span>Your hits / faction hits</span><strong>${war.playerHits} / ${war.factionHits}</strong></div><div class="tbp-row"><span>Participation</span><strong class="${met ? 'tbp-win' : 'tbp-loss'}">${Number(war.percent || 0).toFixed(2)}% / ${warTarget.toFixed(1)}%</strong></div></div>`;
-                    }).join('')}
-                ` : ''}
+                <div class="tbp-card" style="border-left:6px solid ${warsMet ? '#28a745' : '#4da3ff'};">
+                    <div class="tbp-row" style="margin-top:0;"><strong>Ranked Wars % Hits</strong><strong class="${warsMet ? 'tbp-win' : ''}">${rankedWars.length ? `${rankedWars.filter(war => Number(war.percent || 0) >= warTarget).length} / ${rankedWars.length} wars` : 'No wars found'}</strong></div>
+                    <div class="tbp-muted" style="margin-top:5px;">Target: ${warTarget.toFixed(1)}% of your faction's hits in each war completed this month.</div>
+                </div>
+                ${rankedWars.map(war => {
+                    const met = Number(war.percent || 0) >= warTarget;
+                    const date = war.end || war.start ? new Date((war.end || war.start) * 1000).toLocaleDateString() : 'In progress';
+                    return `<div class="tbp-card" style="border-left:6px solid ${met ? '#28a745' : '#d9534f'};"><div class="tbp-row" style="margin-top:0;"><strong>vs ${escapeHtml(war.opponent)}</strong><span class="tbp-muted">${escapeHtml(date)}</span></div><div class="tbp-row"><span>Your hits / faction hits</span><strong>${war.playerHits} / ${war.factionHits}</strong></div><div class="tbp-row"><span>Participation</span><strong class="${met ? 'tbp-win' : 'tbp-loss'}">${Number(war.percent || 0).toFixed(2)}% / ${warTarget.toFixed(1)}%</strong></div></div>`;
+                }).join('')}
             ` : `<div class="tbp-card tbp-muted">${goalsLoading ? 'Loading goals…' : staleMonth && goalsCache && goalsMonthView === 'current' ? 'A new month has started. Refresh to calculate the new period.' : 'Refresh to load goal progress.'}</div>`}
             ${goalsError ? `<div class="tbp-card tbp-loss">${escapeHtml(goalsError)}</div>` : ''}
             <button class="tbp-btn tbp-btn-primary" id="tbp-refresh-goals" style="width:100%;" ${goalsLoading ? 'disabled' : ''}>${goalsLoading ? 'Refreshing…' : 'Refresh Goals'}</button>
@@ -5383,7 +5377,7 @@ ${safeJson(log.raw)}
                 <input type="number" id="tbp-goal-activity-hours" class="tbp-input" value="${Number(goalsTargets.activityHours || 20)}" min="0" step="0.25">
                 <label class="tbp-muted">RANKED WAR HITS TARGET (%)</label>
                 <input type="number" id="tbp-goal-war-hit-percent" class="tbp-input" value="${Number(goalsTargets.warHitPercent || 5)}" min="0" max="100" step="0.1">
-                <div class="tbp-muted" style="margin-top:7px;">Ranked Wars are measured separately: your attacks divided by your faction's attacks in each war over the last 30 days.</div>
+                <div class="tbp-muted" style="margin-top:7px;">Ranked Wars are measured separately: your attacks divided by your faction's attacks in each war completed during the calendar month.</div>
             </details>
 
             <details class="tbp-card">
@@ -5914,7 +5908,7 @@ ${safeJson(log.raw)}
         document.querySelectorAll('[data-goals-month]').forEach(button => {
             button.onclick = () => {
                 const view = button.dataset.goalsMonth;
-                goalsMonthView = ['rolling', 'current', 'previous'].includes(view) ? view : 'rolling';
+                goalsMonthView = ['current', 'previous'].includes(view) ? view : 'current';
                 render();
             };
         });

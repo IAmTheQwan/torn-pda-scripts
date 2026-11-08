@@ -11,10 +11,14 @@ assert(source.includes("let goalsFeatureEnabled = JSON.parse(localStorage.getIte
 assert(source.includes("let goalsApiKey = localStorage.getItem('tbp_goals_api_key') || '';"));
 assert(source.includes('const key = goalsApiKey || apiKey;'));
 assert(source.includes("stat: 'xantaken,refills,totalstats,timeplayed'"));
-assert(source.includes("requestGoalsPath('faction/rankedwars?limit=20')"));
+assert(source.includes("requestGoalsPath('faction/rankedwars?limit=100')"));
 assert(source.includes('/rankedwarreport`'));
 assert(source.includes('No repeating poll.'));
 assert(source.includes("activityHours: 20, warHitPercent: 5"));
+assert(source.includes("let goalsMonthView = 'current';"));
+assert(!source.includes('data-goals-month="rolling"'));
+assert(source.includes('rankedWars: currentWars'));
+assert(source.includes('rankedWars: previousWars'));
 
 const start = source.indexOf('    function calculateGoalsDifference');
 const end = source.indexOf('    async function requestGoalsPath', start);
