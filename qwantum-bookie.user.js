@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.11
+// @version      1.24.12
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -89,7 +89,7 @@ return { version: 2, entries: {} };
 }
 })();
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.24.11';
+const SCRIPT_VERSION = '1.24.12';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -4652,9 +4652,25 @@ const attackData = await requestGoalsPath(`faction/attacksfull?${query.toString(
 Object.assign(activeResult, calculateLiveRankedWarHits(attackData?.attacks, playerId, factionId, activeResult.opponentFactionId));
 } catch (error) {
 const message = String(error?.message || error);
-activeResult.liveHitsError = /Incorrect ID-entity relation/i.test(message)
+const factionPermissionMissing = /Incorrect ID-entity relation/i.test(message);
+activeResult.liveHitsError = factionPermissionMissing
 ? 'Faction API Access is disabled for your Torn faction role. Ask faction leadership to enable Use API / API Access for your role; changing to a stronger personal API key alone will not fix it.'
 : message;
+try {
+const personalQuery = new URLSearchParams({
+filters: 'outgoing',
+from: String(activeResult.start),
+to: String(nowTimestamp),
+limit: '1000'
+});
+const personalAttackData = await requestGoalsPath(`user/attacksfull?${personalQuery.toString()}`);
+const personalHits = calculateLiveRankedWarHits(personalAttackData?.attacks, playerId, factionId, activeResult.opponentFactionId);
+activeResult.playerHits = personalHits.playerHits;
+activeResult.personalHitsOnly = true;
+activeResult.personalHitsCapped = personalHits.capped;
+} catch (personalError) {
+activeResult.personalHitsError = String(personalError?.message || personalError);
+}
 }
 results.push(activeResult);
 }
@@ -4811,10 +4827,13 @@ if (war.status === 'active') {
 const started = war.start ? new Date(war.start * 1000).toLocaleString() : 'Now';
 const hasLiveHits = war.playerHits !== null && war.factionHits !== null
 && Number.isFinite(Number(war.playerHits)) && Number.isFinite(Number(war.factionHits));
+const hasPersonalHits = war.playerHits !== null && Number.isFinite(Number(war.playerHits));
 const liveMet = hasLiveHits && Number(war.percent || 0) >= warTarget;
 const hitDetails = hasLiveHits
 ? `<div class="tbp-row"><span>Your hits / faction hits</span><strong>${Number(war.playerHits).toLocaleString()} / ${Number(war.factionHits).toLocaleString()}</strong></div><div class="tbp-row"><span>Live participation</span><strong class="${liveMet ? 'tbp-win' : 'tbp-loss'}">${Number(war.percent || 0).toFixed(2)}% / ${warTarget.toFixed(1)}%</strong></div>${war.capped ? '<div class="tbp-muted" style="color:#f2bd61; margin-top:4px;">The API returned its 1,000-attack maximum; this live estimate may be incomplete.</div>' : ''}`
-: `<div class="tbp-muted" style="color:#f2bd61; margin-top:6px;">Live hit tracking unavailable: ${escapeHtml(war.liveHitsError || 'No attack data returned. The API key needs Limited access and faction API permission.')}</div>`;
+: hasPersonalHits
+? `<div class="tbp-row"><span>Your live hits</span><strong>${Number(war.playerHits).toLocaleString()}</strong></div><div class="tbp-row"><span>Faction hits / percentage</span><strong style="color:#f2bd61;">Pending</strong></div><div class="tbp-muted" style="color:#f2bd61; margin-top:5px;">Faction API Access is unavailable. Your personal hits can still update live; the exact percentage will load from Torn's report after the war.${war.personalHitsCapped ? ' The personal API reached its 1,000-attack maximum.' : ''}</div>`
+: `<div class="tbp-muted" style="color:#f2bd61; margin-top:6px;">Live hit tracking unavailable: ${escapeHtml(war.personalHitsError || war.liveHitsError || 'No attack data returned. The API key needs Limited access.')}</div>`;
 return `<div class="tbp-card" style="border-left:6px solid #d69a32;"><div class="tbp-row" style="margin-top:0;"><strong>vs ${escapeHtml(war.opponent)}</strong><strong style="color:#f2bd61;">In progress</strong></div>${hitDetails}<div class="tbp-row"><span>Current score</span><strong>${Number(war.ownScore || 0).toLocaleString()} - ${Number(war.opponentScore || 0).toLocaleString()}</strong></div>${war.target ? `<div class="tbp-row"><span>Score target</span><strong>${Number(war.target).toLocaleString()}</strong></div>` : ''}<div class="tbp-muted" style="margin-top:5px;">Live hits are a provisional count of successful outgoing attacks against ${escapeHtml(war.opponent)} since ${escapeHtml(started)}. Torn's completed report supplies the final percentage.</div></div>`;
 }
 const met = Number(war.percent || 0) >= warTarget;
