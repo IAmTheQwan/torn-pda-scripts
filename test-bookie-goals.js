@@ -19,6 +19,8 @@ assert(source.includes("let goalsMonthView = 'current';"));
 assert(!source.includes('data-goals-month="rolling"'));
 assert(source.includes('rankedWars: currentWars'));
 assert(source.includes('rankedWars: previousWars'));
+assert(source.includes('.filter(war => Number(war?.end || 0) >= earliestMonthTimestamp)'));
+assert(source.includes('war reports unavailable') || source.includes('war report${'));
 
 const start = source.indexOf('    function calculateGoalsDifference');
 const end = source.indexOf('    async function requestGoalsPath', start);

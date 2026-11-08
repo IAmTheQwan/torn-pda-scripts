@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.3
+// @version      1.24.4
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -82,7 +82,7 @@ try { return JSON.parse(localStorage.getItem('tbp_goals_war_report_cache') || '{
 catch { return {}; }
 })();
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.24.3';
+const SCRIPT_VERSION = '1.24.4';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
@@ -4540,17 +4540,24 @@ return requestGoalsPath(`user/personalstats?${query.toString()}`);
 async function fetchRankedWarGoals(playerId, earliestMonthTimestamp) {
 const historyData = await requestGoalsPath('faction/rankedwars?limit=100');
 const wars = (Array.isArray(historyData?.rankedwars) ? historyData.rankedwars : [])
-.filter(war => Number(war?.end || war?.start || 0) >= earliestMonthTimestamp);
+.filter(war => Number(war?.end || 0) >= earliestMonthTimestamp);
 const results = [];
+const skipped = [];
 for (const war of wars) {
-const warId = String(war?.id || '');
-if (!warId) continue;
+const warId = Number(war?.id || 0);
+if (!Number.isInteger(warId) || warId <= 0) {
+skipped.push({ id: String(war?.id || 'unknown'), occurredAt: Number(war?.end || 0), error: 'Invalid ranked-war ID in history.' });
+continue;
+}
 let report = goalsWarReportCache[warId]?.report || null;
-if (!report || !Number(war?.end || 0)) {
+if (!report) {
+try {
 const reportData = await requestGoalsPath(`faction/${encodeURIComponent(warId)}/rankedwarreport`);
 report = reportData?.rankedwarreport || null;
-if (report && Number(report.end || war.end || 0)) {
-goalsWarReportCache[warId] = { report, cachedAt: Date.now() };
+if (report) goalsWarReportCache[warId] = { report, cachedAt: Date.now() };
+} catch (error) {
+skipped.push({ id: String(warId), occurredAt: Number(war?.end || 0), error: String(error?.message || error) });
+continue;
 }
 }
 const factions = Array.isArray(report?.factions) ? report.factions : [];
@@ -4572,7 +4579,7 @@ percent: calculateRankedWarPercent(playerHits, factionHits)
 });
 }
 localStorage.setItem('tbp_goals_war_report_cache', JSON.stringify(goalsWarReportCache));
-return results.sort((a, b) => b.start - a.start);
+return { wars: results.sort((a, b) => b.start - a.start), skipped };
 }
 async function fetchGoalsData() {
 if (goalsLoading) return;
@@ -4599,14 +4606,16 @@ const currentStart = parseGoalsPersonalStats(currentStartData);
 const previousStart = parseGoalsPersonalStats(previousStartData);
 const playerId = Number(basicData?.profile?.id || 0);
 if (!playerId) throw new Error('Torn did not return your player ID.');
-const rankedWars = await fetchRankedWarGoals(playerId, previous.timestamp);
-const currentWars = rankedWars.filter(war => war.occurredAt >= current.timestamp);
-const previousWars = rankedWars.filter(war => war.occurredAt >= previous.timestamp && war.occurredAt < current.timestamp);
+const rankedWarResult = await fetchRankedWarGoals(playerId, previous.timestamp);
+const currentWars = rankedWarResult.wars.filter(war => war.occurredAt >= current.timestamp);
+const previousWars = rankedWarResult.wars.filter(war => war.occurredAt >= previous.timestamp && war.occurredAt < current.timestamp);
+const currentWarWarnings = rankedWarResult.skipped.filter(war => war.occurredAt >= current.timestamp);
+const previousWarWarnings = rankedWarResult.skipped.filter(war => war.occurredAt >= previous.timestamp && war.occurredAt < current.timestamp);
 goalsCache = {
 updatedAt: Date.now(),
 requestCount: goalsLastRequestCount,
-current: { key: current.key, label: current.label, values: calculateGoalsDifference(latest, currentStart), rankedWars: currentWars },
-previous: { key: previous.key, label: previous.label, values: calculateGoalsDifference(currentStart, previousStart), rankedWars: previousWars }
+current: { key: current.key, label: current.label, values: calculateGoalsDifference(latest, currentStart), rankedWars: currentWars, rankedWarWarnings: currentWarWarnings },
+previous: { key: previous.key, label: previous.label, values: calculateGoalsDifference(currentStart, previousStart), rankedWars: previousWars, rankedWarWarnings: previousWarWarnings }
 };
 localStorage.setItem('tbp_goals_cache', JSON.stringify(goalsCache));
 } catch (error) {
@@ -4632,6 +4641,7 @@ const goalRows = [
 { key: 'activityHours', label: 'Activity', target: Number(goalsTargets.activityHours || 0), compact: false, decimals: 2, suffix: 'h' }
 ];
 const rankedWars = Array.isArray(period?.rankedWars) ? period.rankedWars : [];
+const rankedWarWarnings = Array.isArray(period?.rankedWarWarnings) ? period.rankedWarWarnings : [];
 const warTarget = Number(goalsTargets.warHitPercent || 0);
 const regularMet = period ? goalRows.filter(goal => goal.target > 0 && Number(period.values?.[goal.key] || 0) >= goal.target).length : 0;
 const warsMet = rankedWars.length > 0 && rankedWars.every(war => Number(war.percent || 0) >= warTarget);
@@ -4664,6 +4674,7 @@ ${pace ? `<div style="border-top:1px solid #3a3a3a; margin-top:7px; padding-top:
 <div class="tbp-row" style="margin-top:0;"><strong>Ranked Wars % Hits</strong><strong class="${warsMet ? 'tbp-win' : ''}">${rankedWars.length ? `${rankedWars.filter(war => Number(war.percent || 0) >= warTarget).length} / ${rankedWars.length} wars` : 'No wars found'}</strong></div>
 <div class="tbp-muted" style="margin-top:5px;">Target: ${warTarget.toFixed(1)}% of your faction's hits in each war completed this month.</div>
 </div>
+${rankedWarWarnings.length ? `<div class="tbp-card" style="border-left:6px solid #d69a32;"><strong style="color:#f2bd61;">${rankedWarWarnings.length} war report${rankedWarWarnings.length === 1 ? '' : 's'} unavailable</strong><div class="tbp-muted" style="margin-top:5px;">The remaining monthly goals still loaded. War IDs: ${rankedWarWarnings.map(war => escapeHtml(war.id)).join(', ')}.</div></div>` : ''}
 ${rankedWars.map(war => {
 const met = Number(war.percent || 0) >= warTarget;
 const date = war.end || war.start ? new Date((war.end || war.start) * 1000).toLocaleDateString() : 'In progress';
