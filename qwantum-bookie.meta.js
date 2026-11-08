@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.6
+// @version      1.24.7
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*

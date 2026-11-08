@@ -27,6 +27,8 @@ assert(!source.includes('goalsWarReportCache[warId] = { report'));
 assert(source.includes("requestGoalsPath('user/profile')"));
 assert(source.includes('String(faction.id) === String(factionId)'));
 assert(source.includes('Number(member?.attacks || 0)'));
+assert(source.includes('audit: { xanaxEnd: latest.xantaken, xanaxStart: currentStart.xantaken'));
+assert(source.includes('API audit:'));
 
 const start = source.indexOf('    function calculateGoalsDifference');
 const end = source.indexOf('    async function requestGoalsPath', start);

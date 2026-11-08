@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.6
+// @version      1.24.7
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -96,7 +96,7 @@
     })();
 
     const CACHE_DB_NAME = 'tbp_bookie_history';
-    const SCRIPT_VERSION = '1.24.6';
+    const SCRIPT_VERSION = '1.24.7';
     const CACHE_DB_VERSION = 1;
     const CACHE_STORE_NAME = 'logs';
     const MAX_API_PAGES_PER_SCAN = 50;
@@ -5069,8 +5069,22 @@
             goalsCache = {
                 updatedAt: Date.now(),
                 requestCount: goalsLastRequestCount,
-                current: { key: current.key, label: current.label, values: calculateGoalsDifference(latest, currentStart), rankedWars: currentWars, rankedWarWarnings: currentWarWarnings },
-                previous: { key: previous.key, label: previous.label, values: calculateGoalsDifference(currentStart, previousStart), rankedWars: previousWars, rankedWarWarnings: previousWarWarnings }
+                current: {
+                    key: current.key,
+                    label: current.label,
+                    values: calculateGoalsDifference(latest, currentStart),
+                    audit: { xanaxEnd: latest.xantaken, xanaxStart: currentStart.xantaken, boundaryTimestamp: current.timestamp },
+                    rankedWars: currentWars,
+                    rankedWarWarnings: currentWarWarnings
+                },
+                previous: {
+                    key: previous.key,
+                    label: previous.label,
+                    values: calculateGoalsDifference(currentStart, previousStart),
+                    audit: { xanaxEnd: currentStart.xantaken, xanaxStart: previousStart.xantaken, boundaryTimestamp: previous.timestamp },
+                    rankedWars: previousWars,
+                    rankedWarWarnings: previousWarWarnings
+                }
             };
             localStorage.setItem('tbp_goals_cache', JSON.stringify(goalsCache));
         } catch (error) {
@@ -5118,12 +5132,16 @@
                     const met = goal.target > 0 && value >= goal.target;
                     const pace = goal.pace ? calculateMonthlyGoalPace(value, goal.target, period.key, goalsMonthView === 'current', goal.maxPerDay) : null;
                     const projectedMet = pace && goal.target > 0 && pace.projectedTotal >= goal.target;
+                    const xanaxAudit = goal.key === 'xanax' && period.audit
+                        ? `<div class="tbp-muted" style="border-top:1px solid #3a3a3a; margin-top:7px; padding-top:6px;">API audit: ${Number(period.audit.xanaxEnd || 0).toLocaleString()} current − ${Number(period.audit.xanaxStart || 0).toLocaleString()} at ${new Date(Number(period.audit.boundaryTimestamp || 0) * 1000).toLocaleString(undefined, { timeZone: 'UTC' })} TCT = <strong>${value.toLocaleString()}</strong></div>`
+                        : '';
                     return `
                         <div class="tbp-card" style="border-left:6px solid ${met ? '#28a745' : '#4da3ff'};">
                             <div class="tbp-row" style="margin-top:0;"><strong>${goal.label}</strong><strong class="${met ? 'tbp-win' : ''}">${formatGoalValue(value, goal.compact, goal.decimals, goal.suffix)} / ${formatGoalValue(goal.target, goal.compact, goal.decimals, goal.suffix)}</strong></div>
                             <div style="height:8px; background:#151515; border-radius:5px; overflow:hidden; margin-top:8px;"><div style="width:${percent.toFixed(1)}%; height:100%; background:${met ? '#28a745' : '#2980b9'};"></div></div>
                             <div class="tbp-muted" style="margin-top:5px; text-align:right;">${percent.toFixed(1)}%</div>
                             ${pace ? `<div style="border-top:1px solid #3a3a3a; margin-top:7px; padding-top:5px;"><div class="tbp-row"><span class="tbp-muted">Required average</span><span>${pace.requiredDaily.toFixed(2)} / day</span></div><div class="tbp-row"><span class="tbp-muted">Your average</span><span>${pace.dailyAverage.toFixed(2)} / day</span></div><div class="tbp-row"><span class="tbp-muted">${goalsMonthView === 'current' ? 'Projected month-end' : 'Final total'}</span><strong class="${projectedMet ? 'tbp-win' : goalsMonthView === 'current' ? 'tbp-loss' : ''}">${pace.projectedTotal.toFixed(1)}</strong></div>${goalsMonthView === 'current' ? `<div class="tbp-row"><span class="tbp-muted">Max possible now</span><strong class="${pace.maximumPossible >= goal.target ? 'tbp-win' : 'tbp-loss'}">${pace.maximumPossible.toFixed(0)} <span class="tbp-muted">(${goal.maxPerDay}/day)</span></strong></div>` : ''}</div>` : ''}
+                            ${xanaxAudit}
                         </div>
                     `;
                 }).join('')}
