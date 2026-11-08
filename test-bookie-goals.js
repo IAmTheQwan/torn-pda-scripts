@@ -52,4 +52,15 @@ assert.deepStrictEqual(
 assert.strictEqual(context.calculateRankedWarPercent(5, 100), 5);
 assert.strictEqual(context.calculateRankedWarPercent(1, 0), 0);
 
+const pace = context.calculateMonthlyGoalPace(18, 72, '2026-11', true, new Date('2026-11-09T12:00:00Z'));
+assert.strictEqual(pace.daysInMonth, 30);
+assert.strictEqual(pace.elapsedDays, 9);
+assert.strictEqual(pace.requiredDaily, 2.4);
+assert.strictEqual(pace.dailyAverage, 2);
+assert.strictEqual(pace.projectedTotal, 60);
+
+const finalPace = context.calculateMonthlyGoalPace(27, 27, '2026-10', false, new Date('2026-11-09T12:00:00Z'));
+assert.strictEqual(finalPace.elapsedDays, 31);
+assert.strictEqual(finalPace.projectedTotal, 27);
+
 console.log('Qwantum Bookie monthly goals tests passed.');
