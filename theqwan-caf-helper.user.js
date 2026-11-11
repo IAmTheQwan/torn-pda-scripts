@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TheQwan CAF History Helper
 // @namespace    theqwan.torn.auction-history.caf35
-// @version      3.5.6
+// @version      3.5.7
 // @description  Historical comp pricing helper for TheQwan CAF Base
 // @author       TheQwan
 // @match        https://www.torn.com/amarket.php*
@@ -206,9 +206,13 @@
   }
 
   function parseCard(card) {
-    const text = card.innerText || "";
+    const ariaElement = card.matches("[aria-label]") ? card : card.querySelector("[aria-label*='Damage:']");
+    const rawLabel = ariaElement?.getAttribute("aria-label") || "";
+    const text = `${card.innerText || ""} ${rawLabel}`;
 
-    const name = (card.querySelector("div[style*='color:#6eb6ff']")?.textContent || "").trim();
+    const name = (card.querySelector("div[style*='color:#6eb6ff']")?.textContent
+      || (rawLabel.match(/^(.+?)(?=\s*(?:,|\||-)\s*Damage:|\s+Damage:)/i) || [])[1]
+      || "").trim();
     const dmg = Number((text.match(/Damage:\s*([\d.]+)/i) || [])[1] || 0);
     const acc = Number((text.match(/Accuracy:\s*([\d.]+)/i) || [])[1] || 0);
     const bid = Number((text.match(/Bid:\s*\$([\d,]+)/i) || [])[1]?.replaceAll(",", "") || 0);
@@ -559,6 +563,10 @@
         Sales ${s.count}
       </div>
 
+      <div style="margin-top:6px;color:#999;font-size:10px;line-height:1.35;">
+        Pressing History sends only the visible item's name and selected quality/bonus search filters to the configured Supabase history service. No Torn API key, account ID, bid, or page cookies are sent. Results are cached locally for five minutes.
+      </div>
+
       <div id="caf35-settings-body" style="display:none;margin-top:8px;">
         <div class="caf35-setting-label">Sales Used</div>
         <div class="caf35-mini-row">
@@ -696,8 +704,16 @@
   function injectButtons() {
     injectSettings();
 
-    document.querySelectorAll(".caf-open").forEach(openBtn => {
-      const card = openBtn.closest("div[style*='display:flex']");
+    const cards = [...document.querySelectorAll(".caf-open")]
+      .map(openBtn => openBtn.closest("div[style*='display:flex']"))
+      .filter(Boolean);
+    document.querySelectorAll("[aria-label*='Damage:']").forEach(element => {
+      const card = element.closest("li") || element.closest("div[class*=auction]") || element.closest("div[class*=item]") || element.parentElement;
+      if (card) cards.push(card);
+    });
+
+    [...new Set(cards)].forEach(card => {
+      const openBtn = card.querySelector(".caf-open");
       if (!card || card.querySelector(".caf35-btn")) return;
 
       const btn = document.createElement("button");
@@ -707,10 +723,12 @@
       btn.onclick = e => {
         e.preventDefault();
         e.stopPropagation();
+        if (document.visibilityState !== "visible") return;
         runHistory(card, btn);
       };
 
-      openBtn.after(btn);
+      if (openBtn) openBtn.after(btn);
+      else card.appendChild(btn);
     });
   }
 

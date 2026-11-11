@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.12
+// @version      1.24.13
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -89,11 +89,14 @@ return { version: 2, entries: {} };
 }
 })();
 const CACHE_DB_NAME = 'tbp_bookie_history';
-const SCRIPT_VERSION = '1.24.12';
+const SCRIPT_VERSION = '1.24.13';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'logs';
 const MAX_API_PAGES_PER_SCAN = 50;
 const API_PAGE_DELAY_MS = 1100;
+const TORN_API_RATE_LEDGER_KEY = 'tbp_torn_api_request_times';
+const TORN_API_RATE_WINDOW_MS = 60 * 1000;
+const TORN_API_SAFE_REQUEST_LIMIT = 80;
 const FOOTBALL_HOME_YELLOW_MIN = 1.2;
 const FOOTBALL_HOME_YELLOW_MAX = 1.29;
 const FOOTBALL_HOME_LIME_MIN = 1.3;
@@ -425,6 +428,25 @@ db.close();
 }
 function delay(ms) {
 return new Promise(resolve => setTimeout(resolve, ms));
+}
+async function acquireTornApiRequestSlot() {
+while (true) {
+const now = Date.now();
+let recent = [];
+try {
+const parsed = JSON.parse(localStorage.getItem(TORN_API_RATE_LEDGER_KEY) || '[]');
+recent = (Array.isArray(parsed) ? parsed : [])
+.map(Number)
+.filter(timestamp => Number.isFinite(timestamp) && now - timestamp < TORN_API_RATE_WINDOW_MS)
+.sort((a, b) => a - b);
+} catch {}
+if (recent.length < TORN_API_SAFE_REQUEST_LIMIT) {
+recent.push(now);
+try { localStorage.setItem(TORN_API_RATE_LEDGER_KEY, JSON.stringify(recent)); } catch {}
+return;
+}
+await delay(Math.max(250, recent[0] + TORN_API_RATE_WINDOW_MS - now + 100));
+}
 }
 function utcDateKey(value = Date.now()) {
 return new Date(value).toISOString().slice(0, 10);
@@ -1553,7 +1575,8 @@ openProfit: batchOpenBets.reduce((s, b) => s + b.potentialProfit, 0),
 openReturn: batchOpenBets.reduce((s, b) => s + b.potentialReturn, 0)
 };
 }
-function requestLogPage(from, to) {
+async function requestLogPage(from, to) {
+await acquireTornApiRequestSlot();
 return new Promise(resolve => {
 let url = `https://api.torn.com/user/?selections=log&cat=195&key=${encodeURIComponent(apiKey)}`;
 if (from && from > 0) url += `&from=${from}`;
@@ -3517,6 +3540,7 @@ source: 'My Bets list'
 };
 }
 function captureVisibleMyBetsSnapshot() {
+if (document.visibilityState !== 'visible') return false;
 if (!/^#\/your-bets(?:\/|$)/i.test(location.hash)) return false;
 const links = getVisibleMyBetsLinks();
 if (!links.length) return false;
@@ -3835,29 +3859,16 @@ function watchManuallyOpenedFootballGame(href) {
 pendingFootballOddsObserver?.disconnect();
 if (pendingFootballOddsTimeout) clearTimeout(pendingFootballOddsTimeout);
 if (pendingFootballOddsSettleTimeout) clearTimeout(pendingFootballOddsSettleTimeout);
-let additionalMarketsRequestedAt = 0;
 const openedAt = Date.now();
 const reviewSport = getReviewSport(href);
 const tryRecord = () => {
+if (document.visibilityState !== 'visible') return false;
 const item = findFootballItemForHref(href);
 const info = item?.querySelector('.info-wrap');
 if (!item?.classList.contains('active') || info?.style?.display === 'none') return false;
 const primaryMarket = reviewSport === 'hockey'
 ? (getHockeyThreeWayMarket(item) || getHockeyOvertimeMarket(item))
 : getThreeWayMarket(item);
-const needsComparisonMarkets = reviewSport === 'hockey'
-? (footballOddsHistoryEnabled || footballScanEnabled || guidedFootballSession.active)
-: (footballScanEnabled || guidedFootballSession.active);
-const additionalMarketsControl = Array.from(item.querySelectorAll('a, button')).find(control => {
-return /show(?:\s+\d+)?\s+additional betting options/i.test(String(control.textContent || '').replace(/\s+/g, ' ').trim());
-});
-if (needsComparisonMarkets && additionalMarketsControl && !additionalMarketsRequestedAt) {
-additionalMarketsRequestedAt = Date.now();
-additionalMarketsControl.click();
-setTimeout(scheduleRecord, 1100);
-return false;
-}
-if (additionalMarketsRequestedAt && Date.now() - additionalMarketsRequestedAt < 1000) return false;
 if (!primaryMarket) {
 if (reviewSport !== 'hockey' || Date.now() - openedAt < 2500) return false;
 if (guidedFootballSession.active) {
@@ -4539,6 +4550,7 @@ maximumPossible: isCurrent && isDisplayedMonth ? safeValue + safeMaxPerDay * rem
 }
 async function requestGoalsPath(path) {
 const key = goalsApiKey || apiKey;
+await acquireTornApiRequestSlot();
 goalsLastRequestCount += 1;
 const separator = path.includes('?') ? '&' : '?';
 const baseUrl = `https://api.torn.com/v2/${path}${separator}comment=BookieGoals`;
@@ -5058,6 +5070,7 @@ body.innerHTML = `
 <summary style="font-weight:bold; cursor:pointer;">Bookie API</summary>
 <label class="tbp-muted" style="display:block; margin-top:9px;">TORN API KEY</label>
 <input type="password" id="tbp-api-key" class="tbp-input" value="${escapeHtml(apiKey)}" placeholder="Torn API key">
+<div class="tbp-muted" style="margin-bottom:9px;">Privacy: Torn API keys and returned Bookie/Goals/Chain/Training data are stored only in this browser/PDA and are not shared. The key is used only for the features shown here. Limited or matching Custom selections are recommended; faction attack totals additionally require your Torn role's Faction API Access. This script caps its combined Torn API traffic at 80 requests per rolling minute.</div>
 <label class="tbp-muted">SCAN MODE</label>
 <select id="tbp-scan-mode" class="tbp-select">
 <option value="both" ${scanMode === 'both' ? 'selected' : ''}>Date + page limit</option>
@@ -6358,7 +6371,7 @@ const met = chainSettings.goalRule === 'either' && results.length > 1
 return { state: met ? 'green' : 'red', met, configured: true };
 }
 function scanChainReport() {
-if (!chainAssistantEnabled) return;
+if (!chainAssistantEnabled || document.visibilityState !== 'visible') return;
 const wasHighlighted = chainRowHighlighted;
 clearChainHighlight();
 if (!isChainReportPage()) {
@@ -6398,7 +6411,8 @@ if (!error) return fallback;
 if (typeof error === 'string') return error;
 return String(error.error || error.message || fallback);
 }
-function requestTornV2(path, key) {
+async function requestTornV2(path, key) {
+await acquireTornApiRequestSlot();
 chainApiRequestsThisPage += 1;
 return new Promise((resolve, reject) => {
 GM_xmlhttpRequest({
@@ -6606,7 +6620,7 @@ return `
 <input type="text" inputmode="numeric" id="tca-player-id" class="tbp-input" value="${escapeHtml(chainSettings.playerId)}" placeholder="Auto-detected from your Torn API key">
 <label class="tbp-muted">CHAIN API KEY</label>
 <input type="password" id="tca-api-key" class="tbp-input" value="${escapeHtml(chainSettings.apiKey)}" placeholder="Leave blank to try the Bookie Torn key">
-<div class="tbp-muted" style="margin-bottom:10px;">The chain endpoint requires a Public key with Faction → chainreport permission. Your Bookie key is tried when this is blank, but a Bookie-only custom key may not have that permission. Totals are cached for two minutes and refresh only on load/navigation or when you press Refresh; there is no timer polling.</div>
+<div class="tbp-muted" style="margin-bottom:10px;">The chain endpoint requires a Public key with Faction → chainreport permission. The key and returned totals stay only in this browser/PDA and are not shared. Your Bookie key is tried when this is blank, but a Bookie-only custom key may not have that permission. Totals are cached for two minutes and refresh only on load/navigation or when you press Refresh; there is no timer polling.</div>
 <button class="tbp-btn tbp-btn-success" id="tca-save-settings" style="width:100%;">Save Chain Settings</button>
 `;
 }
@@ -6852,7 +6866,7 @@ if (value) pieces.push(value);
 return ` ${pieces.join(' ')} `;
 }
 function captureAccessibleGymsFromPage() {
-if (!trainingAssistantEnabled || !isGymPage() || !trainingData.gyms.length) return false;
+if (!trainingAssistantEnabled || document.visibilityState !== 'visible' || !isGymPage() || !trainingData.gyms.length) return false;
 const pageText = gymPageSearchText();
 const buttonGymIds = [];
 document.querySelectorAll('[class*="gymButton"]').forEach(button => {
@@ -7001,6 +7015,7 @@ throw new Error(chainApiError(data, `Torn API request failed (${status || 'unkno
 return data;
 }
 async function requestTrainingTornV2(path, key) {
+await acquireTornApiRequestSlot();
 const separator = path.includes('?') ? '&' : '?';
 const baseUrl = `https://api.torn.com/v2/${path}${separator}comment=TrainingAssist`;
 const pdaUrl = `${baseUrl}&key=${encodeURIComponent(key)}`;
@@ -7164,7 +7179,7 @@ function renderTrainingSettings() {
 return `
 <label class="tbp-muted">TRAINING API KEY</label>
 <input type="password" id="tta-api-key" class="tbp-input" value="${escapeHtml(trainingSettings.apiKey)}" placeholder="Leave blank to try the Bookie Torn key">
-<div class="tbp-muted" style="margin-bottom:10px;">Use a Minimal Access key that permits user → perks and user → gym. All active personal gym-gain perk categories are included. The public Torn gym catalog is cached for seven days; personal training data is cached for 30 minutes. No timer polling is used.</div>
+<div class="tbp-muted" style="margin-bottom:10px;">Use a Minimal Access key that permits user → perks and user → gym. The key and returned training data stay only in this browser/PDA and are not shared. All active personal gym-gain perk categories are included. The public Torn gym catalog is cached for seven days; personal training data is cached for 30 minutes. No timer polling is used.</div>
 <button class="tbp-btn tbp-btn-success" id="tta-save-settings" style="width:100%;">Save Training Settings</button>
 `;
 }

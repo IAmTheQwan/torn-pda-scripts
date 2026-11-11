@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         TheQwan CAF Base
 // @namespace    theqwan.torn.auction-filter.caf3
-// @version      3.4.7
-// @description  Condensed Auction Filter with quality fetch, color filter, and slider-based quality/bonus ranges
+// @version      3.4.8
+// @description  Current-page Auction Filter with quality capture, color filter, and slider-based quality/bonus ranges
 // @author       TheQwan [3485263]
 // @match        https://www.torn.com/amarket.php*
 // @match        https://www.torn.com/page.php*
@@ -34,8 +34,6 @@
   let allItems = [];
   let filteredItems = [];
   let currentPage = 1;
-  let loading = false;
-  let qualityLoading = false;
 
   const bonuses = [
     "", "Achilles", "Assassinate", "Backstab", "Berserk", "Bleed", "Blindside",
@@ -305,7 +303,7 @@
           <div id="caf-slider-summary" style="margin-top:6px;color:#aaa;font-size:11px;text-align:center;"></div>
 
           <div style="display:flex;gap:6px;margin-top:8px;">
-            <button id="caf-load" style="width:50%;padding:8px;">Load + Filter</button>
+            <button id="caf-load" style="width:50%;padding:8px;">Filter Current Page</button>
             <button id="caf-clear" style="width:50%;padding:8px;">Clear</button>
           </div>
         </div>
@@ -339,18 +337,11 @@
         isCollapsed ? "Show More" : "Hide Extra";
     };
 
-    document.getElementById("caf-load").onclick = async () => {
+    document.getElementById("caf-load").onclick = () => {
       saveFilters();
-
-      if (!allItems.length) {
-        await loadAllPages();
-      }
-
-      applyGlobalFilter();
-      renderPage(1);
-      saveState();
-
-      fetchQualityForFilteredItems();
+      applyOriginalPageFilter();
+      const status = document.getElementById("caf-status");
+      if (status) status.textContent = "Filtered the auction page currently loaded by Torn. Change pages manually to inspect more listings.";
     };
 
     document.getElementById("caf-clear").onclick = clearAll;
@@ -386,66 +377,6 @@
       summary.textContent =
         `Color ${color || "Any"} | Q ${qMin?.value ?? 0}-${qMax?.value ?? 200} | B ${bMin?.value ?? 0}-${bMax?.value ?? 150}%`;
     }
-  }
-
-  async function fetchAuctionPage(start) {
-    const body = new URLSearchParams();
-    body.set("step", "getAuctionItemsList");
-    body.set("start", String(start));
-    body.set("itemtype", "weapons");
-
-    const res = await fetch(`/amarket.php?rfcv=${Date.now()}`, {
-      method: "POST",
-      credentials: "include",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "X-Requested-With": "XMLHttpRequest"
-      },
-      body
-    });
-
-    const data = await res.json();
-
-    if (data?.success && Array.isArray(data.list)) {
-      data.list.forEach(item => {
-        item.__auctionStart = start;
-        setItemEndTime(item);
-      });
-    }
-
-    return data;
-  }
-
-  async function loadAllPages() {
-    if (loading) return;
-
-    loading = true;
-    allItems = [];
-
-    const status = document.getElementById("caf-status");
-    const starts = [];
-
-    for (let i = 0; i <= 590; i += 10) starts.push(i);
-
-    const batchSize = 5;
-
-    for (let i = 0; i < starts.length; i += batchSize) {
-      const batch = starts.slice(i, i + batchSize);
-
-      status.textContent =
-        `Loading ${Math.min(i + batchSize, starts.length)} of ${starts.length} pages...`;
-
-      const results = await Promise.all(batch.map(start => fetchAuctionPage(start)));
-
-      for (const data of results) {
-        if (data?.success && Array.isArray(data.list)) {
-          allItems.push(...data.list);
-        }
-      }
-    }
-
-    loading = false;
-    status.textContent = `Loaded ${allItems.length} auction items`;
   }
 
   function itemBonuses(item) {
@@ -633,116 +564,19 @@
     XMLHttpRequest.prototype.send = function () {
       this.addEventListener("load", function () {
         try {
+          if (document.visibilityState !== "visible") return;
           const text = this.responseText || "";
           if (!text.includes('"extras"') || !text.includes('"Quality"')) return;
 
           const data = JSON.parse(text);
           if (cacheQualityFromDetail(data)) {
-            applyGlobalFilter();
-            renderPage(currentPage || 1);
+            applyOriginalPageFilter();
           }
         } catch {}
       });
 
       return oldSend.apply(this, arguments);
     };
-  }
-
-  async function fetchQualityForFilteredItems() {
-    if (qualityLoading) return;
-
-    qualityLoading = true;
-
-    const status = document.getElementById("caf-status");
-    const cache = loadQualityCache();
-
-    const items = filteredItems
-      .filter(item => qualityKey(item))
-      .filter(item => !cache[qualityKey(item)])
-      .slice(0, 40);
-
-    if (!items.length) {
-      qualityLoading = false;
-      return;
-    }
-
-    for (let i = 0; i < items.length; i++) {
-      if (status) {
-        status.textContent = `Fetching quality ${i + 1} / ${items.length}...`;
-      }
-
-      await tryFetchQuality(items[i]);
-
-      if ((i + 1) % 3 === 0) {
-        applyGlobalFilter();
-        renderPage(currentPage || 1);
-        await delay(150);
-      }
-    }
-
-    applyGlobalFilter();
-    renderPage(currentPage || 1);
-
-    if (status) {
-      status.textContent = `Quality fetch complete. Showing ${filteredItems.length} filtered item(s).`;
-    }
-
-    qualityLoading = false;
-  }
-
-  async function tryFetchQuality(item) {
-    const key = qualityKey(item);
-    const itemId = item.itemID || item.itemId || item.id || "";
-    const armoryId = item.armouryID || item.armoryID || item.ID || "";
-
-    const candidates = [
-      { step: "getItemDetails", ID: armoryId },
-      { step: "getItemDetails", id: armoryId },
-      { step: "getItemDetails", armoryID: armoryId },
-      { step: "getItemDetails", armouryID: armoryId },
-      { step: "getItemDetails", itemID: itemId, armoryID: armoryId },
-      { step: "getItemDetails", itemID: itemId, ID: armoryId },
-      { step: "details", ID: armoryId },
-      { step: "details", armoryID: armoryId }
-    ];
-
-    for (const params of candidates) {
-      try {
-        const body = new URLSearchParams();
-
-        Object.keys(params).forEach(k => {
-          if (params[k]) body.set(k, String(params[k]));
-        });
-
-        const res = await fetch(`/page.php?sid=inventory&rfcv=${Date.now()}`, {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "X-Requested-With": "XMLHttpRequest"
-          },
-          body
-        });
-
-        const text = await res.text();
-
-        if (!text.includes('"extras"') || !text.includes('"Quality"')) {
-          continue;
-        }
-
-        const data = JSON.parse(text);
-
-        if (cacheQualityFromDetail(data, key)) {
-          return true;
-        }
-      } catch {}
-    }
-
-    return false;
-  }
-
-  function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   function setItemEndTime(item) {
@@ -856,7 +690,6 @@
         const url = `/amarket.php#itemtab=weapons&start=${start}`;
 
         window.location.href = url;
-        setTimeout(() => window.location.reload(), 150);
       });
     });
   }
@@ -947,6 +780,7 @@
       damage: Number((rawLabel.match(/Damage:\s*([\d.]+)/i) || [])[1] || 0),
       accuracy: Number((rawLabel.match(/Accuracy:\s*([\d.]+)/i) || [])[1] || 0),
       bid: itemBid({ topbid: rawLabel }),
+      quality: Number((rawLabel.match(/Quality:\s*([\d.]+)/i) || [])[1] || NaN),
       bonuses: bonuses.filter(b => b && label.includes(`${b.toLowerCase()}:`)),
       bonusPercents: [...rawLabel.matchAll(/(\d+(?:\.\d+)?)%/g)].map(x => Number(x[1])),
       color: originalCardGlow(card)
@@ -977,13 +811,19 @@
     return d.bonusPercents.some(v => v >= Number(min || 0) && v <= Number(max || 150));
   }
 
-  function applyOriginalPageFilter() {
-    if (localStorage.getItem(AUTO_FILTER_KEY) !== "1") return;
+  function originalMatchesQualityRange(d, min, max) {
+    if (!Number.isFinite(d.quality)) {
+      return Number(min || 0) <= 0 && Number(max || 200) >= 200;
+    }
+    return d.quality >= Number(min || 0) && d.quality <= Number(max || 200);
+  }
 
+  function applyOriginalPageFilter() {
+    if (document.visibilityState !== "visible") return;
+    const targetArmed = localStorage.getItem(AUTO_FILTER_KEY) === "1";
     const targetStart = localStorage.getItem(TARGET_START_KEY) || "0";
     const currentStart = (location.hash.match(/start=(\d+)/) || [])[1] || "0";
-
-    if (targetStart !== currentStart) return;
+    const targetOnThisPage = targetArmed && targetStart === currentStart;
 
     const f = loadFilters();
     const cards = getOriginalCards();
@@ -1008,13 +848,14 @@
         (!f.bonus2 || d.bonuses.includes(f.bonus2)) &&
         (!f.onlyDouble || d.bonuses.length >= 2) &&
         originalMatchesColor(d, f.color) &&
+        originalMatchesQualityRange(d, f.qualityMin, f.qualityMax) &&
         originalMatchesBonusRange(d, f.bonusMin, f.bonusMax);
 
       card.style.display = ok ? "" : "none";
       if (ok) shown++;
 
       const isTarget =
-        targetName &&
+        targetOnThisPage && targetName &&
         d.label.includes(targetName) &&
         Math.abs(d.damage - targetDmg) < 0.03 &&
         Math.abs(d.accuracy - targetAcc) < 0.03 &&
@@ -1113,8 +954,13 @@
   }
 
   setTimeout(() => {
+    // Older releases cached data gathered by batch-loading auction pages. That
+    // behavior is no longer permitted; retain filter preferences but discard
+    // aggregated listing state so only the actively viewed page is processed.
+    localStorage.removeItem(ALL_ITEMS_KEY);
+    localStorage.removeItem(FILTERED_ITEMS_KEY);
+    localStorage.removeItem(CURRENT_PAGE_KEY);
     injectPanel();
-    restoreRenderedResultsIfAvailable();
 
     setTimeout(applyOriginalPageFilter, 800);
     setTimeout(applyOriginalPageFilter, 1600);
