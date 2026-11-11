@@ -38,6 +38,10 @@ assert(source.includes('String(faction.id) === String(factionId)'));
 assert(source.includes('Number(member?.attacks || 0)'));
 assert(source.includes('audit: { xanaxEnd: latest.xantaken, xanaxStart: currentStart.xantaken'));
 assert(source.includes('API audit:'));
+assert(source.includes("fetchGoalsDailyCalendar(current.key, currentStart, latest, true)"));
+assert(source.includes("renderGoalsCalendar(period.dailyCalendar, 'xanax', 'Xanax', 3)"));
+assert(source.includes("renderGoalsCalendar(period.dailyCalendar, 'refills', 'Energy Refill', 1)"));
+assert(!source.includes("completedWars.filter(war => Number(war.percent || 0) >= warTarget).length"));
 assert(source.includes("requestGoalsPath('user/personalstats?cat=popular')"));
 assert(source.includes("requestGoalsPath('user/personalstats?cat=battle_stats')"));
 assert(source.includes('popular?.drugs?.xanax'));
@@ -103,5 +107,25 @@ const finalPace = context.calculateMonthlyGoalPace(27, 27, '2026-10', false, 1, 
 assert.strictEqual(finalPace.elapsedDays, 31);
 assert.strictEqual(finalPace.projectedTotal, 27);
 assert.strictEqual(finalPace.maximumPossible, 27);
+
+const calendarBoundaries = {
+    [String(Date.UTC(2026, 10, 1) / 1000)]: { xantaken: 100, refills: 50 },
+    [String(Date.UTC(2026, 10, 2) / 1000)]: { xantaken: 103, refills: 51 },
+    [String(Date.UTC(2026, 10, 3) / 1000)]: { xantaken: 105, refills: 51 }
+};
+const calendar = context.calculateGoalsDailyCalendar(
+    '2026-11',
+    calendarBoundaries,
+    { xantaken: 108, refills: 52 },
+    3
+);
+assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(calendar.days)),
+    [
+        { day: 1, xanax: 3, refills: 1 },
+        { day: 2, xanax: 2, refills: 0 },
+        { day: 3, xanax: 3, refills: 1 }
+    ]
+);
 
 console.log('Qwantum Bookie monthly goals tests passed.');

@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.15
+// @version      1.24.16
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -4516,6 +4516,70 @@ battleStats: Math.max(0, Number(end.totalstats || 0) - Number(start.totalstats |
 activityHours: Math.max(0, Number(end.timeplayed || 0) - Number(start.timeplayed || 0)) / 3600
 };
 }
+function goalsCalendarMonth(periodKey) {
+const match = String(periodKey || '').match(/^(\d{4})-(\d{2})$/);
+if (!match) return null;
+const year = Number(match[1]);
+const month = Number(match[2]);
+const startMs = Date.UTC(year, month - 1, 1);
+return {
+year,
+month,
+startTimestamp: Math.floor(startMs / 1000),
+daysInMonth: new Date(Date.UTC(year, month, 0)).getUTCDate(),
+firstWeekday: new Date(startMs).getUTCDay()
+};
+}
+function goalsDailyStatsSnapshot(values) {
+return {
+xantaken: Math.max(0, Number(values?.xantaken || 0)),
+refills: Math.max(0, Number(values?.refills || 0))
+};
+}
+function calculateGoalsDailyCalendar(periodKey, boundaryTotals, endStats, displayedDays) {
+const month = goalsCalendarMonth(periodKey);
+if (!month) return null;
+const dayCount = Math.max(0, Math.min(month.daysInMonth, Number(displayedDays || 0)));
+const finalTotals = goalsDailyStatsSnapshot(endStats);
+const days = [];
+for (let index = 0; index < dayCount; index++) {
+const dayStart = month.startTimestamp + index * 86400;
+const start = boundaryTotals[String(dayStart)];
+const end = index === dayCount - 1
+? finalTotals
+: boundaryTotals[String(dayStart + 86400)];
+days.push({
+day: index + 1,
+xanax: start && end ? Math.max(0, Number(end.xantaken || 0) - Number(start.xantaken || 0)) : null,
+refills: start && end ? Math.max(0, Number(end.refills || 0) - Number(start.refills || 0)) : null
+});
+}
+return { key: periodKey, firstWeekday: month.firstWeekday, daysInMonth: month.daysInMonth, days };
+}
+function loadGoalsDailyBoundaryCache() {
+try {
+const parsed = JSON.parse(localStorage.getItem('tbp_goals_daily_boundaries') || '{}');
+return parsed && parsed.version === 1 && parsed.totals && typeof parsed.totals === 'object'
+? parsed
+: { version: 1, totals: {} };
+} catch {
+return { version: 1, totals: {} };
+}
+}
+function saveGoalsDailyBoundaryCache(cache) {
+const cutoff = Math.floor(Date.now() / 1000) - 93 * 86400;
+Object.keys(cache.totals || {}).forEach(timestamp => {
+if (Number(timestamp) < cutoff) delete cache.totals[timestamp];
+});
+localStorage.setItem('tbp_goals_daily_boundaries', JSON.stringify(cache));
+}
+function parseGoalsDailyStats(data) {
+const rows = Array.isArray(data?.personalstats) ? data.personalstats : [];
+const values = Object.fromEntries(rows.map(row => [String(row?.name || '').toLowerCase(), Number(row?.value || 0)]));
+const missing = ['xantaken', 'refills'].filter(name => !Object.prototype.hasOwnProperty.call(values, name));
+if (missing.length) throw new Error(`Torn did not return daily ${missing.join(', ')} values.`);
+return goalsDailyStatsSnapshot(values);
+}
 function calculateRankedWarPercent(playerHits, factionHits) {
 const player = Math.max(0, Number(playerHits || 0));
 const faction = Math.max(0, Number(factionHits || 0));
@@ -4597,6 +4661,33 @@ stat: 'xantaken,refills,totalstats,timeplayed'
 });
 if (timestamp) query.set('timestamp', String(timestamp));
 return requestGoalsPath(`user/personalstats?${query.toString()}`);
+}
+async function requestGoalsDailyStats(timestamp) {
+const query = new URLSearchParams({ stat: 'xantaken,refills', timestamp: String(timestamp) });
+return parseGoalsDailyStats(await requestGoalsPath(`user/personalstats?${query.toString()}`));
+}
+async function fetchGoalsDailyCalendar(periodKey, startStats, endStats, isCurrent) {
+const month = goalsCalendarMonth(periodKey);
+if (!month) throw new Error('Could not identify the calendar month.');
+const now = new Date();
+const displayedDays = isCurrent
+? Math.min(month.daysInMonth, Math.max(1, now.getUTCDate()))
+: month.daysInMonth;
+const cache = loadGoalsDailyBoundaryCache();
+cache.totals[String(month.startTimestamp)] = goalsDailyStatsSnapshot(startStats);
+const missing = [];
+for (let index = 1; index < displayedDays; index++) {
+const timestamp = month.startTimestamp + index * 86400;
+if (!cache.totals[String(timestamp)]) missing.push(timestamp);
+}
+for (let index = 0; index < missing.length; index += 5) {
+const batch = missing.slice(index, index + 5);
+const results = await Promise.all(batch.map(async timestamp => [timestamp, await requestGoalsDailyStats(timestamp)]));
+results.forEach(([timestamp, values]) => { cache.totals[String(timestamp)] = values; });
+saveGoalsDailyBoundaryCache(cache);
+}
+saveGoalsDailyBoundaryCache(cache);
+return calculateGoalsDailyCalendar(periodKey, cache.totals, endStats, displayedDays);
 }
 async function requestGoalsLiveStats() {
 const [popularData, battleStatsData] = await Promise.all([
@@ -4762,6 +4853,7 @@ const currentWars = rankedWarResult.wars.filter(war => war.occurredAt >= current
 const previousWars = rankedWarResult.wars.filter(war => war.occurredAt >= previous.timestamp && war.occurredAt < current.timestamp);
 const currentWarWarnings = rankedWarResult.skipped.filter(war => war.occurredAt >= current.timestamp);
 const previousWarWarnings = rankedWarResult.skipped.filter(war => war.occurredAt >= previous.timestamp && war.occurredAt < current.timestamp);
+const currentCalendar = await fetchGoalsDailyCalendar(current.key, currentStart, latest, true);
 goalsCache = {
 updatedAt: Date.now(),
 requestCount: goalsLastRequestCount,
@@ -4770,6 +4862,9 @@ key: current.key,
 label: current.label,
 values: calculateGoalsDifference(latest, currentStart),
 audit: { xanaxEnd: latest.xantaken, xanaxStart: currentStart.xantaken, boundaryTimestamp: current.timestamp },
+calendarStart: goalsDailyStatsSnapshot(currentStart),
+calendarEnd: goalsDailyStatsSnapshot(latest),
+dailyCalendar: currentCalendar,
 rankedWars: currentWars,
 rankedWarWarnings: currentWarWarnings
 },
@@ -4778,6 +4873,9 @@ key: previous.key,
 label: previous.label,
 values: calculateGoalsDifference(currentStart, previousStart),
 audit: { xanaxEnd: currentStart.xantaken, xanaxStart: previousStart.xantaken, boundaryTimestamp: previous.timestamp },
+calendarStart: goalsDailyStatsSnapshot(previousStart),
+calendarEnd: goalsDailyStatsSnapshot(currentStart),
+dailyCalendar: goalsCache?.previous?.key === previous.key ? goalsCache.previous.dailyCalendar || null : null,
 rankedWars: previousWars,
 rankedWarWarnings: previousWarWarnings
 }
@@ -4790,10 +4888,48 @@ goalsLoading = false;
 render();
 }
 }
+async function ensureGoalsCalendar(view) {
+const period = view === 'previous' ? goalsCache?.previous : goalsCache?.current;
+if (!period || period.dailyCalendar || !period.calendarStart || !period.calendarEnd || goalsLoading) return;
+goalsLoading = true;
+goalsError = '';
+goalsLastRequestCount = 0;
+render();
+try {
+period.dailyCalendar = await fetchGoalsDailyCalendar(
+period.key,
+period.calendarStart,
+period.calendarEnd,
+view !== 'previous'
+);
+goalsCache.updatedAt = Date.now();
+goalsCache.requestCount = goalsLastRequestCount;
+localStorage.setItem('tbp_goals_cache', JSON.stringify(goalsCache));
+} catch (error) {
+goalsError = String(error?.message || error);
+} finally {
+goalsLoading = false;
+render();
+}
+}
 function formatGoalValue(value, compact = false, decimals = 0, suffix = '') {
 const number = Math.max(0, Number(value || 0));
 if (compact && number >= 1000000) return `${(number / 1000000).toFixed(number >= 100000000 ? 1 : 2)}m`;
 return `${number.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}${suffix}`;
+}
+function renderGoalsCalendar(calendar, metric, label, dailyMaximum) {
+if (!calendar) {
+return `<div class="tbp-card"><strong>${label} Calendar</strong><div class="tbp-muted" style="margin-top:5px;">${goalsLoading ? 'Loading daily totals…' : 'Open this month or refresh Goals to load daily totals.'}</div></div>`;
+}
+const values = new Map((calendar.days || []).map(day => [Number(day.day), day[metric]]));
+const cells = [];
+for (let blank = 0; blank < Number(calendar.firstWeekday || 0); blank++) cells.push('<div></div>');
+for (let day = 1; day <= Number(calendar.daysInMonth || 0); day++) {
+const value = values.has(day) ? values.get(day) : null;
+const color = value === null ? '#242424' : value >= dailyMaximum ? '#245f37' : value > 0 ? '#24547a' : '#2b2b2b';
+cells.push(`<div style="min-height:39px; border:1px solid #3a3a3a; border-radius:4px; background:${color}; padding:3px; text-align:center;"><div class="tbp-muted" style="font-size:8px; line-height:10px; text-align:left;">${day}</div><strong style="font-size:13px; line-height:18px;">${value === null ? '' : Number(value).toLocaleString()}</strong></div>`);
+}
+return `<div class="tbp-card"><strong>${label} Calendar</strong><div class="tbp-muted" style="margin-top:3px;">Daily totals in TCT</div><div style="display:grid; grid-template-columns:repeat(7,1fr); gap:3px; margin-top:7px;">${['S','M','T','W','T','F','S'].map(day => `<strong class="tbp-muted" style="font-size:9px; text-align:center;">${day}</strong>`).join('')}${cells.join('')}</div></div>`;
 }
 function renderGoals(body) {
 const expectedCurrentKey = goalsMonthBoundary(0).key;
@@ -4842,7 +4978,7 @@ ${xanaxAudit}
 `;
 }).join('')}
 <div class="tbp-card" style="border-left:6px solid ${warsMet ? '#28a745' : '#4da3ff'};">
-<div class="tbp-row" style="margin-top:0;"><strong>Ranked Wars % Hits</strong><strong class="${warsMet ? 'tbp-win' : ''}">${completedWars.length ? `${completedWars.filter(war => Number(war.percent || 0) >= warTarget).length} / ${completedWars.length} completed` : activeWars.length ? `${activeWars.length} in progress` : 'No wars found'}</strong></div>
+<div class="tbp-row" style="margin-top:0;"><strong>Ranked Wars % Hits</strong>${activeWars.length ? `<strong>${activeWars.length} in progress</strong>` : !completedWars.length ? '<strong>No wars found</strong>' : ''}</div>
 <div class="tbp-muted" style="margin-top:5px;">Target: ${warTarget.toFixed(1)}% of your faction's hits in each war completed this month.</div>
 </div>
 ${rankedWarWarnings.length ? `<div class="tbp-card" style="border-left:6px solid #d69a32;"><strong style="color:#f2bd61;">${rankedWarWarnings.length} war report${rankedWarWarnings.length === 1 ? '' : 's'} unavailable</strong><div class="tbp-muted" style="margin-top:5px;">The remaining monthly goals still loaded. War IDs: ${rankedWarWarnings.map(war => escapeHtml(war.id)).join(', ')}.</div></div>` : ''}
@@ -4864,6 +5000,8 @@ const met = Number(war.percent || 0) >= warTarget;
 const date = war.end || war.start ? new Date((war.end || war.start) * 1000).toLocaleDateString() : 'In progress';
 return `<div class="tbp-card" style="border-left:6px solid ${met ? '#28a745' : '#d9534f'};"><div class="tbp-row" style="margin-top:0;"><strong>vs ${escapeHtml(war.opponent)}</strong><span class="tbp-muted">${escapeHtml(date)}</span></div><div class="tbp-row"><span>Your hits / faction hits</span><strong>${war.playerHits} / ${war.factionHits}</strong></div><div class="tbp-row"><span>Participation</span><strong class="${met ? 'tbp-win' : 'tbp-loss'}">${Number(war.percent || 0).toFixed(2)}% / ${warTarget.toFixed(1)}%</strong></div></div>`;
 }).join('')}
+${renderGoalsCalendar(period.dailyCalendar, 'xanax', 'Xanax', 3)}
+${renderGoalsCalendar(period.dailyCalendar, 'refills', 'Energy Refill', 1)}
 ` : `<div class="tbp-card tbp-muted">${goalsLoading ? 'Loading goals…' : staleMonth && goalsCache && goalsMonthView === 'current' ? 'A new month has started. Refresh to calculate the new period.' : 'Refresh to load goal progress.'}</div>`}
 ${goalsError ? `<div class="tbp-card tbp-loss">${escapeHtml(goalsError)}</div>` : ''}
 <button class="tbp-btn tbp-btn-primary" id="tbp-refresh-goals" style="width:100%;" ${goalsLoading ? 'disabled' : ''}>${goalsLoading ? 'Refreshing…' : 'Refresh Goals'}</button>
@@ -5640,6 +5778,7 @@ button.onclick = () => {
 const view = button.dataset.goalsMonth;
 goalsMonthView = ['current', 'previous'].includes(view) ? view : 'current';
 render();
+ensureGoalsCalendar(goalsMonthView);
 };
 });
 const refreshGoalsBtn = document.getElementById('tbp-refresh-goals');
