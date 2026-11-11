@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.14
+// @version      1.24.15
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -38,9 +38,18 @@
     let goalsApiKey = localStorage.getItem('tbp_goals_api_key') || '';
     let goalsTargets = (() => {
         try {
-            return { xanax: 72, refills: 27, battleStats: 110000000, activityHours: 20, warHitPercent: 5, ...JSON.parse(localStorage.getItem('tbp_goals_targets') || '{}') };
+            const targets = { xanax: 72, refills: 27, battleStats: 110000000, activityHours: 20, warHitPercent: 0.5, ...JSON.parse(localStorage.getItem('tbp_goals_targets') || '{}') };
+            const migrationKey = 'tbp_goals_war_hit_percent_0_5_migrated';
+            if (!localStorage.getItem(migrationKey)) {
+                if (Number(targets.warHitPercent) === 5) targets.warHitPercent = 0.5;
+                try {
+                    localStorage.setItem('tbp_goals_targets', JSON.stringify(targets));
+                    localStorage.setItem(migrationKey, '1');
+                } catch {}
+            }
+            return targets;
         } catch {
-            return { xanax: 72, refills: 27, battleStats: 110000000, activityHours: 20, warHitPercent: 5 };
+            return { xanax: 72, refills: 27, battleStats: 110000000, activityHours: 20, warHitPercent: 0.5 };
         }
     })();
     let isMinimized = JSON.parse(localStorage.getItem('tbp_minimized') || 'false');
@@ -5597,7 +5606,7 @@ ${safeJson(log.raw)}
                 <label class="tbp-muted">ACTIVITY TARGET (HOURS)</label>
                 <input type="number" id="tbp-goal-activity-hours" class="tbp-input" value="${Number(goalsTargets.activityHours || 20)}" min="0" step="0.25">
                 <label class="tbp-muted">RANKED WAR HITS TARGET (%)</label>
-                <input type="number" id="tbp-goal-war-hit-percent" class="tbp-input" value="${Number(goalsTargets.warHitPercent || 5)}" min="0" max="100" step="0.1">
+                <input type="number" id="tbp-goal-war-hit-percent" class="tbp-input" value="${Number(goalsTargets.warHitPercent || 0.5)}" min="0" max="100" step="0.1">
                 <div class="tbp-muted" style="margin-top:7px;">Ranked Wars are measured separately: your attacks divided by your faction's attacks in each war completed during the calendar month.</div>
             </details>
 
