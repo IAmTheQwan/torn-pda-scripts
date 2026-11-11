@@ -15,12 +15,14 @@ assert(!auction.includes('fetchQualityForFilteredItems'));
 assert(!auction.includes('location.reload()'));
 assert(auction.includes('Filter Current Page'));
 assert(auction.includes("document.visibilityState !== \"visible\""));
+assert(auction.includes('IAmTheQwan/torn-pda-scripts/Bookie/theqwan-caf-base.meta.js'));
 
 // The external history lookup is one explicit History-button action and does
 // not receive a Torn API key or cookies.
 assert(history.includes('btn.onclick'));
 assert(history.includes('runHistory(card, btn)'));
 assert(history.includes('No Torn API key, account ID, bid, or page cookies are sent.'));
+assert(history.includes('IAmTheQwan/torn-pda-scripts/Bookie/theqwan-caf-helper.meta.js'));
 
 // All Torn API call families share a conservative rolling-minute ledger.
 assert(bookie.includes('const TORN_API_SAFE_REQUEST_LIMIT = 80'));
