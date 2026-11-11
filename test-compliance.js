@@ -25,7 +25,7 @@ assert(history.includes('No Torn API key, account ID, bid, or page cookies are s
 assert(history.includes('IAmTheQwan/torn-pda-scripts/Bookie/theqwan-caf-helper.meta.js'));
 
 // All Torn API call families share a conservative rolling-minute ledger.
-assert(bookie.includes('const TORN_API_SAFE_REQUEST_LIMIT = 80'));
+assert(bookie.includes('const TORN_API_SAFE_REQUEST_LIMIT = 60'));
 assert(bookie.includes('async function acquireTornApiRequestSlot()'));
 assert(bookie.includes('async function requestLogPage(from, to)'));
 assert(bookie.includes('async function requestGoalsPath(path)'));

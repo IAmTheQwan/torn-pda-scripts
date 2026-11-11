@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Torn PDA Bookie Panel
-// @version      1.24.13
+// @version      1.24.14
 // @description  Torn PDA Bookie, Chain Report, and Training assistants
 // @author       TheQwan
 // @match        https://www.torn.com/*
@@ -96,7 +96,10 @@ const MAX_API_PAGES_PER_SCAN = 50;
 const API_PAGE_DELAY_MS = 1100;
 const TORN_API_RATE_LEDGER_KEY = 'tbp_torn_api_request_times';
 const TORN_API_RATE_WINDOW_MS = 60 * 1000;
-const TORN_API_SAFE_REQUEST_LIMIT = 80;
+// Torn applies its per-user quota across every key the player owns. Keep
+// this script below that ceiling so the server-side auction importer,
+// Torn PDA, and other personal tools still have usable headroom.
+const TORN_API_SAFE_REQUEST_LIMIT = 60;
 const FOOTBALL_HOME_YELLOW_MIN = 1.2;
 const FOOTBALL_HOME_YELLOW_MAX = 1.29;
 const FOOTBALL_HOME_LIME_MIN = 1.3;
@@ -5070,7 +5073,7 @@ body.innerHTML = `
 <summary style="font-weight:bold; cursor:pointer;">Bookie API</summary>
 <label class="tbp-muted" style="display:block; margin-top:9px;">TORN API KEY</label>
 <input type="password" id="tbp-api-key" class="tbp-input" value="${escapeHtml(apiKey)}" placeholder="Torn API key">
-<div class="tbp-muted" style="margin-bottom:9px;">Privacy: Torn API keys and returned Bookie/Goals/Chain/Training data are stored only in this browser/PDA and are not shared. The key is used only for the features shown here. Limited or matching Custom selections are recommended; faction attack totals additionally require your Torn role's Faction API Access. This script caps its combined Torn API traffic at 80 requests per rolling minute.</div>
+<div class="tbp-muted" style="margin-bottom:9px;">Privacy: Torn API keys and returned Bookie/Goals/Chain/Training data are stored only in this browser/PDA and are not shared. The key is used only for the features shown here. Limited or matching Custom selections are recommended; faction attack totals additionally require your Torn role's Faction API Access. This script caps its combined Torn API traffic at 60 requests per rolling minute, leaving headroom for the auction importer, Torn PDA, and other tools using your keys.</div>
 <label class="tbp-muted">SCAN MODE</label>
 <select id="tbp-scan-mode" class="tbp-select">
 <option value="both" ${scanMode === 'both' ? 'selected' : ''}>Date + page limit</option>
