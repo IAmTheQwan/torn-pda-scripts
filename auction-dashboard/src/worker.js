@@ -10,6 +10,8 @@ const MAX_SNAPSHOT_ITEMS = 120;
 const SNAPSHOT_RETENTION_SECONDS = 7 * 24 * 60 * 60;
 const ACCESS_JWKS_TTL_MS = 60 * 60 * 1000;
 const BACKFILL_STRATEGY_VERSION = "2";
+export const MAX_SYNC_PAGES_PER_RUN = 5;
+export const MANUAL_SYNC_COOLDOWN_SECONDS = 60;
 let accessJwksCache = null;
 
 export default {
@@ -56,8 +58,11 @@ async function routeApi(request, env, ctx, url) {
     if (request.method === "POST" && url.pathname === "/api/admin/device-tokens") return createDeviceToken(request, env);
     if (request.method === "POST" && url.pathname === "/api/admin/sync") {
       const body = await readJson(request);
-      const requested = clampInteger(body?.pages, 1, 20, Number(env.SYNC_PAGES_PER_RUN || 5));
-      const result = await runAuctionSync(env, requested, { forceForward: true });
+      const requested = clampInteger(body?.pages, 1, MAX_SYNC_PAGES_PER_RUN, Number(env.SYNC_PAGES_PER_RUN || 5));
+      const result = await runAuctionSync(env, requested, {
+        forceForward: true,
+        minimumIntervalSeconds: MANUAL_SYNC_COOLDOWN_SECONDS
+      });
       return json(result);
     }
 
@@ -76,7 +81,7 @@ async function routeApi(request, env, ctx, url) {
 
 async function runScheduledWork(env) {
   try {
-    await runAuctionSync(env, clampInteger(env.SYNC_PAGES_PER_RUN, 1, 20, 5));
+    await runAuctionSync(env, clampInteger(env.SYNC_PAGES_PER_RUN, 1, MAX_SYNC_PAGES_PER_RUN, 5));
   } catch (error) {
     console.error("Scheduled auction sync failed", error);
   }
@@ -757,6 +762,7 @@ export function normalizeSnapshotPayload(body, deviceId = null) {
 
 async function runAuctionSync(env, pageLimit, options = {}) {
   if (!env.TORN_API_KEY) throw new Error("TORN_API_KEY is not configured.");
+  pageLimit = clampInteger(pageLimit, 1, MAX_SYNC_PAGES_PER_RUN, MAX_SYNC_PAGES_PER_RUN);
   const lock = await acquireSyncLock(env.DB);
   if (!lock) return { ok: false, skipped: true, reason: "Another sync is already running." };
 
@@ -781,6 +787,16 @@ async function runAuctionSync(env, pageLimit, options = {}) {
   let lastForwardCheckAt = Number(await getSyncState(env.DB, "last_forward_check_at") || 0);
 
   try {
+    const minimumIntervalSeconds = clampInteger(options.minimumIntervalSeconds, 0, 3_600, 0);
+    const previousRunAt = Number(await getSyncState(env.DB, "last_run_at") || 0);
+    if (minimumIntervalSeconds > 0 && previousRunAt > 0 && now - previousRunAt < minimumIntervalSeconds) {
+      return {
+        ok: false,
+        skipped: true,
+        reason: `Auction sync is cooling down. Try again in ${minimumIntervalSeconds - (now - previousRunAt)} seconds.`
+      };
+    }
+
     if (storedBudgetDay !== today) {
       await setSyncStates(env.DB, {
         backfill_budget_day: today,

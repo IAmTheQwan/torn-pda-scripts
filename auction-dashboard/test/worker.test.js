@@ -6,6 +6,8 @@ import {
   hasValidAccessIdentity,
   historicalAuctionUrl,
   incrementalAuctionUrl,
+  MANUAL_SYNC_COOLDOWN_SECONDS,
+  MAX_SYNC_PAGES_PER_RUN,
   nextBackfillTimestamp,
   normalizeAuction,
   normalizeSnapshotPayload,
@@ -13,6 +15,11 @@ import {
   recentAuctionUrl,
   safeTornApiUrl
 } from "../src/worker.js";
+
+test("auction sync policy reserves Torn API quota for the player's other tools", () => {
+  assert.equal(MAX_SYNC_PAGES_PER_RUN, 5);
+  assert.equal(MANUAL_SYNC_COOLDOWN_SECONDS, 60);
+});
 
 test("normalizeAuction keeps pricing fields and two normalized bonuses", () => {
   const result = normalizeAuction({

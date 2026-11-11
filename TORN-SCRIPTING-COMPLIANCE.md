@@ -1,6 +1,6 @@
 # Torn scripting compliance notes
 
-Last reviewed: 2026-10-22
+Last reviewed: 2026-11-11
 
 This document records the rules used when designing CAF Clean. It is a development reference, not official approval from Torn staff. Recheck the linked sources before changing any feature that reads Torn pages, sends requests, monitors live data, or produces alerts.
 
@@ -34,7 +34,7 @@ WebSocket or live-DOM information follows the same foreground requirement. A scr
 
 API-only automation is allowed subject to the API's access, rate, data-handling, key-security, and disclosure requirements. Tools that request an API key must clearly disclose what is stored, who receives it, why it is used, how the key is handled, and the required key access level.
 
-Torn currently permits up to 100 API requests per minute across all keys owned by a user, but this is a ceiling rather than a polling target. CAF must use the least request volume needed, honor rate-limit/API errors without immediate retry loops, and keep historical imports resumable. Finished Auction House history must come from Torn's official `market -> auctionhouse` API. Another tool's archive may be imported only through an owner-published API/export whose terms permit reuse, or after obtaining the owner's explicit permission; public visibility alone is not permission to copy its database.
+Torn currently permits up to 100 API requests per minute across all keys owned by a user. Services aggregating many users may also be limited to 5,000 requests per minute per IP and must not distribute traffic across servers to bypass it. These are ceilings rather than polling targets. CAF must use the least request volume needed, honor rate-limit/API errors without immediate retry loops, and keep historical imports resumable. Finished Auction House history must come from Torn's official `market -> auctionhouse` API. The November 2026 one-hour global market cache applies to item-market, property, rental, and company-listing selections, not auction-house history. Another tool's archive may be imported only through an owner-published API/export whose terms permit reuse, or after obtaining the owner's explicit permission; public visibility alone is not permission to copy its database.
 
 ## CAF Clean guardrails
 
