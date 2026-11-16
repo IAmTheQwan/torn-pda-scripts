@@ -38,9 +38,13 @@ assert(source.includes('String(faction.id) === String(factionId)'));
 assert(source.includes('Number(member?.attacks || 0)'));
 assert(source.includes('audit: { xanaxEnd: latest.xantaken, xanaxStart: currentStart.xantaken'));
 assert(source.includes('API audit:'));
-assert(source.includes("fetchGoalsDailyCalendar(current.key, currentStart, latest, true)"));
-assert(source.includes("renderGoalsCalendar(period.dailyCalendar, 'xanax', 'Xanax', 3)"));
-assert(source.includes("renderGoalsCalendar(period.dailyCalendar, 'refills', 'Energy Refill', 1)"));
+assert(source.includes("fetchGoalsDailyCalendar(current.key, true)"));
+assert(source.includes("requestGoalsLogTypes([2290, 2291]"));
+assert(source.includes("requestGoalsLogTypes([4900]"));
+assert(source.includes("renderGoalsCalendar(period.dailyCalendar, 'xanax', 'Xanax', 3, period.calendarError, period.values?.xanax)"));
+assert(source.includes("renderGoalsCalendar(period.dailyCalendar, 'refills', 'Energy Refill', 1, period.calendarError, period.values?.refills)"));
+assert(source.includes('Torn logs are missing one or more events.'));
+assert(!source.includes('calculateGoalsDailyCalendar'));
 assert(!source.includes("completedWars.filter(war => Number(war.percent || 0) >= warTarget).length"));
 assert(source.includes("requestGoalsPath('user/personalstats?cat=popular')"));
 assert(source.includes("requestGoalsPath('user/personalstats?cat=battle_stats')"));
@@ -108,16 +112,17 @@ assert.strictEqual(finalPace.elapsedDays, 31);
 assert.strictEqual(finalPace.projectedTotal, 27);
 assert.strictEqual(finalPace.maximumPossible, 27);
 
-const calendarBoundaries = {
-    [String(Date.UTC(2026, 10, 1) / 1000)]: { xantaken: 100, refills: 50 },
-    [String(Date.UTC(2026, 10, 2) / 1000)]: { xantaken: 103, refills: 51 },
-    [String(Date.UTC(2026, 10, 3) / 1000)]: { xantaken: 105, refills: 51 }
-};
-const calendar = context.calculateGoalsDailyCalendar(
+const logAt = value => ({ timestamp: Date.parse(value) / 1000 });
+const calendar = context.calculateGoalsLogCalendar(
     '2026-11',
-    calendarBoundaries,
-    { xantaken: 108, refills: 52 },
-    3
+    [
+        logAt('2026-11-01T01:00:00Z'), logAt('2026-11-01T09:00:00Z'), logAt('2026-11-01T17:00:00Z'),
+        logAt('2026-11-02T02:00:00Z'), logAt('2026-11-02T10:00:00Z'),
+        logAt('2026-11-03T04:00:00Z'), logAt('2026-11-03T12:00:00Z'), logAt('2026-11-03T20:00:00Z')
+    ],
+    [logAt('2026-11-01T23:00:00Z'), logAt('2026-11-03T23:00:00Z')],
+    true,
+    new Date('2026-11-03T23:30:00Z')
 );
 assert.deepStrictEqual(
     JSON.parse(JSON.stringify(calendar.days)),
